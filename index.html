@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Non-Local Purchases</title>
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="title">
+    <h1>Non-Local Purchases</h1>
+    <p id="sourceLine" class="muted">No data loaded</p>
+  </div>
+  <div class="actions">
+    <button id="btnRefresh" class="btn" title="Reload from the connected Google Sheet" hidden>Refresh</button>
+    <button id="btnExport" class="btn">Export CSV</button>
+    <button id="btnData" class="btn primary">Load data</button>
+  </div>
+</header>
+
+<section id="dataPanel" class="panel" hidden>
+  <div class="panel-grid">
+    <div>
+      <h2>Upload a file</h2>
+      <p class="muted">The <b>FMS</b> tab of the NONLOCAL PURCHASES sheet, as .xlsx or .csv.</p>
+      <label class="file">
+        <input type="file" id="fileInput" accept=".csv,.xlsx,.xls">
+        <span>Choose file…</span>
+      </label>
+    </div>
+    <div>
+      <h2>Connect a Google Sheet</h2>
+      <p class="muted">Paste a <i>Publish to web → CSV</i> link, or a sheet link shared as "Anyone with the link". See README for setup.</p>
+      <div class="row">
+        <input type="url" id="sheetUrl" placeholder="https://docs.google.com/spreadsheets/d/…">
+        <button id="btnConnect" class="btn primary">Connect</button>
+      </div>
+    </div>
+    <div>
+      <h2>Just looking?</h2>
+      <p class="muted">Load made-up sample data to try the dashboard.</p>
+      <button id="btnDemo" class="btn">Use demo data</button>
+    </div>
+  </div>
+  <p id="loadMsg" class="msg" role="status"></p>
+</section>
+
+<section class="filters" aria-label="Filters">
+  <select id="fPeriod" aria-label="Period">
+    <option value="all">All time</option>
+    <option value="mtd">This month</option>
+    <option value="30">Last 30 days</option>
+    <option value="90">Last 90 days</option>
+    <option value="fy">This financial year</option>
+    <option value="custom">Custom range…</option>
+  </select>
+  <span id="customRange" class="custom" hidden>
+    <input type="date" id="fFrom" aria-label="From"> – <input type="date" id="fTo" aria-label="To">
+  </span>
+  <select id="fUnit" aria-label="Unit"><option value="">All units</option></select>
+  <select id="fCategory" aria-label="Category"><option value="">All categories</option></select>
+  <select id="fVendor" aria-label="Vendor"><option value="">All vendors</option></select>
+  <select id="fStage" aria-label="Stage">
+    <option value="">All stages</option>
+    <option>Awaiting approval</option>
+    <option>On hold</option>
+    <option>Rejected / withdrawn</option>
+    <option>Awaiting PO</option>
+    <option>Awaiting delivery</option>
+    <option>Received</option>
+    <option>Paid</option>
+  </select>
+  <input type="search" id="fSearch" placeholder="Search item, order no, PO no…" aria-label="Search">
+  <button id="btnReset" class="btn ghost">Reset</button>
+</section>
+
+<main id="main">
+  <div id="empty" class="empty">
+    <h2>Load your non-local purchase data to begin</h2>
+    <p class="muted">Upload the FMS tab, connect the Google Sheet, or try the demo data.</p>
+    <button class="btn primary" onclick="document.getElementById('btnData').click()">Load data</button>
+  </div>
+
+  <div id="dash" hidden>
+    <section class="kpis" id="kpis"></section>
+
+    <section class="grid">
+      <article class="card">
+        <h3>Pipeline</h3>
+        <p class="sub">Requisition lines at each stage</p>
+        <div class="chart"><canvas id="cPipeline"></canvas></div>
+      </article>
+      <article class="card">
+        <div class="card-head">
+          <div><h3>Monthly trend</h3><p class="sub" id="trendSub">Requisition lines per month</p></div>
+          <div class="seg" role="tablist">
+            <button data-trend="count" class="on">Lines</button>
+            <button data-trend="value">PO value</button>
+          </div>
+        </div>
+        <div class="chart"><canvas id="cTrend"></canvas></div>
+      </article>
+      <article class="card">
+        <div class="card-head">
+          <div><h3>By unit</h3><p class="sub" id="unitSub">PO value</p></div>
+          <div class="seg" role="tablist">
+            <button data-unit="value" class="on">PO value</button>
+            <button data-unit="count">Lines</button>
+          </div>
+        </div>
+        <div class="chart tall"><canvas id="cUnit"></canvas></div>
+      </article>
+      <article class="card">
+        <h3>Top vendors</h3>
+        <p class="sub">PO value, top 12</p>
+        <div class="chart tall"><canvas id="cVendor"></canvas></div>
+      </article>
+      <article class="card">
+        <h3>By category</h3>
+        <p class="sub">Requisition lines</p>
+        <div class="chart tall"><canvas id="cCategory"></canvas></div>
+      </article>
+      <article class="card">
+        <h3>Turnaround</h3>
+        <p class="sub">On-time performance and average days</p>
+        <div id="turnaround" class="turn"></div>
+      </article>
+    </section>
+
+    <section class="card tablecard">
+      <div class="tabs" role="tablist" id="tabs">
+        <button data-tab="overdue" class="on">Overdue delivery <span class="count"></span></button>
+        <button data-tab="nopo">Approved, no PO <span class="count"></span></button>
+        <button data-tab="hold">On hold / pending <span class="count"></span></button>
+        <button data-tab="all">All lines <span class="count"></span></button>
+      </div>
+      <div class="tablewrap"><table id="table"></table></div>
+      <div class="tablefoot"><button id="btnMore" class="btn ghost" hidden>Show more</button></div>
+    </section>
+  </div>
+</main>
+
+<div id="tip" class="tip" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
