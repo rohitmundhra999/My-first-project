@@ -1,6 +1,9 @@
 # NLP Approvals – setup guide
 
-A phone app for approving non-local purchase requisitions in **Copy of NONLOCAL PURCHASES**.
+A phone app for approving non-local purchase requisitions.
+
+> **This is the trial.** It runs on **Copy of NONLOCAL PURCHASES** and shows a yellow **TRIAL** badge.
+> To move it to the real NONLOCAL PURCHASES sheet later, follow [`GO-LIVE.md`](GO-LIVE.md). It's one setting, `MODE`.
 
 **How it works**
 1. **HO in-charge** opens the app, ticks the new requisition lines and picks an approver. The app writes the

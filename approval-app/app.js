@@ -90,6 +90,7 @@ async function boot() {
   } catch (e) { return handleError(e); }
   const u = state.me.user;
   $('who').textContent = `${u.name} · ${u.isHO && u.isApprover ? 'HO in-charge & approver' : u.isHO ? 'HO in-charge' : 'Approver'}`;
+  $('modeTag').hidden = state.me.mode === 'LIVE';
   $('btnSignOut').hidden = false; $('btnRefresh').hidden = false;
   $('tabAssign').hidden = !u.isHO; $('tabApprove').hidden = !u.isApprover;
   $('approverPick').innerHTML = '<option value="">Choose approver…</option>' + state.me.approvers.map((n) => `<option>${esc(n)}</option>`).join('');

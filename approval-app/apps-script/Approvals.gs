@@ -19,8 +19,16 @@
  *   FIREBASE_SERVICE_ACCOUNT  The whole JSON key of the Firebase service account (for push notifications)
  */
 
+// ===== TRIAL or LIVE: the ONLY line to change when going live (see GO-LIVE.md) =====
+const MODE = 'TRIAL';   // 'TRIAL' = Copy of NONLOCAL PURCHASES,  'LIVE' = NONLOCAL PURCHASES
+
+const SHEETS = {
+  TRIAL: '1FYI-Mj44MXeu-YN4qiQMErPsm9jVE97vePxw3gu-QeY', // Copy of NONLOCAL PURCHASES (testing)
+  LIVE:  '11B4bjVVFXyMXoTp8M22ROtMea55Hg0qRlAdzMVuIGJg', // NONLOCAL PURCHASES (real)
+};
+
 const CFG = {
-  SHEET_ID: '1FYI-Mj44MXeu-YN4qiQMErPsm9jVE97vePxw3gu-QeY', // Copy of NONLOCAL PURCHASES
+  SHEET_ID: SHEETS[MODE],
   FMS: 'FMS',
   USERS: 'APP USERS',
   DEVICES: 'APP DEVICES',
@@ -66,6 +74,7 @@ function me_(user) {
     user: { name: user.name, email: user.email, isHO: user.isHO, isApprover: user.isApprover },
     approvers: user.isHO ? activeUsers_().filter(u => u.isApprover).map(u => u.name) : [],
     decisions: DECISIONS,
+    mode: MODE,
   };
 }
 
@@ -280,6 +289,7 @@ function withLock_(fn) {
 
 /** Push to every device the person registered; email them if none worked. */
 function notify_(email, title, body) {
+  if (MODE !== 'LIVE') title = '[TRIAL] ' + title;
   const appUrl = prop_('APP_URL', '');
   let push = 0;
   try { push = sendPush_(email, title, body, appUrl); } catch (e) { console.error('Push failed: ' + e); }
@@ -378,7 +388,7 @@ function setup() {
   }
   tab_(CFG.DEVICES, ['Email', 'Token', 'Device', 'Updated']);
   tab_(CFG.LOG, ['Time', 'Email', 'Name', 'Action', 'Lines', 'Note']);
-  console.log('Done. Fill in the emails and roles in the "' + CFG.USERS + '" tab.');
+  console.log('Done (' + MODE + ' sheet: ' + ss.getName() + '). Fill in the emails and roles in the "' + CFG.USERS + '" tab.');
 }
 
 /** Sends a test notification to yourself (the person running this). */

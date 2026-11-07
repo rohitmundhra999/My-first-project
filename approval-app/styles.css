@@ -97,3 +97,4 @@ details.waiting summary { cursor: pointer; font-weight: 600; color: var(--ink-2)
 .toast { position: fixed; left: 16px; right: 16px; bottom: calc(96px + env(safe-area-inset-bottom)); z-index: 30; max-width: 560px; margin: 0 auto;
   background: var(--ink); color: var(--page); padding: 12px 14px; border-radius: 10px; font-size: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.2); }
 .toast.err { background: var(--critical); color: #fff; }
+.mode { display: inline-block; vertical-align: middle; font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 2px 7px; border-radius: 6px; background: var(--warning); color: #0b0b0b; }
