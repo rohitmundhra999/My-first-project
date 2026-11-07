@@ -1,5 +1,8 @@
 # Non-Local Purchase Dashboard
 
+> Looking for the **approval app** (HO assigns an approver, approver gets a phone notification and approves)?
+> See [`approval-app/SETUP.md`](approval-app/SETUP.md).
+
 A browser dashboard for the **NONLOCAL PURCHASES** tracker (the `FMS` tab). It follows each requisition line through
 **requisition → approval → PO → material/invoice received → payment** and shows:
 

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>NLP Approvals</title>
+<meta name="theme-color" content="#1b5e20">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="NLP Approvals">
+<link rel="stylesheet" href="styles.css">
+<script src="config.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+<header class="bar">
+  <div>
+    <h1>NLP Approvals</h1>
+    <p id="who" class="sub"></p>
+  </div>
+  <div class="bar-actions">
+    <button id="btnRefresh" class="btn ghost" hidden aria-label="Refresh">↻</button>
+    <button id="btnSignOut" class="btn ghost" hidden>Sign out</button>
+  </div>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+
+<main>
+  <section id="signin" class="center" hidden>
+    <h2>Sign in</h2>
+    <p class="sub">Use your @summithotels.in Google account.</p>
+    <div id="gsiButton"></div>
+    <p id="signinMsg" class="err"></p>
+  </section>
+
+  <section id="loading" class="center"><p class="sub">Loading…</p></section>
+
+  <section id="app" hidden>
+    <nav class="tabs" role="tablist">
+      <button id="tabAssign" data-tab="assign" hidden>Assign <span class="count"></span></button>
+      <button id="tabApprove" data-tab="approve" hidden>To approve <span class="count"></span></button>
+    </nav>
+
+    <!-- HO in-charge -->
+    <div id="viewAssign" hidden>
+      <h2 class="section">Needs an approver</h2>
+      <div id="listUnassigned"></div>
+      <details class="waiting">
+        <summary>Waiting for approver <span id="waitingCount" class="count"></span></summary>
+        <p class="sub pad">Already sent to an approver but not decided yet. Select lines to send them to someone else.</p>
+        <div id="listWaiting"></div>
+      </details>
+      <div class="dock" id="assignDock" hidden>
+        <span id="assignCount"></span>
+        <select id="approverPick" aria-label="Approver"></select>
+        <button id="btnAssign" class="btn primary">Send</button>
+      </div>
+    </div>
+
+    <!-- Approver -->
+    <div id="viewApprove" hidden>
+      <h2 class="section">Waiting for your decision</h2>
+      <div id="listPending"></div>
+      <h2 class="section" id="holdTitle" hidden>On hold</h2>
+      <div id="listHold"></div>
+      <div class="dock" id="approveDock" hidden>
+        <span id="approveCount"></span>
+        <button class="btn" data-bulk="On Hold">Hold</button>
+        <button class="btn danger" data-bulk="Rejected">Reject</button>
+        <button class="btn primary" data-bulk="Approved">Approve</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast" role="status" hidden></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
