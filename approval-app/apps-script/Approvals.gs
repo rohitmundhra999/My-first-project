@@ -253,6 +253,7 @@ function readLines_() {
   const values = sh.getRange(CFG.FIRST_ROW, 1, n, COL.APPR_QTY).getValues();
   const stamps = sh.getRange(CFG.FIRST_ROW, COL.TS, n, 1).getDisplayValues();
   const cutoff = Date.now() - CFG.LOOKBACK_DAYS * 86400000;
+  const stock = stockIndex_();
   const out = [];
   let year = CFG.START_YEAR, prevMonth = 1;
   values.forEach((r, i) => {
@@ -273,9 +274,57 @@ function readLines_() {
       qty: r[COL.QTY - 1] === '' ? '' : Number(r[COL.QTY - 1]), uom: String(r[COL.UOM - 1]).trim(),
       approval: String(r[COL.APPROVAL - 1]).trim(), approver: String(r[COL.APPROVER - 1]).trim(),
       approvedQty: r[COL.APPR_QTY - 1] === '' ? '' : Number(r[COL.APPR_QTY - 1]),
+      stock: findStock_(stock, r, orderNo, +m[1], mon, +(m[3] || 0), +(m[4] || 0)),
     });
   });
   return out.reverse(); // newest first
+}
+
+// ---- Stock in hand: the storekeeper enters it in the request form, which lands in FORMDATA.
+// FORMDATA has no order number, so a line is matched on unit + item + quantity + date, picking the entry
+// whose time is closest (within a few minutes) to the time in the order number (e.g. SAME-2310-1258-66).
+const FORMDATA = { TAB: 'FORMDATA', TS: 1, UNIT: 2, ITEM: 4, QTY: 6, STOCK: 8, STOCK_UOM: 9, MAX_ROWS: 8000, MAX_MINUTES: 5 };
+const stockKey_ = (unit, item, qty, day, mon) =>
+  [String(unit).toLowerCase().replace(/[^a-z0-9]/g, ''), String(item).toLowerCase().replace(/[^a-z0-9]/g, ''), Number(qty) || 0, day + '-' + mon].join('|');
+
+function stockIndex_() {
+  const index = {};
+  const sh = book_().getSheetByName(FORMDATA.TAB);
+  if (!sh) return index;
+  const last = sh.getLastRow();
+  if (last < 2) return index;
+  const first = Math.max(2, last - FORMDATA.MAX_ROWS + 1);
+  const rows = sh.getRange(first, 1, last - first + 1, FORMDATA.STOCK_UOM).getValues();
+  const cutoff = Date.now() - (CFG.LOOKBACK_DAYS + 10) * 86400000;
+  rows.forEach(r => {
+    let t = r[FORMDATA.TS - 1];
+    if (!(t instanceof Date)) {
+      const m = String(t).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})/);
+      if (!m) return;
+      t = new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5]);
+    }
+    if (t.getTime() < cutoff) return;
+    const p = Utilities.formatDate(t, CFG.TZ, 'd|M|H|m').split('|').map(Number);
+    const key = stockKey_(r[FORMDATA.UNIT - 1], r[FORMDATA.ITEM - 1], r[FORMDATA.QTY - 1], p[0], p[1]);
+    (index[key] = index[key] || []).push({
+      minute: p[2] * 60 + p[3],
+      stock: String(r[FORMDATA.STOCK - 1]).trim(),
+      uom: String(r[FORMDATA.STOCK_UOM - 1]).trim(),
+    });
+  });
+  return index;
+}
+
+function findStock_(index, r, orderNo, day, mon, hh, mm) {
+  // Time from the order number (DDMM-HHMM) is the form's own time; fall back to the FMS timestamp.
+  const o = String(orderNo).match(/-(\d{2})(\d{2})-(\d{2})(\d{2})-/);
+  if (o) { day = +o[1]; mon = +o[2]; hh = +o[3]; mm = +o[4]; }
+  const list = index[stockKey_(r[COL.UNIT - 1], r[COL.ITEM - 1], r[COL.QTY - 1], day, mon)];
+  if (!list) return null;
+  const want = hh * 60 + mm;
+  let best = null;
+  list.forEach(c => { const d = Math.abs(c.minute - want); if (d <= FORMDATA.MAX_MINUTES && (!best || d < best.d)) best = { d: d, c: c }; });
+  return best ? { qty: best.c.stock, uom: best.c.uom } : null;
 }
 
 function cleanItems_(items) {
