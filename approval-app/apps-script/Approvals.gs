@@ -1,5 +1,5 @@
 /**
- * NLP Approvals - backend for the purchase approval app.
+ * Summit Purchase Reports and Approvals - backend for the purchase approval app.
  *
  * Put this in its OWN Apps Script project (script.google.com > New project), not inside
  * the sheet's existing project, so its names can never clash with the report scripts.
@@ -33,6 +33,7 @@ const CFG = {
   USERS: 'APP USERS',
   DEVICES: 'APP DEVICES',
   LOG: 'APP LOG',
+  REMARKS: 'REJECTION REMARKS',   // reason given by the approver for every rejected line (kept out of FMS)
   DOMAIN: 'summithotels.in',
   TZ: 'Asia/Kolkata',
   FIRST_ROW: 4,          // first data row in FMS
@@ -45,18 +46,20 @@ const CFG = {
 const COL = { ORDER: 1, TS: 2, UNIT: 3, CAT: 4, ITEM: 5, PIC: 6, QTY: 7, UOM: 8,
               ACTUAL: 10, APPROVAL: 11, APPROVER: 12, APPROVED_BY: 13, APPR_QTY: 14 };
 const DECISIONS = ['Approved', 'On Hold', 'Rejected', 'Withdrawn'];
+const REMARK_MAX_WORDS = 10;
+const REMARK_HEADER = ['Time', 'Order No', 'FMS Row', 'Unit', 'Item', 'Remark', 'Rejected By', 'Email'];
 
 // ======================= web entry points =======================
 
 function doGet() {
-  return json_({ ok: true, app: 'NLP Approvals', time: new Date().toISOString() });
+  return json_({ ok: true, app: 'Summit Purchase Reports and Approvals', time: new Date().toISOString() });
 }
 
 function doPost(e) {
   try {
     const req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     const realUser = auth_(req.idToken);
-    const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_, reports: reports_, testPush: testPush_ };
+    const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_, reports: reports_, decisions: decisions_, testPush: testPush_ };
     const fn = handlers[req.action];
     if (!fn) throw appError_('BAD_REQUEST', 'Unknown action.');
     const user = previewUser_(realUser, req);
@@ -167,6 +170,12 @@ function decide_(user, req) {
   const decision = DECISIONS.find(d => d === req.decision);
   if (!decision) throw appError_('BAD_REQUEST', 'Choose Approved, On Hold, Rejected or Withdrawn.');
   const items = cleanItems_(req.items);
+  let remark = String(req.remark || '').replace(/\s+/g, ' ').trim();
+  if (decision === 'Rejected') {
+    if (!remark) throw appError_('BAD_REQUEST', 'Give the reason for rejection.');
+    if (remark.split(' ').length > REMARK_MAX_WORDS) throw appError_('BAD_REQUEST', 'Keep the reason to ' + REMARK_MAX_WORDS + ' words or fewer.');
+    if (remark.length > 150) throw appError_('BAD_REQUEST', 'The reason is too long.');
+  } else remark = '';
 
   const done = [], skipped = [];
   withLock_(() => {
@@ -184,10 +193,17 @@ function decide_(user, req) {
 
       sh.getRange(it.row, COL.ACTUAL, 1, 2).setValues([[new Date(), decision]]);             // J, K
       sh.getRange(it.row, COL.APPROVED_BY, 1, 2).setValues([[user.name, qty === null ? '' : qty]]); // M, N
-      done.push({ row: it.row, orderNo: it.orderNo, qty: qty });
+      done.push({ row: it.row, orderNo: it.orderNo, qty: qty, r: row });
     });
-    if (done.length) log_(user, decision.toUpperCase(), done.map(d => d.orderNo + (d.qty !== null ? ' x' + d.qty : '')).join(', '), '');
+    if (done.length) log_(user, decision.toUpperCase(), done.map(d => d.orderNo + (d.qty !== null ? ' x' + d.qty : '')).join(', '), remark);
+    if (done.length && remark) {
+      const now = new Date();
+      const rs = tab_(CFG.REMARKS, REMARK_HEADER);
+      rs.getRange(rs.getLastRow() + 1, 1, done.length, REMARK_HEADER.length).setValues(done.map(d =>
+        [now, d.orderNo, d.row, String(d.r[COL.UNIT - 1]).trim(), String(d.r[COL.ITEM - 1]).trim(), remark, user.name, user.email]));
+    }
   });
+  try { patchDecisions_(done, decision, user, remark); } catch (e) { console.warn('Decision report patch failed: ' + e); }
   const qtyByRow = {};
   done.forEach(d => (qtyByRow[d.row] = d.qty));
   patchOpenLines_(done.map(d => d.row), l => {
@@ -617,6 +633,9 @@ function reports_(user, req) {
   const pad = v => (v < 10 ? '0' : '') + v;
   const norm = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
 
+  const decided = [];
+  const remarks = remarksIndex_();
+  const acted = n > 0 ? sh.getRange(CFG.FIRST_ROW, COL.ACTUAL, n, 1).getDisplayValues() : [];
   const nr = { pos: {}, order: [], excluded: {} };
   const ip = { pos: {}, order: [], excluded: {} };
   let year = CFG.START_YEAR, prevMonth = 1;
@@ -628,6 +647,21 @@ function reports_(user, req) {
     if (prevMonth - mon >= 6) year++;   // a new year started
     prevMonth = mon;
     if (year * 10000 + mon * 100 + day < fromKey) return;
+
+    const status = DECISIONS.find(d => d.toLowerCase() === String(r[10]).trim().toLowerCase());
+    if (status) {
+      const orderNo = String(r[COL.ORDER - 1]).trim();
+      const u = norm(r[2]);
+      const mapped = UNIT_MAP.find(x => x[2].some(k => u.indexOf(k) !== -1));
+      decided.push({
+        o: orderNo, d: year + '-' + pad(mon) + '-' + pad(day), at: String(acted[i][0]).trim(),
+        u: mapped ? mapped[1] : String(r[2]).trim(), c: mapped ? mapped[0] : 'Other',
+        it: String(r[COL.ITEM - 1]).trim(), q: r[COL.QTY - 1] === '' ? '' : r[COL.QTY - 1], uom: String(r[COL.UOM - 1]).trim(),
+        aq: r[COL.APPR_QTY - 1] === '' ? '' : r[COL.APPR_QTY - 1], s: status,
+        by: String(r[COL.APPROVED_BY - 1]).trim() || String(r[COL.APPROVER - 1]).trim(),
+        rm: status === 'Rejected' ? (remarks[orderNo] || '') : '', row: CFG.FIRST_ROW + i,
+      });
+    }
 
     if (String(r[10]).trim().toLowerCase() !== 'approved') return;                 // K: APPROVAL
     if (String(r[21]).replace(/[\s.]/g, '').toUpperCase() !== 'PO') return;        // V: PO type
@@ -672,7 +706,56 @@ function reports_(user, req) {
     asOf: Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm'),
   };
   cachePutBig_('reports_' + MODE, out, REPORT_CACHE_SECONDS);
-  return { reports: out };
+  const dec = { lines: decided.reverse(), from: out.from, asOf: out.asOf, unitMap: out.unitMap };
+  cachePutBig_(DEC_CACHE, dec, REPORT_CACHE_SECONDS);
+  return { reports: out, decisionsData: dec };
+}
+
+// ======================= approval decisions report =======================
+// Every line since REPORT_FROM that has a decision (Approved / On Hold / Rejected / Withdrawn), with the
+// approver and, for rejections, the reason. Built in the same pass as the PO reports above.
+const DEC_CACHE = 'decisions_' + MODE;
+
+function decisions_(user, req) {
+  const hit = req && req.fresh ? null : cacheGetBig_(DEC_CACHE);
+  if (hit) return { decisions: hit };
+  return { decisions: reports_(user, { fresh: true }).decisionsData };
+}
+
+/** Latest rejection reason per order number. */
+function remarksIndex_() {
+  const sh = book_().getSheetByName(CFG.REMARKS);
+  const out = {};
+  if (!sh || sh.getLastRow() < 2) return out;
+  sh.getRange(2, 2, sh.getLastRow() - 1, 5).getValues().forEach(r => { const o = String(r[0]).trim(); if (o) out[o] = String(r[4]).trim(); });
+  return out;
+}
+
+/** Puts lines just decided in the app straight into the ready copy of the decisions report. */
+function patchDecisions_(done, decision, user, remark) {
+  if (!done.length) return;
+  const dec = cacheGetBig_(DEC_CACHE);
+  if (!dec) return;
+  const rows = {};
+  done.forEach(d => (rows[d.row] = true));
+  const now = new Date(Date.now() + 330 * 60000), pad = v => (v < 10 ? '0' : '') + v;
+  const at = pad(now.getUTCDate()) + '-' + pad(now.getUTCMonth() + 1) + '(' + pad(now.getUTCHours()) + ':' + pad(now.getUTCMinutes()) + ')';
+  const old = {};
+  dec.lines.forEach(l => { if (rows[l.row]) old[l.row] = l; });
+  const norm = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const fresh = done.map(d => {
+    const r = d.r, u = norm(r[COL.UNIT - 1]);
+    const mapped = UNIT_MAP.find(x => x[2].some(k => u.indexOf(k) !== -1));
+    const prev = old[d.row];
+    return {
+      o: d.orderNo, d: prev ? prev.d : Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), at: at,
+      u: mapped ? mapped[1] : String(r[COL.UNIT - 1]).trim(), c: mapped ? mapped[0] : 'Other',
+      it: String(r[COL.ITEM - 1]).trim(), q: r[COL.QTY - 1] === '' ? '' : r[COL.QTY - 1], uom: String(r[COL.UOM - 1]).trim(),
+      aq: d.qty === null ? '' : d.qty, s: decision, by: user.name, rm: remark, row: d.row,
+    };
+  });
+  dec.lines = fresh.concat(dec.lines.filter(l => !rows[l.row]));
+  cachePutBig_(DEC_CACHE, dec, REPORT_CACHE_SECONDS);
 }
 
 // ======================= small helpers =======================
@@ -703,6 +786,7 @@ function setup() {
   }
   tab_(CFG.DEVICES, ['Email', 'Token', 'Device', 'Updated']);
   tab_(CFG.LOG, ['Time', 'Email', 'Name', 'Action', 'Lines', 'Note']);
+  tab_(CFG.REMARKS, REMARK_HEADER);
   console.log('Done (' + MODE + ' sheet: ' + ss.getName() + '). Fill in the emails and roles in the "' + CFG.USERS + '" tab.');
 }
 
