@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 const TOKEN_KEY = 'nlp.idToken';
 const state = {
   idToken: null, me: null, tab: null, ho: null, mine: null, sel: new Set(), qty: {}, busy: false,
-  viewAs: null,
+  viewAs: null, gen: 0,  // gen changes on every "view as" switch; replies for an older view are ignored
   pick: {},              // HO: approver chosen per line (key -> name), sent with the group's Send button          // admin preview: email of the person whose screens are shown (read-only)
   reports: null, repAt: 0,
   rep: { type: 'nr', view: 'list', cluster: '', unit: '', month: '', age: '', q: '', sort: 'old' },
@@ -87,15 +87,16 @@ function signOut() {
 }
 
 // ---------- start ----------
-async function boot() {
+async function boot(prefetched) {
   if (!configured()) { show('signin'); $('signinMsg').textContent = 'The app is not set up yet: fill in config.js (see SETUP.md).'; return; }
   const saved = state.idToken || store.get(TOKEN_KEY);
   if (!tokenValid(saved)) return startSignIn();
   state.idToken = saved;
   show('loading');
-  try {
-    state.me = await api('me');
-  } catch (e) { return handleError(e); }
+  if (prefetched) state.me = prefetched;
+  else {
+    try { state.me = await api('me'); } catch (e) { return handleError(e); }
+  }
   const u = state.me.user;
   $('who').textContent = `${u.name} · ${roleLabel(u)}`;
   $('modeTag').hidden = state.me.mode === 'LIVE';
@@ -123,11 +124,14 @@ function setupViewAs() {
   $('viewAsPick').value = state.viewAs || '';
 }
 async function changeViewAs(email) {
+  const gen = ++state.gen;
   state.viewAs = email || null;
   state.ho = state.mine = null; state.sel.clear(); state.qty = {}; state.pick = {}; state.tab = null;
   show('loading');
-  try { state.me = await api('me'); } catch (e) { state.viewAs = null; $('viewAsPick').value = ''; show('app'); return handleError(e); }
-  boot();
+  let me;
+  try { me = await api('me'); } catch (e) { if (gen !== state.gen) return; state.viewAs = null; $('viewAsPick').value = ''; show('app'); return handleError(e); }
+  if (gen !== state.gen) return;   // switched again while loading
+  boot(me);
 }
 
 function handleError(e) {
@@ -153,17 +157,18 @@ function setTab(tab) {
 async function refresh(fresh) {
   fresh = fresh === true;   // only the ↻ button re-reads the sheet; otherwise the server's ready copy is used
   if (!state.me) return;
-  const u = state.me.user;
+  const u = state.me.user, gen = state.gen;
   const wait = '<p class="empty">Loading… this can take a few seconds.</p>';
   if (u.isHO && !state.ho) $('listUnassigned').innerHTML = wait;
   if (u.isApprover && !state.mine) $('listPending').innerHTML = wait;
   try {
     const jobs = [];
-    if (u.isHO) jobs.push(api('hoList', { fresh }).then((r) => (state.ho = r)));
-    if (u.isApprover) jobs.push(api('myList', { fresh }).then((r) => (state.mine = r)));
+    if (u.isHO) jobs.push(api('hoList', { fresh }).then((r) => { if (gen === state.gen) state.ho = r; }));
+    if (u.isApprover) jobs.push(api('myList', { fresh }).then((r) => { if (gen === state.gen) state.mine = r; }));
     if (state.tab === 'reports' || state.reports) jobs.push(api('reports', { fresh }).then((r) => { state.reports = r.reports; state.repAt = Date.now(); }));
     await Promise.all(jobs);
-  } catch (e) { return handleError(e); }
+  } catch (e) { if (gen !== state.gen) return; return handleError(e); }
+  if (gen !== state.gen) return;
   // Drop selections for lines that are gone.
   const visible = new Set([...(state.ho ? [...state.ho.unassigned, ...state.ho.waiting] : []), ...(state.mine ? [...state.mine.pending, ...state.mine.onHold] : [])].map(key));
   [...state.sel].forEach((k) => { if (!visible.has(k)) state.sel.delete(k); });
