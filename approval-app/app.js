@@ -153,6 +153,9 @@ function setTab(tab) {
 async function refresh() {
   if (!state.me) return;
   const u = state.me.user;
+  const wait = '<p class="empty">Loading… this can take a few seconds.</p>';
+  if (u.isHO && !state.ho) $('listUnassigned').innerHTML = wait;
+  if (u.isApprover && !state.mine) $('listPending').innerHTML = wait;
   try {
     const jobs = [];
     if (u.isHO) jobs.push(api('hoList').then((r) => (state.ho = r)));
