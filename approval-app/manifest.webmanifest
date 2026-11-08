@@ -1,6 +1,6 @@
 {
-  "name": "NLP Approvals",
-  "short_name": "NLP Approvals",
+  "name": "Summit Purchase Reports and Approvals",
+  "short_name": "Summit Purchase Reports and Approvals",
   "description": "Approve non-local purchase requisitions",
   "start_url": "./",
   "scope": "./",
