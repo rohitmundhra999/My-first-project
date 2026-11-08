@@ -150,7 +150,8 @@ function setTab(tab) {
   refresh();
 }
 
-async function refresh() {
+async function refresh(fresh) {
+  fresh = fresh === true;   // only the ↻ button re-reads the sheet; otherwise the server's ready copy is used
   if (!state.me) return;
   const u = state.me.user;
   const wait = '<p class="empty">Loading… this can take a few seconds.</p>';
@@ -158,9 +159,9 @@ async function refresh() {
   if (u.isApprover && !state.mine) $('listPending').innerHTML = wait;
   try {
     const jobs = [];
-    if (u.isHO) jobs.push(api('hoList').then((r) => (state.ho = r)));
-    if (u.isApprover) jobs.push(api('myList').then((r) => (state.mine = r)));
-    if (state.tab === 'reports' || state.reports) jobs.push(api('reports').then((r) => { state.reports = r.reports; state.repAt = Date.now(); }));
+    if (u.isHO) jobs.push(api('hoList', { fresh }).then((r) => (state.ho = r)));
+    if (u.isApprover) jobs.push(api('myList', { fresh }).then((r) => (state.mine = r)));
+    if (state.tab === 'reports' || state.reports) jobs.push(api('reports', { fresh }).then((r) => { state.reports = r.reports; state.repAt = Date.now(); }));
     await Promise.all(jobs);
   } catch (e) { return handleError(e); }
   // Drop selections for lines that are gone.
@@ -505,7 +506,7 @@ document.querySelectorAll('[data-rview]').forEach((b) => (b.onclick = () => { st
   ($(id).onchange = (e) => { state.rep[k] = e.target.value; if (k === 'cluster') state.rep.unit = ''; renderReports(); }));
 $('fSearch').oninput = (e) => { state.rep.q = e.target.value; renderReports(); };
 $('btnClear').onclick = () => { Object.assign(state.rep, { cluster: '', unit: '', month: '', age: '', q: '' }); renderReports(); };
-$('btnRefresh').onclick = () => run('refresh', refresh);
+$('btnRefresh').onclick = () => { toast('Reading the latest from the sheet…'); run('refresh', () => refresh(true)); };
 $('btnSignOut').onclick = signOut;
 $('btnAssign').onclick = assignSelected;
 document.querySelectorAll('[data-bulk]').forEach((b) => (b.onclick = () => decide(b.dataset.bulk, selectedLines())));
