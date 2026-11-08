@@ -55,11 +55,12 @@ function doGet() {
 function doPost(e) {
   try {
     const req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
-    const user = auth_(req.idToken);
-    const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_ };
+    const realUser = auth_(req.idToken);
+    const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_, reports: reports_ };
     const fn = handlers[req.action];
     if (!fn) throw appError_('BAD_REQUEST', 'Unknown action.');
-    return json_(Object.assign({ ok: true }, fn(user, req)));
+    const user = previewUser_(realUser, req);
+    return json_(Object.assign({ ok: true }, fn(user, req, realUser)));
   } catch (err) {
     const code = err && err.appCode ? err.appCode : 'SERVER';
     if (code === 'SERVER') console.error(err && err.stack ? err.stack : err);
@@ -69,13 +70,42 @@ function doPost(e) {
 
 // ======================= actions =======================
 
-function me_(user) {
+function me_(user, req, realUser) {
+  const admin = isAdmin_(realUser);
   return {
     user: { name: user.name, email: user.email, isHO: user.isHO, isApprover: user.isApprover },
     approvers: user.isHO ? activeUsers_().filter(u => u.isApprover).map(u => u.name) : [],
     decisions: DECISIONS,
     mode: MODE,
+    // Admin only: everyone in APP USERS, so the admin can preview the app as them.
+    admin: admin ? { name: realUser.name, email: realUser.email } : null,
+    users: admin ? activeUsers_().map(u => ({ name: u.name, email: u.email, isHO: u.isHO, isApprover: u.isApprover })) : [],
+    preview: user.previewBy ? true : false,
   };
+}
+
+// ======================= admin preview ("view as") =======================
+// The admin (the script owner, or anyone with ADMIN in their APP USERS role) can see the app exactly as
+// another user sees it. Preview is READ-ONLY: nothing can be assigned, decided or registered while
+// previewing, so the sheet and the APP LOG always show the real person who acted.
+
+const WRITE_ACTIONS = ['assign', 'decide', 'register'];
+
+function isAdmin_(u) {
+  if (u.isAdmin) return true;
+  let owner = '';
+  try { owner = String(Session.getEffectiveUser().getEmail() || '').toLowerCase(); } catch (e) {}
+  return !!owner && u.email === owner;
+}
+
+function previewUser_(realUser, req) {
+  const email = String(req.viewAs || '').trim().toLowerCase();
+  if (!email || email === realUser.email) return realUser;
+  if (!isAdmin_(realUser)) throw appError_('FORBIDDEN', 'Only the admin can preview the app as someone else.');
+  if (WRITE_ACTIONS.indexOf(req.action) !== -1) throw appError_('PREVIEW', 'This is a preview, so nothing can be changed. Switch back to yourself to make changes.');
+  const target = activeUsers_().find(u => u.email === email);
+  if (!target) throw appError_('BAD_REQUEST', email + ' is not an active user in ' + CFG.USERS + '.');
+  return Object.assign({}, target, { previewBy: realUser.email });
 }
 
 /** HO: lines with no decision yet, split into "needs an approver" and "waiting for approver". */
@@ -211,7 +241,7 @@ function activeUsers_() {
   USERS_CACHE_ = sh.getDataRange().getValues().slice(1)
     .map(r => ({ name: String(r[0]).trim(), email: String(r[1]).trim().toLowerCase(), role: String(r[2]).toUpperCase(), active: String(r[3]).trim().toUpperCase() }))
     .filter(u => u.name && u.email && u.active !== 'NO')
-    .map(u => ({ name: u.name, email: u.email, isHO: /\bHO\b/.test(u.role), isApprover: /APPROVER/.test(u.role) }));
+    .map(u => ({ name: u.name, email: u.email, isHO: /\bHO\b/.test(u.role), isApprover: /APPROVER/.test(u.role), isAdmin: /ADMIN/.test(u.role) }));
   return USERS_CACHE_;
 }
 
@@ -358,6 +388,125 @@ function fcmAccessToken_(sa) {
   const token = JSON.parse(res.getContentText()).access_token;
   cache.put('fcm_access', token, 3000);
   return token;
+}
+
+// ======================= live reports (Material Not Received / Invoice Pending) =======================
+// Same rules as the daily emailed reports (sheet-scripts/material not recd.gs and invoice pending.gs):
+//   - from 1 April 2026, APPROVAL = Approved, TYPE (col V) = PO
+//   - same PO number counted once; a PO is left out if its vendor is Central Store
+//   - Material not received: RECEIVED (AB) empty and AD empty
+//   - Invoice pending:      RECEIVED (AB) filled and INVOICE (AC) = UPDATE
+// Everyone in APP USERS can see the reports. Filters are applied in the app.
+
+const REPORT_FROM = { y: 2026, m: 4, d: 1 };   // 1 April 2026
+const REPORT_CACHE_SECONDS = 120;              // the sheet is re-read at most every 2 minutes
+
+// Cluster, unit name shown in reports, and words used to recognise the unit in FMS (same as the emails)
+const UNIT_MAP = [
+  ['Arunachal Pradesh', 'DIRANG', ['dirang']],
+  ['Assam', 'Green', ['green']],
+  ['Darjeeling', 'Bougainvillea', ['bougainvillea']],
+  ['Darjeeling', 'Enigma', ['enigma']],
+  ['Darjeeling', 'Grace', ['grace']],
+  ['Darjeeling', 'Hermon', ['hermon']],
+  ['Darjeeling', 'Mall Stone', ['mallstone', 'mall']],
+  ['Darjeeling', 'Montana', ['montana']],
+  ['Darjeeling', 'Oakdene', ['oakden']],
+  ['Darjeeling', 'POSHTEL', ['poshtel']],
+  ['Darjeeling', 'Swiss', ['swiss']],
+  ['Darjeeling', 'West Gate', ['westgate', 'west']],
+  ['Gangtok', 'Grand', ['grand']],
+  ['Gangtok', 'Namnang', ['namnang']],
+  ['Gangtok', 'Norling', ['norling']],
+  ['Gangtok', 'North Star', ['northstar']],
+  ['Gangtok', 'Signature', ['signature']],
+  ['Gangtok', 'Ttakshang', ['ttakshang']],
+  ['Goa', 'Calangute', ['calangute']],
+  ['HP', 'Le Royale', ['royale']],
+  ['Kalimpong', 'Barsana', ['barsana']],
+  ['Kalimpong', 'Samthar', ['samthar']],
+  ['Kalimpong', 'Sherpa', ['sherpa']],
+  ['North Sikkim', 'Gangchen', ['gangchen']],
+  ['North Sikkim', 'Khangri', ['khangri']],
+  ['North Sikkim', 'Panghen', ['panghen']],
+  ['Pelling', 'Newa', ['newa']],
+  ['Pelling', 'Tashi Ghang', ['tashi']],
+  ['Siliguri', 'Head Office', ['headoffice', 'head']],
+  ['Siliguri', 'Singalila', ['singalila']],
+  ['UK', 'Ganges', ['ganges']],
+  ['UK', 'Jungle', ['jungle']],
+  ['Rajasthan', 'SALASAR', ['salasar']],
+];
+
+function reports_() {
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get('reports_' + MODE);
+  if (hit) return { reports: JSON.parse(hit) };
+
+  const sh = fms_();
+  const n = sh.getLastRow() - CFG.FIRST_ROW + 1;
+  const rows = n > 0 ? sh.getRange(CFG.FIRST_ROW, 1, n, 33).getValues() : [];
+  const stamps = n > 0 ? sh.getRange(CFG.FIRST_ROW, COL.TS, n, 1).getDisplayValues() : [];
+  const fromKey = REPORT_FROM.y * 10000 + REPORT_FROM.m * 100 + REPORT_FROM.d;
+  const pad = v => (v < 10 ? '0' : '') + v;
+  const norm = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  const nr = { pos: {}, order: [], excluded: {} };
+  const ip = { pos: {}, order: [], excluded: {} };
+  let year = CFG.START_YEAR, prevMonth = 1;
+
+  rows.forEach((r, i) => {
+    const m = String(stamps[i][0]).match(/^(\d{1,2})-(\d{1,2})/);
+    if (!m) return;
+    const day = +m[1], mon = +m[2];
+    if (prevMonth - mon >= 6) year++;   // a new year started
+    prevMonth = mon;
+    if (year * 10000 + mon * 100 + day < fromKey) return;
+
+    if (String(r[10]).trim().toLowerCase() !== 'approved') return;                 // K: APPROVAL
+    if (String(r[21]).replace(/[\s.]/g, '').toUpperCase() !== 'PO') return;        // V: PO type
+    const received = String(r[27]).trim() !== '';                                  // AB
+    const isNR = !received && String(r[29]).trim() === '';                         // AD empty
+    const isIP = received && String(r[28]).trim().toUpperCase() === 'UPDATE';      // AC = UPDATE
+    if (!isNR && !isIP) return;
+
+    const key = String(r[19]).trim().toUpperCase();                                // T: PO number
+    if (!key) return;
+    const target = isNR ? nr : ip;
+    if (String(r[32]).toLowerCase().replace(/[^a-z]/g, '').indexOf('centralstore') !== -1) { target.excluded[key] = true; return; }
+
+    let po = target.pos[key];
+    if (!po) {
+      const u = norm(r[2]);
+      const mapped = UNIT_MAP.find(x => x[2].some(k => u.indexOf(k) !== -1));
+      po = target.pos[key] = {
+        po: String(r[19]).trim(),
+        unitRaw: String(r[2]).trim(),
+        unit: mapped ? mapped[1] : String(r[2]).trim(),
+        cluster: mapped ? mapped[0] : 'Other',
+        vendor: String(r[32]).trim(),
+        amount: Number(String(r[20]).replace(/[^0-9.]/g, '')) || 0,
+        date: year + '-' + pad(mon) + '-' + pad(day),
+        items: 0,
+        itemNames: [],
+      };
+      target.order.push(key);
+    }
+    po.items++;
+    const item = String(r[COL.ITEM - 1]).trim();
+    if (item && po.itemNames.length < 8) po.itemNames.push(item);
+  });
+
+  const list = t => t.order.filter(k => !t.excluded[k]).map(k => t.pos[k]);
+  const out = {
+    notReceived: list(nr),
+    invoicePending: list(ip),
+    unitMap: UNIT_MAP.map(x => [x[0], x[1]]),
+    from: REPORT_FROM.y + '-' + pad(REPORT_FROM.m) + '-' + pad(REPORT_FROM.d),
+    asOf: Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm'),
+  };
+  try { cache.put('reports_' + MODE, JSON.stringify(out), REPORT_CACHE_SECONDS); } catch (e) { /* too big to cache: fine */ }
+  return { reports: out };
 }
 
 // ======================= small helpers =======================
