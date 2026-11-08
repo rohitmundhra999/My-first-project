@@ -111,7 +111,7 @@ function previewUser_(realUser, req) {
 /** HO: lines with no decision yet, split into "needs an approver" and "waiting for approver". */
 function hoList_(user) {
   requireHO_(user);
-  const lines = readLines_().filter(l => !l.approval);
+  const lines = readLines_(r => !String(r[COL.APPROVAL - 1]).trim());
   return {
     unassigned: lines.filter(l => !l.approver),
     waiting: lines.filter(l => l.approver),
@@ -152,7 +152,7 @@ function assign_(user, req) {
 /** Approver: lines assigned to me that are undecided or On Hold. */
 function myList_(user) {
   requireApprover_(user);
-  const mine = readLines_().filter(l => same_(l.approver, user.name));
+  const mine = readLines_(r => same_(r[COL.APPROVER - 1], user.name) && ['', 'On Hold'].indexOf(String(r[COL.APPROVAL - 1]).trim()) !== -1);
   return {
     pending: mine.filter(l => !l.approval),
     onHold: mine.filter(l => l.approval === 'On Hold'),
@@ -245,7 +245,7 @@ function activeUsers_() {
   return USERS_CACHE_;
 }
 
-function readLines_() {
+function readLines_(keep) {
   const sh = fms_();
   const last = sh.getLastRow();
   if (last < CFG.FIRST_ROW) return [];
@@ -253,7 +253,7 @@ function readLines_() {
   const values = sh.getRange(CFG.FIRST_ROW, 1, n, COL.APPR_QTY).getValues();
   const stamps = sh.getRange(CFG.FIRST_ROW, COL.TS, n, 1).getDisplayValues();
   const cutoff = Date.now() - CFG.LOOKBACK_DAYS * 86400000;
-  const stock = stockIndex_();
+  let stock = null;
   const out = [];
   let year = CFG.START_YEAR, prevMonth = 1;
   values.forEach((r, i) => {
@@ -266,6 +266,8 @@ function readLines_() {
     if (!orderNo) return;
     const date = new Date(year, mon - 1, +m[1], +(m[3] || 0), +(m[4] || 0));
     if (date.getTime() < cutoff) return;
+    if (keep && !keep(r)) return;
+    if (!stock) stock = stockIndex_();
     out.push({
       row: CFG.FIRST_ROW + i, orderNo: orderNo, ts: date.getTime(),
       when: Utilities.formatDate(date, CFG.TZ, 'dd MMM, HH:mm'),
@@ -296,22 +298,27 @@ function stockIndex_() {
   const first = Math.max(2, last - FORMDATA.MAX_ROWS + 1);
   const rows = sh.getRange(first, 1, last - first + 1, FORMDATA.STOCK_UOM).getValues();
   const cutoff = Date.now() - (CFG.LOOKBACK_DAYS + 10) * 86400000;
-  rows.forEach(r => {
-    let t = r[FORMDATA.TS - 1];
-    if (!(t instanceof Date)) {
+  const IST = 330 * 60000;   // India time, worked out by hand: Utilities.formatDate on every row is far too slow
+  for (let i = rows.length - 1; i >= 0; i--) {   // newest first, stop at the first row older than the cutoff
+    const r = rows[i];
+    let p, t = r[FORMDATA.TS - 1];
+    if (t instanceof Date) {
+      if (t.getTime() < cutoff) break;
+      const d = new Date(t.getTime() + IST);
+      p = [d.getUTCDate(), d.getUTCMonth() + 1, d.getUTCHours(), d.getUTCMinutes()];
+    } else {
       const m = String(t).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})/);
-      if (!m) return;
-      t = new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5]);
+      if (!m) continue;
+      if (Date.UTC(+m[3], +m[2] - 1, +m[1]) - IST < cutoff) break;
+      p = [+m[1], +m[2], +m[4], +m[5]];
     }
-    if (t.getTime() < cutoff) return;
-    const p = Utilities.formatDate(t, CFG.TZ, 'd|M|H|m').split('|').map(Number);
     const key = stockKey_(r[FORMDATA.UNIT - 1], r[FORMDATA.ITEM - 1], r[FORMDATA.QTY - 1], p[0], p[1]);
     (index[key] = index[key] || []).push({
       minute: p[2] * 60 + p[3],
       stock: String(r[FORMDATA.STOCK - 1]).trim(),
       uom: String(r[FORMDATA.STOCK_UOM - 1]).trim(),
     });
-  });
+  }
   return index;
 }
 
