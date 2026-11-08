@@ -326,8 +326,11 @@ function renderDecisions() {
   const D = state.dec, f = state.df;
   document.querySelectorAll('[data-dview]').forEach((b) => b.classList.toggle('on', b.dataset.dview === f.view));
   if (!D) { $('decBody').innerHTML = '<p class="empty">Loading report… this can take a few seconds.</p>'; $('dTiles').innerHTML = ''; return; }
-  const approvers = [...new Set(D.lines.map((l) => l.by).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  f.approver = fillSelect('dApprover', 'All approvers', approvers.map((a) => [a, a]), f.approver);
+  // Every approver set up in the app, plus any other name found in the sheet, with how many lines each decided.
+  const perApprover = {};
+  D.lines.forEach((l) => { if (l.by) perApprover[l.by] = (perApprover[l.by] || 0) + 1; });
+  const approvers = [...new Set([...(D.approvers || []), ...Object.keys(perApprover)])].sort((a, b) => a.localeCompare(b));
+  f.approver = fillSelect('dApprover', 'All approvers', approvers.map((a) => [a, `${a} (${perApprover[a] || 0})`]), f.approver);
   f.status = fillSelect('dStatus', 'All statuses', STATUSES.map((x) => [x, x]), f.status);
   const clusters = [...new Set(D.unitMap.map((x) => x[0]).concat(D.lines.some((l) => l.c === 'Other') ? ['Other'] : []))];
   f.cluster = fillSelect('dCluster', 'All clusters', clusters.map((c) => [c, c]), f.cluster);
