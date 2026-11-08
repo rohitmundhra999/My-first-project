@@ -396,3 +396,54 @@ function testNotification() {
   const me = Session.getActiveUser().getEmail().toLowerCase();
   console.log(JSON.stringify(notify_(me, 'Test from NLP Approvals', 'If you can read this on your phone, notifications work.')));
 }
+
+// ============ Notify as soon as a name is picked in FMS column L (in the sheet) ============
+
+/** Run ONCE from the editor. Makes the server watch the FMS sheet for edits. */
+function installFmsTrigger() {
+  ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === 'onFmsEdit')
+    .forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('onFmsEdit').forSpreadsheet(CFG.SHEET_ID).onEdit().create();
+  console.log('Now watching column L of: ' + book_().getName());
+}
+
+/** Runs by itself whenever someone picks or types a name in FMS column L. */
+function onFmsEdit(e) {
+  const r = e && e.range;
+  if (!r || r.getSheet().getName() !== CFG.FMS) return;
+  const firstCol = r.getColumn(), lastCol = firstCol + r.getNumColumns() - 1;
+  if (COL.APPROVER < firstCol || COL.APPROVER > lastCol) return;
+  const top = Math.max(r.getRow(), CFG.FIRST_ROW);
+  const bottom = r.getRow() + r.getNumRows() - 1;
+  if (bottom < top) return;
+
+  const rows = r.getSheet().getRange(top, 1, bottom - top + 1, COL.APPR_QTY).getValues();
+  const byApprover = {};
+  rows.forEach(row => {
+    const name = String(row[COL.APPROVER - 1]).trim();
+    if (!name || String(row[COL.APPROVAL - 1]).trim()) return; // cleared, or already decided
+    (byApprover[name] = byApprover[name] || []).push({
+      orderNo: String(row[COL.ORDER - 1]).trim(),
+      unit: String(row[COL.UNIT - 1]).trim(),
+      item: String(row[COL.ITEM - 1]).trim(),
+    });
+  });
+
+  let editor = '';
+  try { editor = String(e.user && e.user.getEmail ? e.user.getEmail() : '').toLowerCase(); } catch (err) {}
+  const users = activeUsers_();
+  Object.keys(byApprover).forEach(name => {
+    const approver = users.find(u => u.isApprover && same_(u.name, name));
+    const lines = byApprover[name];
+    if (!approver) { console.warn('No active approver named "' + name + '" in APP USERS'); return; }
+    const title = lines.length === 1 ? 'New purchase line to approve' : lines.length + ' purchase lines to approve';
+    const body = unique_(lines.map(l => l.unit)).join(', ') + ': ' +
+      lines.slice(0, 3).map(l => l.item).join(', ') +
+      (lines.length > 3 ? ' and ' + (lines.length - 3) + ' more' : '') + '. Assigned in the sheet.';
+    const sent = notify_(approver.email, title, body);
+    tab_(CFG.LOG, ['Time', 'Email', 'Name', 'Action', 'Lines', 'Note']).appendRow([
+      new Date(), editor, '(sheet)', 'ASSIGN', lines.map(l => l.orderNo).join(', '),
+      'to ' + approver.name + ' | push ' + sent.push + (sent.email ? ' | emailed' : '')]);
+  });
+}
