@@ -734,12 +734,29 @@ function installFmsTrigger() {
   console.log('Now watching column L of: ' + book_().getName());
 }
 
+/** Re-reads the open lines after a change in the sheet, so the app shows it within seconds.
+ * Edits that arrive while a re-read is running are picked up by that same run. */
+function rebuildOpenLines_() {
+  const c = CacheService.getScriptCache();
+  c.put('open_dirty', String(Date.now()) + Math.random(), 600);
+  if (c.get('open_rebuilding')) return;
+  c.put('open_rebuilding', '1', 240);
+  try {
+    for (let i = 0; i < 3; i++) {
+      const mark = c.get('open_dirty');
+      openLines_(true);
+      if (c.get('open_dirty') === mark) break;
+    }
+  } finally { c.remove('open_rebuilding'); }
+}
+
 /** Runs by itself whenever someone picks or types a name in FMS column L. */
 function onFmsEdit(e) {
   const r = e && e.range;
   if (!r || r.getSheet().getName() !== CFG.FMS) return;
   const firstCol = r.getColumn(), lastCol = firstCol + r.getNumColumns() - 1;
-  if (COL.APPROVER < firstCol || COL.APPROVER > lastCol) return;
+  if (firstCol > COL.APPR_QTY) return; // only columns A-N matter to the app
+  if (COL.APPROVER < firstCol || COL.APPROVER > lastCol) return rebuildOpenLines_(); // e.g. approval cleared or a new line typed in
   const top = Math.max(r.getRow(), CFG.FIRST_ROW);
   const bottom = r.getRow() + r.getNumRows() - 1;
   if (bottom < top) return;
@@ -776,4 +793,5 @@ function onFmsEdit(e) {
       new Date(), editor, '(sheet)', 'ASSIGN', lines.map(l => l.orderNo).join(', '),
       'to ' + approver.name + ' | push ' + sent.push + (sent.email ? ' | emailed' : '')]);
   });
+  rebuildOpenLines_(); // pick up lines that were not in the app's ready copy (e.g. a decision cleared in the sheet)
 }
