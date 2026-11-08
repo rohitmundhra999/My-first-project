@@ -485,11 +485,17 @@ async function registerPush(ask) {
     const reg = await navigator.serviceWorker.register('firebase-messaging-sw.js');
     const token = await getToken(messaging, { vapidKey: CFG.VAPID_KEY, serviceWorkerRegistration: reg });
     if (!token) throw new Error('No notification token');
-    if (store.get('nlp.pushToken') !== token || ask) {
+    { // register on every open, so the server always has this device's current token
       await api('register', { token, device: navigator.userAgent.slice(0, 120) });
       store.set('nlp.pushToken', token);
     }
-    onMessage(messaging, (m) => { toast(m.notification?.title || 'New update'); refresh(); });
+    onMessage(messaging, (m) => { // app is open: show it in the app AND as a phone notification
+    const title = m.notification?.title || 'New update';
+    toast(title);
+    try { reg.showNotification(title, { body: m.notification?.body || '', icon: 'icon-192.png', tag: 'nlp-approval', renotify: true, vibrate: [200, 100, 200] }); } catch { /* ignore */ }
+    refresh();
+  });
+  addTestButton();
     banner('');
     if (ask) toast('Notifications are on for this phone.');
   } catch (e) {
@@ -498,6 +504,20 @@ async function registerPush(ask) {
     banner('Could not turn on notifications on this device. <button id="btnNotify" class="btn sm">Try again</button>');
     $('btnNotify').onclick = () => registerPush(true);
   }
+}
+
+// Bell button in the header: sends a test notification to all of my devices.
+function addTestButton() {
+  if ($('btnTestPush')) return;
+  const b = document.createElement('button');
+  b.id = 'btnTestPush'; b.className = 'btn ghost'; b.textContent = '🔔';
+  b.title = 'Send a test notification to my devices'; b.setAttribute('aria-label', b.title);
+  b.onclick = () => run('testPush', async () => {
+    const r = await api('testPush');
+    const n = r.notified.push;
+    toast(n ? `Test notification sent to ${n} device${n > 1 ? 's' : ''}.` : 'No device has notifications turned on yet.', !n);
+  });
+  document.querySelector('.bar-actions').prepend(b);
 }
 
 // ---------- wiring ----------
