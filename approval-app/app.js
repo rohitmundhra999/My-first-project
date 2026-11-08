@@ -4,7 +4,8 @@ const $ = (id) => document.getElementById(id);
 const TOKEN_KEY = 'nlp.idToken';
 const state = {
   idToken: null, me: null, tab: null, ho: null, mine: null, sel: new Set(), qty: {}, busy: false,
-  viewAs: null,          // admin preview: email of the person whose screens are shown (read-only)
+  viewAs: null,
+  pick: {},              // HO: approver chosen per line (key -> name), sent with the group's Send button          // admin preview: email of the person whose screens are shown (read-only)
   reports: null, repAt: 0,
   rep: { type: 'nr', view: 'list', cluster: '', unit: '', month: '', age: '', q: '', sort: 'old' },
 };
@@ -123,7 +124,7 @@ function setupViewAs() {
 }
 async function changeViewAs(email) {
   state.viewAs = email || null;
-  state.ho = state.mine = null; state.sel.clear(); state.qty = {}; state.tab = null;
+  state.ho = state.mine = null; state.sel.clear(); state.qty = {}; state.pick = {}; state.tab = null;
   show('loading');
   try { state.me = await api('me'); } catch (e) { state.viewAs = null; $('viewAsPick').value = ''; show('app'); return handleError(e); }
   boot();
@@ -295,6 +296,7 @@ function groupHtml(lines, mode, emptyMsg) {
     const g = groups[groups.length - 1];
     if (g && g.unit === l.unit && g.when === l.when) g.lines.push(l); else groups.push({ unit: l.unit, when: l.when, lines: [l] });
   });
+  if (mode === 'assign' || mode === 'reassign') return groups.map((g) => assignGroupHtml(g, mode)).join('');
   return groups.map((g) => {
     const allSel = g.lines.every((l) => state.sel.has(key(l)));
     return `<article class="group">
@@ -303,6 +305,61 @@ function groupHtml(lines, mode, emptyMsg) {
       ${g.lines.map((l) => lineHtml(l, mode)).join('')}
     </article>`;
   }).join('');
+}
+
+// ---------- HO: pick an approver on each line ----------
+const approverOptions = (current) => '<option value="">Choose approver…</option>' +
+  (state.me?.approvers || []).map((n) => `<option ${n === current ? 'selected' : ''}>${esc(n)}</option>`).join('');
+const stockHtml = (l) => {
+  const req = `<span class="need">Required <b>${esc(l.qty)} ${esc(l.uom)}</b></span>`;
+  const st = l.stock && l.stock.qty !== '' ? `<span class="stock">Stock in hand <b>${esc(l.stock.qty)} ${esc(l.stock.uom || '')}</b></span>`
+    : '<span class="stock none">Stock in hand: not given</span>';
+  return `<div class="reqstock">${req}${st}</div>`;
+};
+
+function assignGroupHtml(g, mode) {
+  const keys = g.lines.map(key).join(',');
+  const dis = state.me.preview ? 'disabled' : '';
+  const ready = g.lines.filter((l) => state.pick[key(l)] && state.pick[key(l)] !== l.approver).length;
+  return `<article class="group">
+    <div class="ghead assignhead">
+      <span><b>${esc(g.unit)}</b> <span class="sub">${esc(g.when)} · ${g.lines.length} line${g.lines.length > 1 ? 's' : ''}</span></span>
+      ${g.lines.length > 1 ? `<select class="gpick" data-gpick="${esc(keys)}" ${dis} aria-label="Approver for all lines of ${esc(g.unit)}">${approverOptions('').replace('Choose approver…', 'Same approver for all…')}</select>` : ''}
+    </div>
+    ${g.lines.map((l) => {
+      const k = key(l), meta = [l.category, l.orderNo].filter(Boolean).map(esc).join(' · ');
+      const pic = l.pic ? ` <a href="${esc(l.pic)}" target="_blank" rel="noopener">photo</a>` : '';
+      const chosen = state.pick[k] ?? l.approver ?? '';
+      return `<div class="line">
+        <div class="lmain"><span class="item">${esc(l.item)}</span><span class="sub">${meta}${pic}</span></div>
+        ${stockHtml(l)}
+        <label class="pickrow"><span class="sub">Approver</span>
+          <select data-pick="${esc(k)}" ${dis} aria-label="Approver for ${esc(l.item)}">${approverOptions(chosen)}</select></label>
+      </div>`;
+    }).join('')}
+    ${state.me.preview ? '' : `<div class="gfoot"><span class="sub">${ready ? ready + ' line' + (ready > 1 ? 's' : '') + ' ready' : mode === 'reassign' ? 'Change the approver to send again' : 'Choose an approver for each line'}</span>
+      <button class="btn sm primary" data-gsend="${esc(keys)}" ${ready ? '' : 'disabled'}>Send${ready ? ' (' + ready + ')' : ''}</button></div>`}
+  </article>`;
+}
+
+function sendGroup(keys) {
+  const pool = [...(state.ho?.unassigned || []), ...(state.ho?.waiting || [])];
+  const lines = pool.filter((l) => keys.includes(key(l)) && state.pick[key(l)] && state.pick[key(l)] !== l.approver);
+  if (!lines.length) return toast('Choose an approver first.', true);
+  const byApprover = {};
+  lines.forEach((l) => (byApprover[state.pick[key(l)]] = byApprover[state.pick[key(l)]] || []).push(l));
+  run('assign', async () => {
+    const msgs = [], skipped = [];
+    for (const [approver, ls] of Object.entries(byApprover)) {
+      const r = await api('assign', { approver, items: ls.map((l) => ({ row: l.row, orderNo: l.orderNo })) });
+      ls.forEach((l) => delete state.pick[key(l)]);
+      const how = r.notified.push ? 'notified on phone' : r.notified.email ? 'notified by email' : 'not notified';
+      msgs.push(`${r.assigned} to ${r.approver} (${how})`);
+      skipped.push(...r.skipped);
+    }
+    toast('Sent: ' + msgs.join('; ') + '.' + skippedText(skipped), skipped.length > 0);
+    await refresh();
+  });
 }
 
 function lineHtml(l, mode) {
@@ -315,6 +372,7 @@ function lineHtml(l, mode) {
     return `<div class="line" data-key="${esc(k)}">
       <label class="lhead"><input type="checkbox" data-key="${esc(k)}" ${checked}>
         <span class="lmain"><span class="item">${hold}${esc(l.item)}</span><span class="sub">${meta}${pic}</span></span></label>
+      <div class="indent">${stockHtml(l)}</div>
       <div class="lact">
         <label class="qty">Qty <input type="number" inputmode="decimal" min="0" step="any" value="${esc(k in state.qty ? state.qty[k] : (l.approvedQty !== '' && l.approvedQty != null ? l.approvedQty : l.qty))}" data-qty="${esc(k)}" aria-label="Quantity for ${esc(l.item)}"> <span class="sub">${esc(l.uom)} (asked ${esc(l.qty)})</span></label>
         <div class="btns">
@@ -338,9 +396,9 @@ function selectedLines() {
 function updateDocks() {
   const n = selectedLines().length;
   const label = `${n} selected`;
-  $('assignDock').hidden = !(state.tab === 'assign' && n); $('assignCount').textContent = label;
+  $('assignDock').hidden = true;
   $('approveDock').hidden = !(state.tab === 'approve' && n); $('approveCount').textContent = label;
-  document.body.classList.toggle('docked', !!n);
+  document.body.classList.toggle('docked', !!n && state.tab === 'approve');
 }
 
 // ---------- actions ----------
@@ -454,8 +512,15 @@ document.addEventListener('change', (e) => {
   if (t.matches('input[type=checkbox][data-key]')) { t.checked ? state.sel.add(t.dataset.key) : state.sel.delete(t.dataset.key); render(); }
   else if (t.matches('input[type=checkbox][data-group]')) { t.dataset.group.split(',').forEach((k) => (t.checked ? state.sel.add(k) : state.sel.delete(k))); render(); }
 });
+document.addEventListener('change', (e) => {
+  const t = e.target;
+  if (t.matches('select[data-pick]')) { state.pick[t.dataset.pick] = t.value; render(); }
+  else if (t.matches('select[data-gpick]')) { if (t.value) t.dataset.gpick.split(',').forEach((k) => (state.pick[k] = t.value)); render(); }
+});
 document.addEventListener('input', (e) => { if (e.target.matches('[data-qty]')) state.qty[e.target.dataset.qty] = e.target.value; });
 document.addEventListener('click', (e) => {
+  const gs = e.target.closest('[data-gsend]');
+  if (gs) return sendGroup(gs.dataset.gsend.split(','));
   const c = e.target.closest('[data-cell-unit]');
   if (c) { Object.assign(state.rep, { unit: c.dataset.cellUnit, month: c.dataset.cellMonth, view: 'list' }); renderReports(); window.scrollTo(0, 0); return; }
   const b = e.target.closest('[data-one]');

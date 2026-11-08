@@ -107,6 +107,7 @@ details.waiting summary { cursor: pointer; font-weight: 600; color: var(--ink-2)
 body.preview .viewas { background: #fff4d6; }
 body.preview .dock, body.preview .lact .btns, body.preview #banner button { display: none !important; }
 body.preview .line input[type=checkbox], body.preview .ghead input[type=checkbox] { pointer-events: none; opacity: .45; }
+@media (prefers-color-scheme: dark) { .reqstock .stock { background: #1f3a22; } }
 
 /* ---- reports ---- */
 .seg { display: flex; gap: 0; margin: 14px 0 10px; background: var(--surface-2); border-radius: 10px; padding: 3px; }
@@ -142,3 +143,20 @@ table.matrix { border-collapse: collapse; font-size: 13px; width: 100%; font-var
 .matrix button.cell { font: inherit; border: 0; background: transparent; color: var(--accent); cursor: pointer; padding: 0; text-decoration: underline; }
 .matrix .zero { color: var(--muted); }
 .asof { text-align: center; margin-top: 12px; }
+
+/* ---- HO: approver per line ---- */
+.assignhead { justify-content: space-between; flex-wrap: wrap; cursor: default; }
+.gpick, .pickrow select { font: inherit; font-size: 14px; padding: 7px 8px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); min-height: 38px; min-width: 0; }
+.gpick { max-width: 100%; }
+.pickrow { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.pickrow select { flex: 1; max-width: 360px; }
+.pickrow select:disabled, .gpick:disabled { opacity: .7; }
+.gfoot { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); background: var(--surface-2); }
+.btn:disabled { opacity: .45; cursor: default; }
+/* requirement vs stock in hand */
+.reqstock { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; font-size: 13px; }
+.reqstock span { padding: 3px 8px; border-radius: 8px; background: var(--surface-2); color: var(--ink-2); }
+.reqstock b { color: var(--ink); }
+.reqstock .stock { background: #e3f0e4; }
+.reqstock .stock.none { background: var(--surface-2); font-style: italic; }
+.indent { margin-left: 30px; }
