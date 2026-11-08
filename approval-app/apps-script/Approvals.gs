@@ -115,6 +115,7 @@ function hoList_(user, req) {
   return {
     unassigned: lines.filter(l => !l.approver),
     waiting: lines.filter(l => l.approver),
+    cache: CACHE_INFO_,
   };
 }
 
@@ -358,8 +359,9 @@ function findStock_(index, r, orderNo, day, mon, hh, mm) {
 const OPEN_CACHE = 'open_lines_' + MODE;
 const OPEN_CACHE_SECONDS = 900;
 
+const CACHE_INFO_ = {};
 function openLines_(fresh) {
-  if (!fresh) { const hit = cacheGetBig_(OPEN_CACHE); if (hit) return hit; }
+  if (!fresh) { const hit = cacheGetBig_(OPEN_CACHE); CACHE_INFO_.hit = !!hit; if (hit) return hit; }
   const lines = readLines_(r => { const a = String(r[COL.APPROVAL - 1]).trim(); return a === '' || a === 'On Hold'; });
   cachePutBig_(OPEN_CACHE, lines, OPEN_CACHE_SECONDS);
   return lines;
@@ -378,11 +380,13 @@ function patchOpenLines_(rows, fn) {
 }
 
 function cachePutBig_(key, obj, ttl) {
-  const s = JSON.stringify(obj), size = 90000, n = Math.max(1, Math.ceil(s.length / size));
+  const s = JSON.stringify(obj), size = 30000,   // ≤ 3 bytes per character keeps each piece under the 100 KB limit
+    n = Math.max(1, Math.ceil(s.length / size));
   const map = {};
   for (let i = 0; i < n; i++) map[key + '_' + i] = s.substr(i * size, size);
   map[key] = String(n);
-  try { CacheService.getScriptCache().putAll(map, ttl); } catch (e) { console.warn('Cache put failed: ' + e); }
+  try { CacheService.getScriptCache().putAll(map, ttl); CACHE_INFO_.put = 'ok ' + n + ' pieces'; }
+  catch (e) { CACHE_INFO_.put = 'failed: ' + e.message; console.warn('Cache put failed: ' + e); }
 }
 
 function cacheGetBig_(key) {
