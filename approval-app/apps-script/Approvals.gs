@@ -56,7 +56,7 @@ function doPost(e) {
   try {
     const req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     const realUser = auth_(req.idToken);
-    const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_, reports: reports_ };
+    const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_, reports: reports_, testPush: testPush_ };
     const fn = handlers[req.action];
     if (!fn) throw appError_('BAD_REQUEST', 'Unknown action.');
     const user = previewUser_(realUser, req);
@@ -211,6 +211,41 @@ function register_(user, req) {
     sh.appendRow([user.email, token, device, now]);
   });
   return { registered: true };
+}
+
+
+/** Sends a test notification to every device of the signed-in person (button in the app). */
+function testPush_(user, req, realUser) {
+  const u = realUser || user;
+  const sh = book_().getSheetByName(CFG.DEVICES);
+  const devices = sh ? sh.getDataRange().getValues().slice(1).filter(r => String(r[0]).toLowerCase() === u.email && r[1]).length : 0;
+  const res = notify_(u.email, 'Test notification', 'Hi ' + u.name + ', notifications are working on this device.', true);
+  return { devices: devices, notified: res };
+}
+
+/** Runs from warmCache (every 5 minutes): tells HO and the admin about requisition lines that arrived since the last check. */
+function alertNewLines_(lines) {
+  const props = PropertiesService.getScriptProperties();
+  const KEY = 'NEW_LINES_SEEN_' + MODE;
+  const open = (lines || []).filter(l => !l.approval && !l.approver);
+  const maxTs = open.reduce((a, l) => Math.max(a, l.ts), 0);
+  let seen = null;
+  try { seen = JSON.parse(props.getProperty(KEY) || 'null'); } catch (e) { seen = null; }
+  const atMax = open.filter(l => l.ts === maxTs).map(l => l.orderNo);
+  if (!seen || !seen.ts) { props.setProperty(KEY, JSON.stringify({ ts: maxTs, ids: atMax })); return; } // first run: just remember
+  const added = open.filter(l => l.ts > seen.ts || (l.ts === seen.ts && seen.ids.indexOf(l.orderNo) === -1));
+  if (maxTs > seen.ts) props.setProperty(KEY, JSON.stringify({ ts: maxTs, ids: atMax }));
+  else if (added.length) props.setProperty(KEY, JSON.stringify({ ts: seen.ts, ids: unique_(seen.ids.concat(added.map(l => l.orderNo))) }));
+  if (!added.length) return;
+  let owner = '';
+  try { owner = String(Session.getEffectiveUser().getEmail() || '').toLowerCase(); } catch (e) {}
+  const to = unique_(activeUsers_().filter(u => u.isHO || u.isAdmin || u.email === owner).map(u => u.email));
+  const title = added.length === 1 ? 'New purchase requirement' : added.length + ' new purchase requirements';
+  const body = unique_(added.map(l => l.unit)).join(', ') + ': ' + added.slice(0, 3).map(l => l.item).join(', ') +
+    (added.length > 3 ? ' and ' + (added.length - 3) + ' more' : '') + '. Choose an approver.';
+  const pushed = to.map(email => email + ' ' + notify_(email, title, body, true).push);
+  tab_(CFG.LOG, ['Time', 'Email', 'Name', 'Action', 'Lines', 'Note']).appendRow([
+    new Date(), '', '(server)', 'NEW LINES', added.map(l => l.orderNo).join(', '), 'push: ' + pushed.join(', ')]);
 }
 
 // ======================= sign-in check =======================
@@ -403,7 +438,8 @@ function cacheGetBig_(key) {
 
 /** Runs every 5 minutes (see installTriggers) so the app always opens quickly. */
 function warmCache() {
-  openLines_(true);
+  const lines = openLines_(true);
+  try { alertNewLines_(lines); } catch (e) { console.error('New-line alert failed: ' + e); }
   reports_(null, { fresh: true });
 }
 
@@ -447,13 +483,13 @@ function withLock_(fn) {
 // ======================= notifications =======================
 
 /** Push to every device the person registered; email them if none worked. */
-function notify_(email, title, body) {
+function notify_(email, title, body, noEmail) {
   if (MODE !== 'LIVE') title = '[TRIAL] ' + title;
   const appUrl = prop_('APP_URL', '');
   let push = 0;
   try { push = sendPush_(email, title, body, appUrl); } catch (e) { console.error('Push failed: ' + e); }
   let mailed = false;
-  if (!push && CFG.EMAIL_FALLBACK) {
+  if (!push && CFG.EMAIL_FALLBACK && !noEmail) {
     MailApp.sendEmail({ to: email, subject: title, body: body + (appUrl ? '\n\nOpen the app: ' + appUrl : '') });
     mailed = true;
   }
@@ -480,7 +516,8 @@ function sendPush_(email, title, body, appUrl) {
       token: t.token,
       notification: { title: title, body: body },
       webpush: {
-        notification: { icon: appUrl ? appUrl + 'icon-192.png' : undefined, tag: 'nlp-approval', renotify: true },
+        headers: { Urgency: 'high', TTL: '86400' }, // deliver at once even when the phone is asleep
+        notification: { icon: appUrl ? appUrl + 'icon-192.png' : undefined, tag: 'nlp-approval', renotify: true, requireInteraction: true, vibrate: [200, 100, 200] },
         fcm_options: appUrl ? { link: appUrl } : undefined,
       },
     } }),
