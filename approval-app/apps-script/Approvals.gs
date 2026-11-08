@@ -109,9 +109,9 @@ function previewUser_(realUser, req) {
 }
 
 /** HO: lines with no decision yet, split into "needs an approver" and "waiting for approver". */
-function hoList_(user) {
+function hoList_(user, req) {
   requireHO_(user);
-  const lines = readLines_(r => !String(r[COL.APPROVAL - 1]).trim());
+  const lines = openLines_(req && req.fresh).filter(l => !l.approval);
   return {
     unassigned: lines.filter(l => !l.approver),
     waiting: lines.filter(l => l.approver),
@@ -137,6 +137,7 @@ function assign_(user, req) {
     });
     if (done.length) log_(user, 'ASSIGN', done.map(d => d.orderNo).join(', '), 'to ' + approver.name);
   });
+  patchOpenLines_(done.map(d => d.row), l => { l.approver = approver.name; return l; });
 
   let notified = { push: 0, email: false };
   if (done.length) {
@@ -150,9 +151,9 @@ function assign_(user, req) {
 }
 
 /** Approver: lines assigned to me that are undecided or On Hold. */
-function myList_(user) {
+function myList_(user, req) {
   requireApprover_(user);
-  const mine = readLines_(r => same_(r[COL.APPROVER - 1], user.name) && ['', 'On Hold'].indexOf(String(r[COL.APPROVAL - 1]).trim()) !== -1);
+  const mine = openLines_(req && req.fresh).filter(l => same_(l.approver, user.name));
   return {
     pending: mine.filter(l => !l.approval),
     onHold: mine.filter(l => l.approval === 'On Hold'),
@@ -182,9 +183,15 @@ function decide_(user, req) {
 
       sh.getRange(it.row, COL.ACTUAL, 1, 2).setValues([[new Date(), decision]]);             // J, K
       sh.getRange(it.row, COL.APPROVED_BY, 1, 2).setValues([[user.name, qty === null ? '' : qty]]); // M, N
-      done.push({ orderNo: it.orderNo, qty: qty });
+      done.push({ row: it.row, orderNo: it.orderNo, qty: qty });
     });
     if (done.length) log_(user, decision.toUpperCase(), done.map(d => d.orderNo + (d.qty !== null ? ' x' + d.qty : '')).join(', '), '');
+  });
+  const qtyByRow = {};
+  done.forEach(d => (qtyByRow[d.row] = d.qty));
+  patchOpenLines_(done.map(d => d.row), l => {
+    if (decision !== 'On Hold') return null;   // decided lines leave the open list
+    l.approval = 'On Hold'; l.approvedQty = qtyByRow[l.row] === null ? '' : qtyByRow[l.row]; return l;
   });
   return { decided: done.length, decision: decision, skipped: skipped };
 }
@@ -345,6 +352,57 @@ function findStock_(index, r, orderNo, day, mon, hh, mm) {
   return best ? { qty: best.c.stock, uom: best.c.uom } : null;
 }
 
+// ---- Open lines cache: reading FMS + FORMDATA takes ~10 seconds, so the open lines (no decision yet, or
+// On Hold) are kept ready in the script cache. A timer rebuilds them every 5 minutes (installTriggers),
+// and the app's own assign/decide actions update the copy straight away. The app's ↻ button forces a re-read.
+const OPEN_CACHE = 'open_lines_' + MODE;
+const OPEN_CACHE_SECONDS = 900;
+
+function openLines_(fresh) {
+  if (!fresh) { const hit = cacheGetBig_(OPEN_CACHE); if (hit) return hit; }
+  const lines = readLines_(r => { const a = String(r[COL.APPROVAL - 1]).trim(); return a === '' || a === 'On Hold'; });
+  cachePutBig_(OPEN_CACHE, lines, OPEN_CACHE_SECONDS);
+  return lines;
+}
+
+/** fn(line) returns the changed line, or null to drop it. Only touches an existing cached copy. */
+function patchOpenLines_(rows, fn) {
+  if (!rows.length) return;
+  const lines = cacheGetBig_(OPEN_CACHE);
+  if (!lines) return;
+  const want = {};
+  rows.forEach(r => (want[r] = true));
+  const out = [];
+  lines.forEach(l => { if (!want[l.row]) return out.push(l); const v = fn(l); if (v) out.push(v); });
+  cachePutBig_(OPEN_CACHE, out, OPEN_CACHE_SECONDS);
+}
+
+function cachePutBig_(key, obj, ttl) {
+  const s = JSON.stringify(obj), size = 90000, n = Math.max(1, Math.ceil(s.length / size));
+  const map = {};
+  for (let i = 0; i < n; i++) map[key + '_' + i] = s.substr(i * size, size);
+  map[key] = String(n);
+  try { CacheService.getScriptCache().putAll(map, ttl); } catch (e) { console.warn('Cache put failed: ' + e); }
+}
+
+function cacheGetBig_(key) {
+  const c = CacheService.getScriptCache();
+  const n = Number(c.get(key));
+  if (!n) return null;
+  const keys = [];
+  for (let i = 0; i < n; i++) keys.push(key + '_' + i);
+  const got = c.getAll(keys);
+  let s = '';
+  for (let i = 0; i < n; i++) { if (got[keys[i]] == null) return null; s += got[keys[i]]; }
+  try { return JSON.parse(s); } catch (e) { return null; }
+}
+
+/** Runs every 5 minutes (see installTriggers) so the app always opens quickly. */
+function warmCache() {
+  openLines_(true);
+  reports_(null, { fresh: true });
+}
+
 function cleanItems_(items) {
   if (!Array.isArray(items) || !items.length) throw appError_('BAD_REQUEST', 'Select at least one line.');
   if (items.length > 200) throw appError_('BAD_REQUEST', 'Too many lines at once (max 200).');
@@ -466,7 +524,7 @@ function fcmAccessToken_(sa) {
 // Everyone in APP USERS can see the reports. Filters are applied in the app.
 
 const REPORT_FROM = { y: 2026, m: 4, d: 1 };   // 1 April 2026
-const REPORT_CACHE_SECONDS = 120;              // the sheet is re-read at most every 2 minutes
+const REPORT_CACHE_SECONDS = 900;              // kept ready by warmCache every 5 minutes; ↻ in the app re-reads
 
 // Cluster, unit name shown in reports, and words used to recognise the unit in FMS (same as the emails)
 const UNIT_MAP = [
@@ -505,10 +563,10 @@ const UNIT_MAP = [
   ['Rajasthan', 'SALASAR', ['salasar']],
 ];
 
-function reports_() {
+function reports_(user, req) {
   const cache = CacheService.getScriptCache();
-  const hit = cache.get('reports_' + MODE);
-  if (hit) return { reports: JSON.parse(hit) };
+  const hit = req && req.fresh ? null : cacheGetBig_('reports_' + MODE);
+  if (hit) return { reports: hit };
 
   const sh = fms_();
   const n = sh.getLastRow() - CFG.FIRST_ROW + 1;
@@ -572,7 +630,7 @@ function reports_() {
     from: REPORT_FROM.y + '-' + pad(REPORT_FROM.m) + '-' + pad(REPORT_FROM.d),
     asOf: Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm'),
   };
-  try { cache.put('reports_' + MODE, JSON.stringify(out), REPORT_CACHE_SECONDS); } catch (e) { /* too big to cache: fine */ }
+  cachePutBig_('reports_' + MODE, out, REPORT_CACHE_SECONDS);
   return { reports: out };
 }
 
@@ -615,6 +673,17 @@ function testNotification() {
 
 // ============ Notify as soon as a name is picked in FMS column L (in the sheet) ============
 
+/** Run ONCE from the editor. Installs both triggers: the FMS edit watcher and the 5-minute cache refresh. */
+function installTriggers() {
+  installFmsTrigger();
+  ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === 'warmCache')
+    .forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('warmCache').timeBased().everyMinutes(5).create();
+  warmCache();
+  console.log('Cache refresh every 5 minutes is on.');
+}
+
 /** Run ONCE from the editor. Makes the server watch the FMS sheet for edits. */
 function installFmsTrigger() {
   ScriptApp.getProjectTriggers()
@@ -645,6 +714,10 @@ function onFmsEdit(e) {
       item: String(row[COL.ITEM - 1]).trim(),
     });
   });
+
+  const newApprover = {};
+  rows.forEach((row, j) => (newApprover[top + j] = String(row[COL.APPROVER - 1]).trim()));
+  patchOpenLines_(Object.keys(newApprover).map(Number), l => { l.approver = newApprover[l.row]; return l; });
 
   let editor = '';
   try { editor = String(e.user && e.user.getEmail ? e.user.getEmail() : '').toLowerCase(); } catch (err) {}
