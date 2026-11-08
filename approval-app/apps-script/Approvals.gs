@@ -247,30 +247,40 @@ function activeUsers_() {
 
 function readLines_(keep) {
   const sh = fms_();
-  const last = sh.getLastRow();
-  if (last < CFG.FIRST_ROW) return [];
-  const n = last - CFG.FIRST_ROW + 1;
-  const values = sh.getRange(CFG.FIRST_ROW, 1, n, COL.APPR_QTY).getValues();
-  const stamps = sh.getRange(CFG.FIRST_ROW, COL.TS, n, 1).getDisplayValues();
+  // Only the recent end of FMS matters (LOOKBACK_DAYS). Find the last row that has an order number, then read
+  // the last FMS_MAX_ROWS rows above it, instead of every row since January.
+  const lastSheetRow = sh.getLastRow();
+  if (lastSheetRow < CFG.FIRST_ROW) return [];
+  const orders = sh.getRange(CFG.FIRST_ROW, COL.ORDER, lastSheetRow - CFG.FIRST_ROW + 1, 1).getValues();
+  let lastData = orders.length;
+  while (lastData > 0 && String(orders[lastData - 1][0]).trim() === '') lastData--;
+  if (!lastData) return [];
+  const startIdx = Math.max(0, lastData - FMS_MAX_ROWS);
+  const first = CFG.FIRST_ROW + startIdx, n = lastData - startIdx;
+  const values = sh.getRange(first, 1, n, COL.APPR_QTY).getValues();
+  const stamps = sh.getRange(first, COL.TS, n, 1).getDisplayValues();
   const cutoff = Date.now() - CFG.LOOKBACK_DAYS * 86400000;
+  const now = new Date(Date.now() + 330 * 60000), nowYear = now.getUTCFullYear(), nowMonth = now.getUTCMonth() + 1;
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const pad = v => (v < 10 ? '0' : '') + v;
   let stock = null;
   const out = [];
-  let year = CFG.START_YEAR, prevMonth = 1;
-  values.forEach((r, i) => {
-    const m = String(stamps[i][0]).match(/^(\d{1,2})-(\d{1,2})(?:\((\d{1,2}):(\d{2})\))?/);
+  values.forEach((r, j) => {
+    const i = startIdx + j;
+    const m = String(stamps[j][0]).match(/^(\d{1,2})-(\d{1,2})(?:\((\d{1,2}):(\d{2})\))?/);
     if (!m) return;
     const mon = +m[2];
-    if (prevMonth - mon >= 6) year++;          // a new year started
-    prevMonth = mon;
+    const year = mon > nowMonth ? nowYear - 1 : nowYear;   // timestamps have no year; anything "later" than now is last year
     const orderNo = String(r[COL.ORDER - 1]).trim();
     if (!orderNo) return;
-    const date = new Date(year, mon - 1, +m[1], +(m[3] || 0), +(m[4] || 0));
+    const day = +m[1], hh = +(m[3] || 0), mm = +(m[4] || 0);
+    const date = new Date(Date.UTC(year, mon - 1, day, hh, mm) - 330 * 60000);
     if (date.getTime() < cutoff) return;
     if (keep && !keep(r)) return;
     if (!stock) stock = stockIndex_();
     out.push({
       row: CFG.FIRST_ROW + i, orderNo: orderNo, ts: date.getTime(),
-      when: Utilities.formatDate(date, CFG.TZ, 'dd MMM, HH:mm'),
+      when: pad(day) + ' ' + MON[mon - 1] + ', ' + pad(hh) + ':' + pad(mm),
       unit: String(r[COL.UNIT - 1]).trim(), category: String(r[COL.CAT - 1]).trim(), item: String(r[COL.ITEM - 1]).trim(),
       pic: /^https?:\/\//.test(String(r[COL.PIC - 1])) ? String(r[COL.PIC - 1]).trim() : '',
       qty: r[COL.QTY - 1] === '' ? '' : Number(r[COL.QTY - 1]), uom: String(r[COL.UOM - 1]).trim(),
@@ -285,7 +295,8 @@ function readLines_(keep) {
 // ---- Stock in hand: the storekeeper enters it in the request form, which lands in FORMDATA.
 // FORMDATA has no order number, so a line is matched on unit + item + quantity + date, picking the entry
 // whose time is closest (within a few minutes) to the time in the order number (e.g. SAME-2310-1258-66).
-const FORMDATA = { TAB: 'FORMDATA', TS: 1, UNIT: 2, ITEM: 4, QTY: 6, STOCK: 8, STOCK_UOM: 9, MAX_ROWS: 8000, MAX_MINUTES: 5 };
+const FORMDATA = { TAB: 'FORMDATA', TS: 1, UNIT: 2, ITEM: 4, QTY: 6, STOCK: 8, STOCK_UOM: 9, MAX_ROWS: 6000, MAX_MINUTES: 5 };
+const FMS_MAX_ROWS = 4000;   // last N filled FMS rows are enough to cover LOOKBACK_DAYS
 const stockKey_ = (unit, item, qty, day, mon) =>
   [String(unit).toLowerCase().replace(/[^a-z0-9]/g, ''), String(item).toLowerCase().replace(/[^a-z0-9]/g, ''), Number(qty) || 0, day + '-' + mon].join('|');
 
