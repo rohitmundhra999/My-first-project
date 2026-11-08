@@ -706,7 +706,8 @@ function reports_(user, req) {
     asOf: Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm'),
   };
   cachePutBig_('reports_' + MODE, out, REPORT_CACHE_SECONDS);
-  const dec = { lines: decided.reverse(), from: out.from, asOf: out.asOf, unitMap: out.unitMap };
+  const dec = { lines: decided.reverse(), from: out.from, asOf: out.asOf, unitMap: out.unitMap,
+    approvers: activeUsers_().filter(u => u.isApprover).map(u => u.name) };   // everyone who can approve, for the filter
   cachePutBig_(DEC_CACHE, dec, REPORT_CACHE_SECONDS);
   return { reports: out, decisionsData: dec };
 }
