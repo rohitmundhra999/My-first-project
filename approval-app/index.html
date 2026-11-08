@@ -10,8 +10,8 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Summit Purchase Reports and Approvals">
-<link rel="stylesheet" href="styles.css?v=20261108c">
-<script src="config.js?v=20261108c"></script>
+<link rel="stylesheet" href="styles.css?v=20261108d">
+<script src="config.js?v=20261108d"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
@@ -85,7 +85,9 @@
       <div class="seg" role="group" aria-label="Report">
         <button data-rtype="nr" class="on">Material not received</button>
         <button data-rtype="ip">Invoice pending</button>
+        <button data-rtype="dec">Approval report</button>
       </div>
+      <div id="poReport">
       <div class="filters">
         <select id="fCluster" aria-label="Cluster"></select>
         <select id="fUnit" aria-label="Unit"></select>
@@ -118,12 +120,58 @@
         <button id="btnClear" class="btn sm ghost">Clear filters</button>
       </div>
       <div id="repBody"><p class="empty">Loading report…</p></div>
+      <div class="dl" aria-label="Download this report">
+        <span class="sub">Download</span>
+        <button class="btn sm" data-dl="rep" data-fmt="xlsx">Excel</button>
+        <button class="btn sm" data-dl="rep" data-fmt="pdf">PDF</button>
+      </div>
       <p class="sub asof" id="repAsOf"></p>
+      </div>
+
+    <!-- Approval report: every decision with approver and reason -->
+    <div id="viewDecisions" hidden>
+      <div class="filters">
+        <select id="dApprover" aria-label="Approver"></select>
+        <select id="dStatus" aria-label="Status"></select>
+        <select id="dCluster" aria-label="Cluster"></select>
+        <select id="dUnit" aria-label="Unit"></select>
+        <select id="dMonth" aria-label="Month"></select>
+        <input id="dSearch" type="search" placeholder="Search order no, item or reason" aria-label="Search">
+      </div>
+      <div class="tiles four" id="dTiles"></div>
+      <div class="rbar">
+        <div class="seg sm" role="group" aria-label="View">
+          <button data-dview="list" class="on">Line list</button>
+          <button data-dview="summary">By approver</button>
+        </div>
+        <button id="dClear" class="btn sm ghost">Clear filters</button>
+      </div>
+      <div id="decBody"><p class="empty">Loading report…</p></div>
+      <div class="dl" aria-label="Download this report">
+        <span class="sub">Download</span>
+        <button class="btn sm" data-dl="dec" data-fmt="xlsx">Excel</button>
+        <button class="btn sm" data-dl="dec" data-fmt="pdf">PDF</button>
+      </div>
+      <p class="sub asof" id="decAsOf"></p>
+    </div>
     </div>
   </section>
 </main>
 
+<div id="remarkBox" class="modal" hidden>
+  <form class="sheet" id="remarkForm">
+    <h2 id="remarkTitle">Reason for rejection</h2>
+    <p class="sub" id="remarkWhat"></p>
+    <textarea id="remarkText" rows="2" maxlength="150" placeholder="e.g. Stock is enough for this month" aria-label="Reason for rejection"></textarea>
+    <p class="sub" id="remarkCount">0 / 10 words</p>
+    <div class="btns">
+      <button type="button" class="btn ghost" id="remarkCancel">Cancel</button>
+      <button type="submit" class="btn danger" id="remarkOk" disabled>Reject</button>
+    </div>
+  </form>
+</div>
+
 <div id="toast" class="toast" role="status" hidden></div>
-<script type="module" src="app.js?v=20261108c"></script>
+<script type="module" src="app.js?v=20261108d"></script>
 </body>
 </html>

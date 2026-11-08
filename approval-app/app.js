@@ -1,4 +1,4 @@
-// NLP Approvals - front end. Talks to the Apps Script backend; all permission checks happen there.
+// Summit Purchase Reports and Approvals - front end. Talks to the Apps Script backend; all permission checks happen there.
 const CFG = self.APP_CONFIG || {};
 const $ = (id) => document.getElementById(id);
 const TOKEN_KEY = 'nlp.idToken';
@@ -8,7 +8,11 @@ const state = {
   pick: {},              // HO: approver chosen per line (key -> name), sent with the group's Send button          // admin preview: email of the person whose screens are shown (read-only)
   reports: null, repAt: 0,
   rep: { type: 'nr', view: 'list', cluster: '', unit: '', month: '', age: '', q: '', sort: 'old' },
+  dec: null, decAt: 0, decShow: 200,
+  df: { view: 'list', approver: '', status: '', cluster: '', unit: '', month: '', q: '' },
 };
+const STATUSES = ['Approved', 'Rejected', 'On Hold', 'Withdrawn'];
+const REMARK_MAX_WORDS = 10;
 const WRITE_ACTIONS = ['assign', 'decide', 'register'];
 
 // ---------- small helpers ----------
@@ -165,7 +169,12 @@ async function refresh(fresh) {
     const jobs = [];
     if (u.isHO) jobs.push(api('hoList', { fresh }).then((r) => { if (gen === state.gen) state.ho = r; }));
     if (u.isApprover) jobs.push(api('myList', { fresh }).then((r) => { if (gen === state.gen) state.mine = r; }));
-    if (state.tab === 'reports' || state.reports) jobs.push(api('reports', { fresh }).then((r) => { state.reports = r.reports; state.repAt = Date.now(); }));
+    let repJob = null;
+    const wantDec = (state.tab === 'reports' && state.rep.type === 'dec') || state.dec;
+    if (state.tab === 'reports' || state.reports) jobs.push(repJob = api('reports', { fresh }).then((r) => { state.reports = r.reports; state.repAt = Date.now(); }));
+    // Both reports come from one read of the sheet: on ↻ the decisions are fetched after the reports re-read.
+    if (wantDec) jobs.push((fresh && repJob ? repJob : Promise.resolve())
+      .then(() => api('decisions', { fresh: fresh && !repJob })).then((r) => { state.dec = r.decisions; state.decAt = Date.now(); }));
     await Promise.all(jobs);
   } catch (e) { if (gen !== state.gen) return; return handleError(e); }
   if (gen !== state.gen) return;
@@ -222,6 +231,8 @@ function fillSelect(id, first, values, current) {
 function renderReports() {
   const R = state.reports, f = state.rep;
   document.querySelectorAll('[data-rtype]').forEach((b) => b.classList.toggle('on', b.dataset.rtype === f.type));
+  $('poReport').hidden = f.type === 'dec'; $('viewDecisions').hidden = f.type !== 'dec';
+  if (f.type === 'dec') return renderDecisions();
   document.querySelectorAll('[data-rview]').forEach((b) => b.classList.toggle('on', b.dataset.rview === f.view));
   $('fSort').hidden = f.view !== 'list';
   if (!R) { $('repBody').innerHTML = '<p class="empty">Loading report…</p>'; return; }
@@ -244,6 +255,7 @@ function renderReports() {
     (!f.month || p.date.slice(0, 7) === f.month) && (!f.age || daysSince(p.date) > +f.age) &&
     (!q || [p.po, p.vendor, p.unitRaw, ...p.itemNames].join(' ').toLowerCase().includes(q)));
 
+  state.repRows = rows;
   $('tPos').textContent = rows.length;
   $('tAmt').textContent = inr(rows.reduce((a, p) => a + p.amount, 0));
   const oldest = rows.reduce((a, p) => Math.max(a, daysSince(p.date)), 0);
@@ -295,6 +307,170 @@ function matrixHtml(rows, R, allMonths) {
     <thead><tr><th>Unit</th>${months.map((m) => `<th>${monthLabel(m)}</th>`).join('')}<th>Total</th></tr></thead>
     <tbody>${body}<tr class="total"><td>Grand total</td>${totals.map((v) => `<td>${v || '–'}</td>`).join('')}<td>${totals.reduce((a, b) => a + b, 0)}</td></tr></tbody>
   </table></div><p class="sub" style="margin-top:6px">Number of POs by order month. Tap a number to see those POs.</p>`;
+}
+
+// ---------- approval report (decisions) ----------
+const stClass = (s) => s.toLowerCase().replace(/\s+/g, '');
+const decDate = (l) => (l.at ? l.at.replace(/\(/, ' ').replace(/\)/, '') : '');
+
+function decFiltered(ignoreStatus) {
+  const D = state.dec, f = state.df;
+  const q = f.q.trim().toLowerCase();
+  return D.lines.filter((l) =>
+    (!f.approver || l.by === f.approver) && (ignoreStatus || !f.status || l.s === f.status) &&
+    (!f.cluster || l.c === f.cluster) && (!f.unit || l.u === f.unit) && (!f.month || l.d.slice(0, 7) === f.month) &&
+    (!q || [l.o, l.it, l.u, l.rm, l.by].join(' ').toLowerCase().includes(q)));
+}
+
+function renderDecisions() {
+  const D = state.dec, f = state.df;
+  document.querySelectorAll('[data-dview]').forEach((b) => b.classList.toggle('on', b.dataset.dview === f.view));
+  if (!D) { $('decBody').innerHTML = '<p class="empty">Loading report… this can take a few seconds.</p>'; $('dTiles').innerHTML = ''; return; }
+  const approvers = [...new Set(D.lines.map((l) => l.by).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  f.approver = fillSelect('dApprover', 'All approvers', approvers.map((a) => [a, a]), f.approver);
+  f.status = fillSelect('dStatus', 'All statuses', STATUSES.map((x) => [x, x]), f.status);
+  const clusters = [...new Set(D.unitMap.map((x) => x[0]).concat(D.lines.some((l) => l.c === 'Other') ? ['Other'] : []))];
+  f.cluster = fillSelect('dCluster', 'All clusters', clusters.map((c) => [c, c]), f.cluster);
+  const units = [...new Set(D.lines.filter((l) => !f.cluster || l.c === f.cluster).map((l) => l.u))].sort((a, b) => a.localeCompare(b));
+  f.unit = fillSelect('dUnit', 'All units', units.map((u) => [u, u]), f.unit);
+  const months = reportMonths(D.from);
+  f.month = fillSelect('dMonth', 'All months', months.slice().reverse().map((m) => [m, monthLabel(m)]), f.month);
+  if ($('dSearch').value !== f.q) $('dSearch').value = f.q;
+
+  const base = decFiltered(true);
+  const counts = Object.fromEntries(STATUSES.map((x) => [x, 0]));
+  base.forEach((l) => counts[l.s]++);
+  $('dTiles').innerHTML = STATUSES.map((x) => `<button class="tile ${f.status === x ? 'on' : ''}" data-dstatus="${esc(x)}"><span class="sub">${esc(x)}</span><b>${counts[x]}</b></button>`).join('');
+  const rows = f.status ? base.filter((l) => l.s === f.status) : base;
+  state.decRows = rows;
+  $('dClear').hidden = !(f.approver || f.status || f.cluster || f.unit || f.month || f.q);
+  $('decAsOf').textContent = `Approval report · requests from ${fmtDate(D.from)} · ${rows.length} line${rows.length === 1 ? '' : 's'} · updated ${D.asOf}`;
+  $('decBody').innerHTML = f.view === 'summary' ? decSummaryHtml(rows) : decListHtml(rows);
+}
+
+function decListHtml(rows) {
+  if (!rows.length) return '<p class="empty">No lines match these filters.</p>';
+  const shown = rows.slice(0, state.decShow);
+  return shown.map((l) => {
+    const qty = l.s === 'Approved' && l.aq !== '' && String(l.aq) !== String(l.q) ? `${esc(l.aq)} of ${esc(l.q)} ${esc(l.uom)}` : `${esc(l.q)} ${esc(l.uom)}`;
+    return `<article class="po dec">
+      <div class="top"><b>${esc(l.it)}</b><span class="st ${stClass(l.s)}">${esc(l.s)}</span></div>
+      <div class="sub">${esc(l.u)} <span class="sub">(${esc(l.c)})</span> · ${qty}</div>
+      <div class="sub">${esc(l.o)} · requested ${fmtDate(l.d)}${l.at ? ' · decided ' + esc(decDate(l)) : ''}</div>
+      <div class="sub">Approver: <b>${esc(l.by || '–')}</b></div>
+      ${l.rm ? `<div class="remark"><b>Reason:</b> ${esc(l.rm)}</div>` : ''}
+    </article>`;
+  }).join('') + (rows.length > shown.length ? `<button class="btn sm more" id="decMore">Show more (${rows.length - shown.length} left)</button>` : '');
+}
+
+function decSummaryHtml(rows) {
+  if (!rows.length) return '<p class="empty">No lines match these filters.</p>';
+  const by = {};
+  rows.forEach((l) => { const k = l.by || '(none)'; (by[k] = by[k] || Object.fromEntries(STATUSES.map((x) => [x, 0])))[l.s]++; });
+  const names = Object.keys(by).sort((a, b) => a.localeCompare(b));
+  const tot = STATUSES.map((x) => names.reduce((a, n) => a + by[n][x], 0));
+  return `<div class="mwrap"><table class="matrix">
+    <thead><tr><th>Approver</th>${STATUSES.map((x) => `<th>${esc(x)}</th>`).join('')}<th>Total</th></tr></thead>
+    <tbody>${names.map((n) => `<tr><td>${esc(n)}</td>${STATUSES.map((x) => `<td>${by[n][x] ? `<button class="cell" data-dcell-by="${esc(n)}" data-dcell-st="${esc(x)}">${by[n][x]}</button>` : '<span class="zero">–</span>'}</td>`).join('')}<td><b>${STATUSES.reduce((a, x) => a + by[n][x], 0)}</b></td></tr>`).join('')}
+    <tr class="total"><td>Total</td>${tot.map((v) => `<td>${v || '–'}</td>`).join('')}<td>${tot.reduce((a, b) => a + b, 0)}</td></tr></tbody>
+  </table></div><p class="sub" style="margin-top:6px">Number of lines by approver and status. Tap a number to see those lines.</p>`;
+}
+
+// ---------- downloads (Excel and PDF) ----------
+const LIBS = {
+  xlsx: ['https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'],
+  pdf: ['https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js'],
+};
+const loaded = {};
+function loadScript(src) {
+  return (loaded[src] = loaded[src] || new Promise((resolve, reject) => {
+    const s = document.createElement('script'); s.src = src; s.onload = resolve;
+    s.onerror = () => { delete loaded[src]; reject(new Error('Could not load the download tool. Check your internet.')); };
+    document.head.appendChild(s);
+  }));
+}
+async function loadLibs(fmt) { for (const src of LIBS[fmt]) await loadScript(src); }
+
+function filterText(pairs) { return pairs.filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(' · ') || 'No filters'; }
+
+function exportData(which) {
+  const today = new Date();
+  const stamp = `${String(today.getDate()).padStart(2, '0')}-${MONTHS[today.getMonth()]}-${today.getFullYear()}`;
+  if (which === 'dec') {
+    const f = state.df, rows = state.decRows || [];
+    return {
+      title: 'Approval report', file: `Approval report ${stamp}`,
+      filters: filterText([['Approver', f.approver], ['Status', f.status], ['Cluster', f.cluster], ['Unit', f.unit], ['Month', f.month && monthLabel(f.month)], ['Search', f.q.trim()]]),
+      head: ['#', 'Order No', 'Requested', 'Decided', 'Unit', 'Cluster', 'Item', 'Qty asked', 'Qty approved', 'UOM', 'Status', 'Approver', 'Reason for rejection'],
+      body: rows.map((l, i) => [i + 1, l.o, fmtDate(l.d), decDate(l), l.u, l.c, l.it, l.q, l.aq, l.uom, l.s, l.by, l.rm]),
+      pdfCols: [0, 1, 2, 3, 4, 6, 7, 8, 10, 11, 12],
+    };
+  }
+  const f = state.rep, rows = (state.repRows || []).slice();
+  const s = f.sort;
+  rows.sort((a, b) => s === 'new' ? b.date.localeCompare(a.date) : s === 'amt' ? b.amount - a.amount :
+    s === 'unit' ? (a.unit.localeCompare(b.unit) || a.date.localeCompare(b.date)) : a.date.localeCompare(b.date));
+  const name = f.type === 'nr' ? 'Material not received' : 'Invoice pending';
+  return {
+    title: name, file: `${name} ${stamp}`, money: 6,
+    filters: filterText([['Cluster', f.cluster], ['Unit', f.unit], ['Month', f.month && monthLabel(f.month)], ['Pending for', f.age && `over ${f.age} days`], ['Search', f.q.trim()]]),
+    head: ['#', 'PO No', 'PO date', 'Days', 'Unit', 'Cluster', 'Amount', 'Vendor', 'Items', 'Item names'],
+    body: rows.map((p, i) => [i + 1, p.po, fmtDate(p.date), daysSince(p.date), p.unit, p.cluster, Math.round(p.amount), p.vendor, p.items,
+      p.itemNames.join(', ') + (p.items > p.itemNames.length ? ` and ${p.items - p.itemNames.length} more` : '')]),
+    pdfCols: [0, 1, 2, 3, 4, 6, 7, 8, 9],
+  };
+}
+
+async function download(which, fmt) {
+  const d = exportData(which);
+  if (!d.body.length) return toast('Nothing to download: no lines match these filters.', true);
+  toast(`Preparing ${fmt === 'xlsx' ? 'Excel' : 'PDF'}…`);
+  try { await loadLibs(fmt); } catch (e) { return toast(e.message, true); }
+  if (fmt === 'xlsx') {
+    const XLSX = window.XLSX;
+    const aoa = [[d.title], [d.filters + ' · ' + d.body.length + ' rows'], [], d.head, ...d.body];
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = d.head.map((h, i) => ({ wch: Math.min(48, Math.max(h.length + 2, ...d.body.slice(0, 300).map((r) => String(r[i] ?? '').length + 2))) }));
+    ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 3, c: 0 }, e: { r: 3 + d.body.length, c: d.head.length - 1 } }) };
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, d.title.slice(0, 31));
+    XLSX.writeFile(wb, d.file + '.xlsx');
+  } else {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+    doc.setFontSize(14); doc.text('Summit Purchase Reports and Approvals - ' + d.title, 30, 32);
+    doc.setFontSize(9); doc.setTextColor(90); doc.text(doc.splitTextToSize(d.filters + ' · ' + d.body.length + ' rows · ' + new Date().toLocaleString('en-IN'), 780), 30, 48);
+    const pick = (r) => d.pdfCols.map((i) => (i === d.money ? 'Rs ' + Number(r[i]).toLocaleString('en-IN') : String(r[i] ?? '')));
+    doc.autoTable({
+      head: [pick(d.head).map((h, i) => (d.pdfCols[i] === d.money ? 'Amount' : h))], body: d.body.map(pick), startY: 62,
+      styles: { fontSize: 7.5, cellPadding: 3, overflow: 'linebreak' }, headStyles: { fillColor: [27, 94, 32] },
+      margin: { left: 30, right: 30 },
+      didDrawPage: () => { doc.setFontSize(8); doc.setTextColor(120); doc.text('Page ' + doc.internal.getNumberOfPages(), 780, 580); },
+    });
+    doc.save(d.file + '.pdf');
+  }
+}
+
+// ---------- reason for rejection (max 10 words) ----------
+const wordCount = (t) => (t.trim() ? t.trim().split(/\s+/).length : 0);
+function askRemark(lines) {
+  return new Promise((resolve) => {
+    const box = $('remarkBox'), txt = $('remarkText');
+    $('remarkWhat').textContent = lines.length === 1 ? `${lines[0].item} · ${lines[0].unit}` : `${lines.length} lines will be rejected with this reason.`;
+    $('remarkOk').textContent = lines.length === 1 ? 'Reject' : `Reject ${lines.length}`;
+    txt.value = ''; box.hidden = false; update(); setTimeout(() => txt.focus(), 50);
+    function update() {
+      const n = wordCount(txt.value);
+      $('remarkCount').textContent = n > REMARK_MAX_WORDS ? `${n} words - too long, keep it to ${REMARK_MAX_WORDS} words` : `${n} / ${REMARK_MAX_WORDS} words`;
+      $('remarkCount').classList.toggle('over', n > REMARK_MAX_WORDS);
+      $('remarkOk').disabled = n === 0 || n > REMARK_MAX_WORDS;
+    }
+    function close(v) { box.hidden = true; txt.oninput = null; $('remarkForm').onsubmit = null; $('remarkCancel').onclick = null; box.onclick = null; resolve(v); }
+    txt.oninput = update;
+    $('remarkForm').onsubmit = (e) => { e.preventDefault(); const n = wordCount(txt.value); if (n && n <= REMARK_MAX_WORDS) close(txt.value.trim().replace(/\s+/g, ' ')); };
+    $('remarkCancel').onclick = () => close(null);
+    box.onclick = (e) => { if (e.target === box) close(null); };
+  });
 }
 
 // Lines of one requisition share the unit and the minute they were entered.
@@ -430,9 +606,11 @@ function assignSelected() {
   });
 }
 
-function decide(decision, lines) {
-  if (!lines.length) return;
-  if ((decision === 'Rejected' || decision === 'Withdrawn') && !confirm(`${decision === 'Rejected' ? 'Reject' : 'Withdraw'} ${lines.length} line${lines.length > 1 ? 's' : ''}?`)) return;
+async function decide(decision, lines) {
+  if (!lines.length || state.busy) return;
+  let remark = '';
+  if (decision === 'Rejected') { remark = await askRemark(lines); if (!remark) return; }
+  if (decision === 'Withdrawn' && !confirm(`Withdraw ${lines.length} line${lines.length > 1 ? 's' : ''}?`)) return;
   const items = lines.map((l) => {
     const input = document.querySelector(`[data-qty="${CSS.escape(key(l))}"]`);
     const v = input ? input.value.trim() : '';
@@ -443,7 +621,7 @@ function decide(decision, lines) {
     if (bad) return toast(`Enter a quantity above 0 for ${bad.orderNo}.`, true);
   }
   run('decide', async () => {
-    const r = await api('decide', { decision, items });
+    const r = await api('decide', { decision, items, remark });
     lines.forEach((l) => { state.sel.delete(key(l)); delete state.qty[key(l)]; });
     toast(`${r.decided} line${r.decided === 1 ? '' : 's'} marked ${r.decision}.` + skippedText(r.skipped), r.skipped.length > 0);
     await refresh();
@@ -524,8 +702,16 @@ function addTestButton() {
 $('tabAssign').onclick = () => setTab('assign');
 $('tabApprove').onclick = () => setTab('approve');
 $('tabReports').onclick = () => setTab('reports');
+[['dApprover', 'approver'], ['dStatus', 'status'], ['dCluster', 'cluster'], ['dUnit', 'unit'], ['dMonth', 'month']].forEach(([id, k]) =>
+  ($(id).onchange = (e) => { state.df[k] = e.target.value; if (k === 'cluster') state.df.unit = ''; state.decShow = 200; renderDecisions(); }));
+$('dSearch').oninput = (e) => { state.df.q = e.target.value; state.decShow = 200; renderDecisions(); };
+$('dClear').onclick = () => { Object.assign(state.df, { approver: '', status: '', cluster: '', unit: '', month: '', q: '' }); state.decShow = 200; renderDecisions(); };
+document.querySelectorAll('[data-dview]').forEach((b) => (b.onclick = () => { state.df.view = b.dataset.dview; renderDecisions(); }));
 $('viewAsPick').onchange = (e) => changeViewAs(e.target.value);
-document.querySelectorAll('[data-rtype]').forEach((b) => (b.onclick = () => { state.rep.type = b.dataset.rtype; state.rep.unit = ''; renderReports(); }));
+document.querySelectorAll('[data-rtype]').forEach((b) => (b.onclick = () => {
+  state.rep.type = b.dataset.rtype; state.rep.unit = ''; renderReports();
+  if (b.dataset.rtype === 'dec' && !state.dec) refresh();
+}));
 document.querySelectorAll('[data-rview]').forEach((b) => (b.onclick = () => { state.rep.view = b.dataset.rview; renderReports(); }));
 [['fCluster', 'cluster'], ['fUnit', 'unit'], ['fMonth', 'month'], ['fAge', 'age'], ['fSort', 'sort']].forEach(([id, k]) =>
   ($(id).onchange = (e) => { state.rep[k] = e.target.value; if (k === 'cluster') state.rep.unit = ''; renderReports(); }));
@@ -548,6 +734,13 @@ document.addEventListener('change', (e) => {
 });
 document.addEventListener('input', (e) => { if (e.target.matches('[data-qty]')) state.qty[e.target.dataset.qty] = e.target.value; });
 document.addEventListener('click', (e) => {
+  const dl = e.target.closest('[data-dl]');
+  if (dl) return download(dl.dataset.dl, dl.dataset.fmt);
+  const ds = e.target.closest('[data-dstatus]');
+  if (ds) { state.df.status = state.df.status === ds.dataset.dstatus ? '' : ds.dataset.dstatus; state.decShow = 200; return renderDecisions(); }
+  const dc = e.target.closest('[data-dcell-by]');
+  if (dc) { Object.assign(state.df, { approver: dc.dataset.dcellBy === '(none)' ? '' : dc.dataset.dcellBy, status: dc.dataset.dcellSt, view: 'list' }); state.decShow = 200; renderDecisions(); window.scrollTo(0, 0); return; }
+  if (e.target.closest('#decMore')) { state.decShow += 300; return renderDecisions(); }
   const gs = e.target.closest('[data-gsend]');
   if (gs) return sendGroup(gs.dataset.gsend.split(','));
   const c = e.target.closest('[data-cell-unit]');
