@@ -26,6 +26,12 @@
   </div>
 </header>
 
+<div id="viewAsBar" class="viewas" hidden>
+  <label for="viewAsPick">View app as</label>
+  <select id="viewAsPick"></select>
+  <span id="previewNote" class="previewnote" hidden>Preview · read-only</span>
+</div>
+
 <div id="banner" class="banner" hidden></div>
 
 <main>
@@ -42,6 +48,7 @@
     <nav class="tabs" role="tablist">
       <button id="tabAssign" data-tab="assign" hidden>Assign <span class="count"></span></button>
       <button id="tabApprove" data-tab="approve" hidden>To approve <span class="count"></span></button>
+      <button id="tabReports" data-tab="reports">Reports</button>
     </nav>
 
     <!-- HO in-charge -->
@@ -72,6 +79,46 @@
         <button class="btn danger" data-bulk="Rejected">Reject</button>
         <button class="btn primary" data-bulk="Approved">Approve</button>
       </div>
+    </div>
+    <!-- Reports (everyone) -->
+    <div id="viewReports" hidden>
+      <div class="seg" role="group" aria-label="Report">
+        <button data-rtype="nr" class="on">Material not received</button>
+        <button data-rtype="ip">Invoice pending</button>
+      </div>
+      <div class="filters">
+        <select id="fCluster" aria-label="Cluster"></select>
+        <select id="fUnit" aria-label="Unit"></select>
+        <select id="fMonth" aria-label="Month"></select>
+        <select id="fAge" aria-label="Pending for">
+          <option value="">Any age</option>
+          <option value="7">Over 7 days</option>
+          <option value="15">Over 15 days</option>
+          <option value="30">Over 30 days</option>
+          <option value="60">Over 60 days</option>
+        </select>
+        <input id="fSearch" type="search" placeholder="Search PO, vendor or item" aria-label="Search">
+      </div>
+      <div class="tiles">
+        <div class="tile"><span class="sub">POs</span><b id="tPos">–</b></div>
+        <div class="tile"><span class="sub">PO amount</span><b id="tAmt">–</b></div>
+        <div class="tile"><span class="sub">Oldest</span><b id="tOld">–</b></div>
+      </div>
+      <div class="rbar">
+        <div class="seg sm" role="group" aria-label="View">
+          <button data-rview="list" class="on">PO list</button>
+          <button data-rview="matrix">Unit × month</button>
+        </div>
+        <select id="fSort" aria-label="Sort">
+          <option value="old">Oldest first</option>
+          <option value="new">Newest first</option>
+          <option value="amt">Highest amount</option>
+          <option value="unit">By unit</option>
+        </select>
+        <button id="btnClear" class="btn sm ghost">Clear filters</button>
+      </div>
+      <div id="repBody"><p class="empty">Loading report…</p></div>
+      <p class="sub asof" id="repAsOf"></p>
     </div>
   </section>
 </main>

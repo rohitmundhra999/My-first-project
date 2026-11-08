@@ -98,3 +98,47 @@ details.waiting summary { cursor: pointer; font-weight: 600; color: var(--ink-2)
   background: var(--ink); color: var(--page); padding: 12px 14px; border-radius: 10px; font-size: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.2); }
 .toast.err { background: var(--critical); color: #fff; }
 .mode { display: inline-block; vertical-align: middle; font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 2px 7px; border-radius: 6px; background: var(--warning); color: #0b0b0b; }
+
+/* ---- admin preview ("view as") ---- */
+.viewas { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px; background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: 14px; }
+.viewas label { font-weight: 600; color: var(--ink-2); }
+.viewas select { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); min-height: 36px; flex: 1; min-width: 0; max-width: 360px; }
+.previewnote { font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: var(--warning); color: #0b0b0b; }
+body.preview .viewas { background: #fff4d6; }
+body.preview .dock, body.preview .lact .btns, body.preview #banner button { display: none !important; }
+body.preview .line input[type=checkbox], body.preview .ghead input[type=checkbox] { pointer-events: none; opacity: .45; }
+
+/* ---- reports ---- */
+.seg { display: flex; gap: 0; margin: 14px 0 10px; background: var(--surface-2); border-radius: 10px; padding: 3px; }
+.seg button { flex: 1; font: inherit; font-size: 14px; font-weight: 600; border: 0; background: transparent; color: var(--ink-2); padding: 9px 6px; border-radius: 8px; cursor: pointer; }
+.seg button.on { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.seg.sm { margin: 0; flex: 1; min-width: 200px; }
+.seg.sm button { padding: 6px; font-size: 13px; }
+.filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.filters select, .filters input, .rbar select { font: inherit; font-size: 14px; padding: 8px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); min-height: 40px; min-width: 0; width: 100%; }
+.filters input { grid-column: 1 / -1; }
+.filters .on-filter { border-color: var(--brand); box-shadow: inset 0 0 0 1px var(--brand); }
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; min-width: 0; }
+.tile b { font-size: 17px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.rbar select { width: auto; flex: 0 0 auto; }
+.po { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
+.po .top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.po .amt { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.po .items { font-size: 13px; color: var(--ink-2); margin-top: 4px; overflow-wrap: anywhere; }
+.age { display: inline-block; font-size: 12px; font-weight: 700; padding: 1px 7px; border-radius: 10px; background: var(--surface-2); color: var(--ink-2); }
+.age.warn { background: var(--warning); color: #0b0b0b; }
+.age.bad { background: var(--critical); color: #fff; }
+.mwrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+table.matrix { border-collapse: collapse; font-size: 13px; width: 100%; font-variant-numeric: tabular-nums; }
+.matrix th, .matrix td { padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; text-align: right; }
+.matrix th { background: var(--brand); color: var(--brand-ink); position: sticky; top: 0; }
+.matrix th:first-child, .matrix td:first-child { text-align: left; position: sticky; left: 0; background: var(--surface); z-index: 1; }
+.matrix th:first-child { background: var(--brand); z-index: 2; }
+.matrix td.cl { color: var(--ink-2); font-size: 12px; }
+.matrix tr.total td { font-weight: 700; background: var(--surface-2); }
+.matrix tr.total td:first-child { background: var(--surface-2); }
+.matrix button.cell { font: inherit; border: 0; background: transparent; color: var(--accent); cursor: pointer; padding: 0; text-decoration: underline; }
+.matrix .zero { color: var(--muted); }
+.asof { text-align: center; margin-top: 12px; }

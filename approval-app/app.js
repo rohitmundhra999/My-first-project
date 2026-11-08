@@ -2,7 +2,13 @@
 const CFG = self.APP_CONFIG || {};
 const $ = (id) => document.getElementById(id);
 const TOKEN_KEY = 'nlp.idToken';
-const state = { idToken: null, me: null, tab: null, ho: null, mine: null, sel: new Set(), qty: {}, busy: false };
+const state = {
+  idToken: null, me: null, tab: null, ho: null, mine: null, sel: new Set(), qty: {}, busy: false,
+  viewAs: null,          // admin preview: email of the person whose screens are shown (read-only)
+  reports: null, repAt: 0,
+  rep: { type: 'nr', view: 'list', cluster: '', unit: '', month: '', age: '', q: '', sort: 'old' },
+};
+const WRITE_ACTIONS = ['assign', 'decide', 'register'];
 
 // ---------- small helpers ----------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -30,7 +36,7 @@ async function api(action, data = {}) {
     res = await fetch(CFG.API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // "simple" request: no CORS preflight
-      body: JSON.stringify({ action, idToken: state.idToken, ...data }),
+      body: JSON.stringify({ action, idToken: state.idToken, ...(state.viewAs && !WRITE_ACTIONS.includes(action) ? { viewAs: state.viewAs } : {}), ...data }),
     });
   } catch { throw new ApiError('NETWORK', 'No connection. Check your internet and try again.'); }
   let out;
@@ -72,7 +78,8 @@ function onCredential(token) {
   boot();
 }
 function signOut() {
-  store.del(TOKEN_KEY); state.idToken = null; state.me = null;
+  store.del(TOKEN_KEY); state.idToken = null; state.me = null; state.viewAs = null; state.ho = state.mine = state.reports = null;
+  $('viewAsBar').hidden = true; document.body.classList.remove('preview');
   try { google.accounts.id.disableAutoSelect(); } catch { /* not loaded */ }
   $('who').textContent = ''; $('btnSignOut').hidden = true; $('btnRefresh').hidden = true; banner('');
   startSignIn();
@@ -89,18 +96,42 @@ async function boot() {
     state.me = await api('me');
   } catch (e) { return handleError(e); }
   const u = state.me.user;
-  $('who').textContent = `${u.name} · ${u.isHO && u.isApprover ? 'HO in-charge & approver' : u.isHO ? 'HO in-charge' : 'Approver'}`;
+  $('who').textContent = `${u.name} · ${roleLabel(u)}`;
   $('modeTag').hidden = state.me.mode === 'LIVE';
   $('btnSignOut').hidden = false; $('btnRefresh').hidden = false;
   $('tabAssign').hidden = !u.isHO; $('tabApprove').hidden = !u.isApprover;
   $('approverPick').innerHTML = '<option value="">Choose approver…</option>' + state.me.approvers.map((n) => `<option>${esc(n)}</option>`).join('');
+  setupViewAs();
   show('app');
-  setTab(state.tab || (u.isApprover && !u.isHO ? 'approve' : 'assign'));
-  setupNotifications();
+  setTab(state.tab || (u.isHO ? 'assign' : u.isApprover ? 'approve' : 'reports'));
+  if (state.me.preview) banner(''); else setupNotifications();
+}
+
+const roleLabel = (u) => (u.isHO && u.isApprover ? 'HO in-charge & approver' : u.isHO ? 'HO in-charge' : u.isApprover ? 'Approver' : 'Reports only');
+
+// ---------- admin preview ("view as") ----------
+function setupViewAs() {
+  const me = state.me;
+  document.body.classList.toggle('preview', !!me.preview);
+  $('previewNote').hidden = !me.preview;
+  if (!me.admin) { $('viewAsBar').hidden = true; return; }
+  $('viewAsBar').hidden = false;
+  const others = me.users.filter((x) => x.email !== me.admin.email);
+  $('viewAsPick').innerHTML = `<option value="">Myself (${esc(me.admin.name)})</option>` +
+    others.map((x) => `<option value="${esc(x.email)}">${esc(x.name)} · ${esc(roleLabel(x))} · ${esc(x.email)}</option>`).join('');
+  $('viewAsPick').value = state.viewAs || '';
+}
+async function changeViewAs(email) {
+  state.viewAs = email || null;
+  state.ho = state.mine = null; state.sel.clear(); state.qty = {}; state.tab = null;
+  show('loading');
+  try { state.me = await api('me'); } catch (e) { state.viewAs = null; $('viewAsPick').value = ''; show('app'); return handleError(e); }
+  boot();
 }
 
 function handleError(e) {
   if (e.code === 'AUTH') { store.del(TOKEN_KEY); state.idToken = null; return startSignIn(e.message); }
+  if (e.code === 'PREVIEW') return toast(e.message, true);
   if (e.code === 'FORBIDDEN' && !state.me) { store.del(TOKEN_KEY); state.idToken = null; return startSignIn(e.message); }
   if (!state.me) { show('signin'); $('signinMsg').textContent = e.message; return; }
   toast(e.message, true);
@@ -108,11 +139,13 @@ function handleError(e) {
 
 // ---------- tabs & loading ----------
 function setTab(tab) {
-  if (tab === 'assign' && !state.me.user.isHO) tab = 'approve';
-  if (tab === 'approve' && !state.me.user.isApprover) tab = 'assign';
+  const u = state.me.user;
+  if (tab === 'assign' && !u.isHO) tab = u.isApprover ? 'approve' : 'reports';
+  if (tab === 'approve' && !u.isApprover) tab = u.isHO ? 'assign' : 'reports';
   state.tab = tab; state.sel.clear();
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
-  $('viewAssign').hidden = tab !== 'assign'; $('viewApprove').hidden = tab !== 'approve';
+  $('viewAssign').hidden = tab !== 'assign'; $('viewApprove').hidden = tab !== 'approve'; $('viewReports').hidden = tab !== 'reports';
+  if (tab === 'reports') renderReports();
   refresh();
 }
 
@@ -123,6 +156,7 @@ async function refresh() {
     const jobs = [];
     if (u.isHO) jobs.push(api('hoList').then((r) => (state.ho = r)));
     if (u.isApprover) jobs.push(api('myList').then((r) => (state.mine = r)));
+    if (state.tab === 'reports' || state.reports) jobs.push(api('reports').then((r) => { state.reports = r.reports; state.repAt = Date.now(); }));
     await Promise.all(jobs);
   } catch (e) { return handleError(e); }
   // Drop selections for lines that are gone.
@@ -148,6 +182,109 @@ function render() {
     $('listHold').innerHTML = state.mine.onHold.length ? groupHtml(state.mine.onHold, 'approve', '') : '';
   }
   updateDocks();
+  if (state.tab === 'reports') renderReports();
+}
+
+// ---------- reports ----------
+const inr = (n) => '₹' + Math.round(n).toLocaleString('en-IN');
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const monthLabel = (ym) => MONTHS[+ym.slice(5, 7) - 1] + '-' + ym.slice(2, 4);
+const daysSince = (iso) => { const [y, m, d] = iso.split('-').map(Number); return Math.max(0, Math.floor((Date.now() - new Date(y, m - 1, d)) / 86400000)); };
+const fmtDate = (iso) => { const [y, m, d] = iso.split('-'); return `${d}-${MONTHS[+m - 1]}-${y.slice(2)}`; };
+
+function reportMonths(from) {
+  const out = []; const now = new Date();
+  let y = +from.slice(0, 4), m = +from.slice(5, 7);
+  while (y < now.getFullYear() || (y === now.getFullYear() && m <= now.getMonth() + 1)) {
+    out.push(`${y}-${String(m).padStart(2, '0')}`); m++; if (m > 12) { m = 1; y++; }
+  }
+  return out;
+}
+
+function fillSelect(id, first, values, current) {
+  const sel = $(id);
+  sel.innerHTML = `<option value="">${esc(first)}</option>` + values.map(([v, label]) => `<option value="${esc(v)}">${esc(label)}</option>`).join('');
+  sel.value = values.some(([v]) => v === current) ? current : '';
+  sel.classList.toggle('on-filter', !!sel.value);
+  return sel.value;
+}
+
+function renderReports() {
+  const R = state.reports, f = state.rep;
+  document.querySelectorAll('[data-rtype]').forEach((b) => b.classList.toggle('on', b.dataset.rtype === f.type));
+  document.querySelectorAll('[data-rview]').forEach((b) => b.classList.toggle('on', b.dataset.rview === f.view));
+  $('fSort').hidden = f.view !== 'list';
+  if (!R) { $('repBody').innerHTML = '<p class="empty">Loading report…</p>'; return; }
+  const all = f.type === 'nr' ? R.notReceived : R.invoicePending;
+
+  // Filter choices come from the data, so only units/months that have POs are offered.
+  const clusters = [...new Set(R.unitMap.map((x) => x[0]).concat(all.some((p) => p.cluster === 'Other') ? ['Other'] : []))];
+  f.cluster = fillSelect('fCluster', 'All clusters', clusters.map((c) => [c, c]), f.cluster);
+  const unitsInCluster = [...new Set(all.filter((p) => !f.cluster || p.cluster === f.cluster).map((p) => p.unit))].sort((a, b) => a.localeCompare(b));
+  f.unit = fillSelect('fUnit', 'All units', unitsInCluster.map((u) => [u, u]), f.unit);
+  const months = reportMonths(R.from);
+  f.month = fillSelect('fMonth', 'All months', months.slice().reverse().map((m) => [m, monthLabel(m)]), f.month);
+  $('fAge').value = f.age; $('fAge').classList.toggle('on-filter', !!f.age);
+  $('fSort').value = f.sort;
+  if ($('fSearch').value !== f.q) $('fSearch').value = f.q;
+
+  const q = f.q.trim().toLowerCase();
+  const rows = all.filter((p) =>
+    (!f.cluster || p.cluster === f.cluster) && (!f.unit || p.unit === f.unit) &&
+    (!f.month || p.date.slice(0, 7) === f.month) && (!f.age || daysSince(p.date) > +f.age) &&
+    (!q || [p.po, p.vendor, p.unitRaw, ...p.itemNames].join(' ').toLowerCase().includes(q)));
+
+  $('tPos').textContent = rows.length;
+  $('tAmt').textContent = inr(rows.reduce((a, p) => a + p.amount, 0));
+  const oldest = rows.reduce((a, p) => Math.max(a, daysSince(p.date)), 0);
+  $('tOld').textContent = rows.length ? `${oldest} days` : '–';
+  $('btnClear').hidden = !(f.cluster || f.unit || f.month || f.age || f.q);
+  $('repAsOf').textContent = `${f.type === 'nr' ? 'Material not received' : 'Invoice pending'} · approved POs from ${fmtDate(R.from)} · Central Store excluded · updated ${R.asOf}`;
+  $('repBody').innerHTML = f.view === 'matrix' ? matrixHtml(rows, R, months) : listHtml(rows);
+}
+
+function listHtml(rows) {
+  if (!rows.length) return '<p class="empty">No POs match these filters.</p>';
+  const s = state.rep.sort;
+  const sorted = rows.slice().sort((a, b) =>
+    s === 'new' ? b.date.localeCompare(a.date) : s === 'amt' ? b.amount - a.amount :
+    s === 'unit' ? (a.unit.localeCompare(b.unit) || a.date.localeCompare(b.date)) : a.date.localeCompare(b.date));
+  return sorted.map((p) => {
+    const d = daysSince(p.date);
+    const more = p.items > p.itemNames.length ? ` and ${p.items - p.itemNames.length} more` : '';
+    return `<article class="po">
+      <div class="top"><b>${esc(p.po)}</b><span class="amt">${inr(p.amount)}</span></div>
+      <div class="sub">${esc(p.unit)} <span class="sub">(${esc(p.cluster)})</span> · ${esc(p.vendor || 'No vendor')}</div>
+      <div class="sub">Ordered ${fmtDate(p.date)} · <span class="age ${d > 30 ? 'bad' : d > 15 ? 'warn' : ''}">${d} days</span> · ${p.items} item${p.items > 1 ? 's' : ''}</div>
+      ${p.itemNames.length ? `<div class="items">${esc(p.itemNames.join(', '))}${more}</div>` : ''}
+    </article>`;
+  }).join('');
+}
+
+function matrixHtml(rows, R, allMonths) {
+  if (!rows.length) return '<p class="empty">No POs match these filters.</p>';
+  const months = state.rep.month ? [state.rep.month] : allMonths;
+  const order = R.unitMap.map(([c, u]) => c + '|' + u);
+  const grid = {};
+  rows.forEach((p) => {
+    const k = p.cluster + '|' + p.unit;
+    (grid[k] = grid[k] || {})[p.date.slice(0, 7)] = (grid[k]?.[p.date.slice(0, 7)] || 0) + 1;
+  });
+  const keys = Object.keys(grid).sort((a, b) => {
+    const ia = order.indexOf(a), ib = order.indexOf(b);
+    return (ia < 0 ? 1e6 : ia) - (ib < 0 ? 1e6 : ib) || a.localeCompare(b);
+  });
+  const cell = (v, unit, m) => (v ? `<button class="cell" data-cell-unit="${esc(unit)}" data-cell-month="${m}">${v}</button>` : '<span class="zero">–</span>');
+  const body = keys.map((k) => {
+    const [cluster, unit] = k.split('|');
+    const counts = months.map((m) => grid[k][m] || 0);
+    return `<tr><td>${esc(unit)}<br><span class="sub">${esc(cluster)}</span></td>${counts.map((v, i) => `<td>${cell(v, unit, months[i])}</td>`).join('')}<td><b>${counts.reduce((a, b) => a + b, 0)}</b></td></tr>`;
+  }).join('');
+  const totals = months.map((m) => keys.reduce((a, k) => a + (grid[k][m] || 0), 0));
+  return `<div class="mwrap"><table class="matrix">
+    <thead><tr><th>Unit</th>${months.map((m) => `<th>${monthLabel(m)}</th>`).join('')}<th>Total</th></tr></thead>
+    <tbody>${body}<tr class="total"><td>Grand total</td>${totals.map((v) => `<td>${v || '–'}</td>`).join('')}<td>${totals.reduce((a, b) => a + b, 0)}</td></tr></tbody>
+  </table></div><p class="sub" style="margin-top:6px">Number of POs by order month. Tap a number to see those POs.</p>`;
 }
 
 // Lines of one requisition share the unit and the minute they were entered.
@@ -299,6 +436,14 @@ async function registerPush(ask) {
 // ---------- wiring ----------
 $('tabAssign').onclick = () => setTab('assign');
 $('tabApprove').onclick = () => setTab('approve');
+$('tabReports').onclick = () => setTab('reports');
+$('viewAsPick').onchange = (e) => changeViewAs(e.target.value);
+document.querySelectorAll('[data-rtype]').forEach((b) => (b.onclick = () => { state.rep.type = b.dataset.rtype; state.rep.unit = ''; renderReports(); }));
+document.querySelectorAll('[data-rview]').forEach((b) => (b.onclick = () => { state.rep.view = b.dataset.rview; renderReports(); }));
+[['fCluster', 'cluster'], ['fUnit', 'unit'], ['fMonth', 'month'], ['fAge', 'age'], ['fSort', 'sort']].forEach(([id, k]) =>
+  ($(id).onchange = (e) => { state.rep[k] = e.target.value; if (k === 'cluster') state.rep.unit = ''; renderReports(); }));
+$('fSearch').oninput = (e) => { state.rep.q = e.target.value; renderReports(); };
+$('btnClear').onclick = () => { Object.assign(state.rep, { cluster: '', unit: '', month: '', age: '', q: '' }); renderReports(); };
 $('btnRefresh').onclick = () => run('refresh', refresh);
 $('btnSignOut').onclick = signOut;
 $('btnAssign').onclick = assignSelected;
@@ -311,6 +456,8 @@ document.addEventListener('change', (e) => {
 });
 document.addEventListener('input', (e) => { if (e.target.matches('[data-qty]')) state.qty[e.target.dataset.qty] = e.target.value; });
 document.addEventListener('click', (e) => {
+  const c = e.target.closest('[data-cell-unit]');
+  if (c) { Object.assign(state.rep, { unit: c.dataset.cellUnit, month: c.dataset.cellMonth, view: 'list' }); renderReports(); window.scrollTo(0, 0); return; }
   const b = e.target.closest('[data-one]');
   if (!b) return;
   const all = [...(state.mine?.pending || []), ...(state.mine?.onHold || [])];

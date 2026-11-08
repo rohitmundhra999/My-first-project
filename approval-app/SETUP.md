@@ -112,3 +112,18 @@ Your phone should buzz within a few seconds.
   **APPROVED BY** column show who actually did it.
 - **Moving to the live NONLOCAL PURCHASES sheet later:** change `SHEET_ID` at the top of the code. This needs
   edit access to that sheet (owned by Ranish).
+
+## Admin preview ("View app as") and Reports
+
+- **View app as:** the admin sees a **View app as** box under the header and can pick anyone in APP USERS
+  to see the app exactly as they see it. The preview is **read-only**: nothing can be assigned, approved or
+  registered while previewing, so the sheet and APP LOG always show the real person.
+  The admin is the person the server runs as (Rohit). To make someone else an admin too, add `ADMIN` to
+  their Role in APP USERS, for example `HO+APPROVER+ADMIN`.
+- **Reports tab (everyone in APP USERS):** live **Material not received** and **Invoice pending**, using
+  the same rules as the daily emails (approved POs from 1 Apr 2026, same PO counted once, Central Store left
+  out). Filters: cluster, unit, month, age (over 7/15/30/60 days) and search. Two views: PO list, and
+  Unit × month counts (tap a number to see those POs). The sheet is re-read at most every 2 minutes.
+- **Approver notifications** are sent both when HO picks the approver in the app and when someone picks a
+  name in FMS column L directly (after running `installFmsTrigger` once). The app's own writes don't fire
+  the sheet trigger, so nobody gets two notifications for the same assignment.
