@@ -185,10 +185,11 @@ async function refresh(fresh) {
     if (hasStore() && state.store.unit && (state.tab === 'store' || state.store.data)) jobs.push(loadStore(fresh, gen));
     let repJob = null;
     const wantDec = (state.tab === 'reports' && state.rep.type === 'dec') || state.dec;
-    if (state.tab === 'reports' || state.reports) jobs.push(repJob = api('reports', { fresh }).then((r) => { state.reports = r.reports; state.repAt = Date.now(); }));
+    // v = version we already have: the server answers "same" instead of sending the whole report again
+    if (state.tab === 'reports' || state.reports) jobs.push(repJob = api('reports', { fresh, v: state.reports?.v }).then((r) => { if (!r.same) state.reports = r.reports; state.repAt = Date.now(); }));
     // Both reports come from one read of the sheet: on ↻ the decisions are fetched after the reports re-read.
     if (wantDec) jobs.push((fresh && repJob ? repJob : Promise.resolve())
-      .then(() => api('decisions', { fresh: fresh && !repJob })).then((r) => { state.dec = r.decisions; state.decAt = Date.now(); }));
+      .then(() => api('decisions', { fresh: fresh && !repJob, v: fresh ? undefined : state.dec?.v })).then((r) => { if (!r.same) state.dec = r.decisions; state.decAt = Date.now(); }));
     await Promise.all(jobs);
   } catch (e) { if (gen !== state.gen) return; return handleError(e); }
   if (gen !== state.gen) return;
@@ -749,11 +750,11 @@ async function changeStoreUnit(u) {
 async function loadStore(fresh, gen) {
   const unit = sv.unit;
   const [list, meta] = await Promise.all([
-    api('storeList', { unit, fresh: !!fresh }),
+    api('storeList', { unit, fresh: !!fresh, v: sv.data && sv.data.unit === unit ? sv.data.v : undefined }),
     sv.meta[unit] ? Promise.resolve(null) : api('storeMeta', { unit }),
   ]);
   if (gen !== state.gen || unit !== sv.unit) return;
-  sv.data = list;
+  if (!list.same) sv.data = list;
   if (meta) sv.meta[unit] = meta;
 }
 
@@ -896,7 +897,7 @@ function invoiceHtml() {
 function statusHtml() {
   const q = sv.q.trim().toLowerCase();
   const all = (sv.data?.lines || []);
-  const rows = all.filter((l) => statusMatch(l, sv.filter) && (!q || [l.it, l.o, l.po, l.cat, l.ven].join(' ').toLowerCase().includes(q)));
+  const rows = all.filter((l) => statusMatch(l, sv.filter) && (!q || [l.it, l.o, l.po || '', l.cat, l.ven || ''].join(' ').toLowerCase().includes(q)));
   const chips = STATUS_FILTERS.map(([k, label]) => {
     const n = all.filter((l) => statusMatch(l, k)).length;
     return `<button class="chip ${sv.filter === k ? 'on' : ''}" data-sfilter="${k}">${label} ${n}</button>`;
