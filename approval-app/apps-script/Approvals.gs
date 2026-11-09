@@ -1514,12 +1514,12 @@ function makePO_(user, req) {
     const now = new Date();
     const poNo = (unit.slice(0, 2) + vendor[0].slice(0, 2)) + (lines.length < 10 ? '0' : '') + lines.length +
                  Utilities.formatDate(now, CFG.TZ, 'ddMM-H') + Utilities.formatDate(now, CFG.TZ, 'mm');
-    const discount = typeof req.discount === 'number' && req.discount >= 0 && req.discount <= 100 ? Math.round(req.discount * 10) / 10 : 0;
-      const subtotal = Math.round(lines.reduce((a, l) => a + l.total, 0) * 100) / 100;
-      const discountAmt = discount > 0 ? Math.round(subtotal * discount / 100 * 100) / 100 : 0;
+    const subtotal = Math.round(lines.reduce((a, l) => a + l.total, 0) * 100) / 100;
+      const discountAmt = typeof req.discountAmt === 'number' && req.discountAmt > 0 ? Math.round(req.discountAmt * 100) / 100 : 0;
       const grand = Math.round((subtotal - discountAmt) * 100) / 100;
     const hotel = hotelInfo_(unit);
-    const link = poPdf_({ poNo: poNo, date: now, unit: unit, hotel: hotel, vendor: vendor, days: days, lines: lines, subtotal: subtotal, discount: discount, discountAmt: discountAmt, total: grand, note: note, terms: terms, by: user.name });
+    const billToHotel = hotelInfo_(req.billTo || unit);
+    const link = poPdf_({ poNo: poNo, date: now, unit: unit, hotel: hotel, billToHotel: billToHotel, vendor: vendor, days: days, lines: lines, subtotal: subtotal, discountAmt: discountAmt, total: grand, note: note, terms: terms, by: user.name });
 
     if (vendor[3] === true) {   // new vendor: add it to VENDORS like the vendor form does
       const vsh = book_().getSheetByName(PO_CFG.VENDORS);
@@ -1564,8 +1564,8 @@ function poPdf_(p) {
     '<td class="n">&#8377; ' + money(l.total) + '</td></tr>'
   ).join('');
   const subtotal = p.subtotal != null ? p.subtotal : p.total;
-  const discountRow = (p.discount > 0)
-    ? '<tr><td colspan="7" class="n"><b>Discount (' + p.discount + '%)</b></td><td class="n" style="color:#c00">&#8211; &#8377; ' + money(p.discountAmt) + '</td></tr>'
+  const discountRow = (p.discountAmt > 0)
+    ? '<tr><td colspan="7" class="n"><b>Discount</b></td><td class="n" style="color:#c00">&#8211; &#8377; ' + money(p.discountAmt) + '</td></tr>'
     : '';
   const html =
     '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
@@ -1584,7 +1584,7 @@ function poPdf_(p) {
     '</style></head><body>' +
     '<table><tr>' +
     '<td style="vertical-align:top;width:65%">' +
-    '<div class="co-name">Summit Hotels &amp; Resorts Pvt. Ltd.</div>' +
+    '<div class="co-name">Summit Hotels and Resorts</div>' +
     '<div class="co-addr">' + e(PO_CFG.COMPANY_ADDR) + '</div>' +
     '</td>' +
     '<td style="vertical-align:bottom;text-align:right">' +
@@ -1603,11 +1603,16 @@ function poPdf_(p) {
     (p.terms ? '<div><span class="lbl">Payment Terms: </span><b>' + e(p.terms) + '</b></div>' : '') +
     '</td>' +
     '<td style="width:50%;vertical-align:top">' +
-    '<div class="lbl">Ship To / Bill To</div>' +
+    '<div class="lbl">Ship To</div>' +
     '<div><b>' + e(p.hotel.name) + '</b></div>' +
     '<div>' + e(p.hotel.address) + '</div>' +
     (p.hotel.phone ? '<div>Phone: ' + e(p.hotel.phone) + '</div>' : '') +
-    (p.hotel.gst ? '<div>GST: ' + e(p.hotel.gst) + '</div>' : '') +
+    '</td></tr></table><br>' +
+    '<table><tr><td colspan="2" style="vertical-align:top;padding-bottom:8px">' +
+    '<div class="lbl">Bill To</div>' +
+    '<div><b>' + e(p.billToHotel.name) + '</b></div>' +
+    '<div>' + e(p.billToHotel.address) + '</div>' +
+    (p.billToHotel.gst ? '<div><b>GST: ' + e(p.billToHotel.gst) + '</b></div>' : '') +
     '</td></tr></table><br>' +
     '<table class="t"><tr>' +
     '<th class="n" style="width:4%">S.No</th>' +
