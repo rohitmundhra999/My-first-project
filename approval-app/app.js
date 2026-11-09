@@ -1505,6 +1505,16 @@ document.addEventListener('click', (e) => {
   const line = all.find((l) => key(l) === b.dataset.key);
   if (line) decide(b.dataset.one, [line]);
 });
+// Auto-update: when a new version is published, reload (unless a PO is being made).
+const APP_V = (((document.querySelector('script[src*="app.js"]') || {}).src || '').split('v=')[1] || '');
+function checkUpdate() {
+  fetch('index.html', { cache: 'no-store' }).then((r) => r.text()).then((h) => {
+    const m = h.match(/app\.js\?v=([\w.-]+)/);
+    if (m && APP_V && m[1] !== APP_V && !(state.poSel && state.poSel.size)) location.reload();
+  }).catch(() => {});
+}
+setInterval(checkUpdate, 60000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkUpdate(); });
 // Keep the list fresh while the app is open; reload when it comes back to the front.
 setInterval(() => { if (document.visibilityState === 'visible' && state.me && !state.busy) refresh(); }, 120000);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && state.me && !state.busy) refresh(); });
