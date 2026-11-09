@@ -66,7 +66,8 @@ function doPost(e) {
     const realUser = auth_(req.idToken);
     const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_,
       reports: (u, r) => scopeReports_(u, reports_(u, r)), decisions: (u, r) => scopeReports_(u, decisions_(u, r)), testPush: testPush_,
-      storeMeta: storeMeta_, storeList: storeList_, storeRaise: storeRaise_, storeReceive: storeReceive_, storeInvoice: storeInvoice_ };
+      storeMeta: storeMeta_, storeList: storeList_, storeRaise: storeRaise_, storeReceive: storeReceive_, storeInvoice: storeInvoice_,
+      sync: sync_ };
     const fn = handlers[req.action];
     if (!fn) throw appError_('BAD_REQUEST', 'Unknown action.');
     const user = previewUser_(realUser, req);
@@ -94,6 +95,50 @@ function me_(user, req, realUser) {
     users: admin ? activeUsers_().map(u => ({ name: u.name, email: u.email, isHO: u.isHO, isApprover: u.isApprover, isStore: u.isStore, units: u.units })) : [],
     preview: user.previewBy ? true : false,
   };
+}
+
+// ======================= sync: everything a screen needs in ONE request =======================
+// Every request to Apps Script costs ~1-2 seconds just to start, and only a limited number can run at the same
+// time for everybody together. So the app asks for all it needs in one "sync" call, and gets back only what changed:
+//   want.me      -> who am I (first open)
+//   want.ho      -> HO lists           want.mine  -> approver lists
+//   want.reports -> { v }  (v = version the app already has: "same" comes back when nothing changed)
+//   want.dec     -> { v }  approval report
+//   want.store   -> { unit, v }        want.meta -> unit (lists for the request form)
+// Big lists are sent "packed" (field names once, then rows of values), which roughly halves the download.
+// A part that fails comes back as { error } without spoiling the other parts.
+function sync_(user, req, realUser) {
+  const w = req.want || {}, fresh = !!req.fresh, out = {};
+  const part = (k, fn) => {
+    try { out[k] = fn(); } catch (e) {
+      if (!e.appCode) console.error(e && e.stack ? e.stack : e);
+      out[k] = { error: e.appCode ? e.message : 'Something went wrong: ' + (e && e.message), code: e.appCode || 'SERVER' };
+    }
+  };
+  if (w.me) part('me', () => me_(user, req, realUser));
+  if (w.ho && user.isHO) part('ho', () => hoList_(user, { fresh: fresh }));
+  if (w.mine && user.isApprover) part('mine', () => myList_(user, { fresh: fresh }));
+  if (w.reports) part('reports', () => scopeReports_(user, reports_(user, { fresh: fresh, v: w.reports.v })));
+  if (w.dec) part('dec', () => {
+    // after a fresh reports read in this same request the decisions are already rebuilt: just pick them up
+    const r = scopeReports_(user, decisions_(user, { fresh: fresh && !w.reports, v: fresh ? '' : w.dec.v }));
+    if (r.decisions) r.decisions = Object.assign({}, r.decisions, { lines: pack_(r.decisions.lines) });
+    return r;
+  });
+  if (w.store && w.store.unit) part('store', () => {
+    const r = storeList_(user, { unit: w.store.unit, fresh: fresh, v: fresh ? '' : w.store.v });
+    if (r.lines) r.lines = pack_(r.lines);
+    return r;
+  });
+  if (w.meta) part('meta', () => storeMeta_(user, { unit: w.meta }));
+  return out;
+}
+
+/** [{a:1,b:2},{a:3}] -> { k:['a','b'], r:[[1,2],[3,null]] } */
+function pack_(list) {
+  const keys = [], at = {};
+  list.forEach(o => Object.keys(o).forEach(k => { if (!(k in at)) { at[k] = keys.length; keys.push(k); } }));
+  return { k: keys, r: list.map(o => keys.map(k => (o[k] === undefined ? null : o[k]))) };
 }
 
 // ======================= admin preview ("view as") =======================
@@ -302,8 +347,15 @@ function requireApprover_(u) { if (!u.isApprover) throw appError_('FORBIDDEN', '
 // ======================= sheet helpers =======================
 
 let USERS_CACHE_ = null;
-function activeUsers_() {
-  if (USERS_CACHE_) return USERS_CACHE_;
+const USERS_KEY = 'app_users_' + MODE;
+/** APP USERS, kept 5 minutes in the cache so a request does not have to open the spreadsheet just to check who you are.
+ * warmCache re-reads it every 5 minutes, so a change in APP USERS shows within 5 minutes. */
+function activeUsers_(fresh) {
+  if (USERS_CACHE_ && !fresh) return USERS_CACHE_;
+  if (!fresh) {
+    const c = CacheService.getScriptCache().get(USERS_KEY);
+    if (c) { try { USERS_CACHE_ = JSON.parse(c); return USERS_CACHE_; } catch (e) { /* re-read */ } }
+  }
   const sh = book_().getSheetByName(CFG.USERS);
   if (!sh) throw appError_('SETUP', 'The "' + CFG.USERS + '" tab is missing. Run setup() once.');
   USERS_CACHE_ = sh.getDataRange().getValues().slice(1)
@@ -312,23 +364,36 @@ function activeUsers_() {
     .filter(u => u.name && u.email && u.active !== 'NO')
     .map(u => ({ name: u.name, email: u.email, isHO: /\bHO\b/.test(u.role), isApprover: /APPROVER/.test(u.role), isAdmin: /ADMIN/.test(u.role),
                  isStore: /STORE/.test(u.role) && u.units.length > 0, units: /STORE/.test(u.role) ? u.units : [] }));
+  try { CacheService.getScriptCache().put(USERS_KEY, JSON.stringify(USERS_CACHE_), 600); } catch (e) { /* too big: read each time */ }
   return USERS_CACHE_;
 }
 
-function readLines_(keep) {
+/** The FMS tab read ONCE per run (A-AG values + the few display columns), shared by the open lines, the reports
+ * and the store lines. Reading FMS is the slow part, so warmCache now reads it once instead of three times. */
+let FMS_SNAP_ = null;
+function fmsSnap_() {
+  if (FMS_SNAP_) return FMS_SNAP_;
   const sh = fms_();
-  // Only the recent end of FMS matters (LOOKBACK_DAYS). Find the last row that has an order number, then read
-  // the last FMS_MAX_ROWS rows above it, instead of every row since January.
-  const lastSheetRow = sh.getLastRow();
-  if (lastSheetRow < CFG.FIRST_ROW) return [];
-  const orders = sh.getRange(CFG.FIRST_ROW, COL.ORDER, lastSheetRow - CFG.FIRST_ROW + 1, 1).getValues();
-  let lastData = orders.length;
-  while (lastData > 0 && String(orders[lastData - 1][0]).trim() === '') lastData--;
+  const n = Math.max(0, sh.getLastRow() - CFG.FIRST_ROW + 1);
+  FMS_SNAP_ = n ? {
+    n: n,
+    rows: sh.getRange(CFG.FIRST_ROW, 1, n, 33).getValues(),
+    stamps: sh.getRange(CFG.FIRST_ROW, COL.TS, n, 1).getDisplayValues(),
+    acted: sh.getRange(CFG.FIRST_ROW, COL.ACTUAL, n, 1).getDisplayValues(),
+    inv: sh.getRange(CFG.FIRST_ROW, 29, n, 1).getDisplayValues(),
+  } : { n: 0, rows: [], stamps: [], acted: [], inv: [] };
+  return FMS_SNAP_;
+}
+
+function readLines_(keep) {
+  // Only the recent end of FMS matters (LOOKBACK_DAYS): the last FMS_MAX_ROWS rows that have an order number.
+  const snap = fmsSnap_();
+  let lastData = snap.n;
+  while (lastData > 0 && String(snap.rows[lastData - 1][COL.ORDER - 1]).trim() === '') lastData--;
   if (!lastData) return [];
   const startIdx = Math.max(0, lastData - FMS_MAX_ROWS);
-  const first = CFG.FIRST_ROW + startIdx, n = lastData - startIdx;
-  const values = sh.getRange(first, 1, n, COL.APPR_QTY).getValues();
-  const stamps = sh.getRange(first, COL.TS, n, 1).getDisplayValues();
+  const values = snap.rows.slice(startIdx, lastData);
+  const stamps = snap.stamps.slice(startIdx, lastData);
   const cutoff = Date.now() - CFG.LOOKBACK_DAYS * 86400000;
   const now = new Date(Date.now() + 330 * 60000), nowYear = now.getUTCFullYear(), nowMonth = now.getUTCMonth() + 1;
   const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -465,10 +530,11 @@ function cacheGetBig_(key) {
 
 /** Runs every 5 minutes (see installTriggers) so the app always opens quickly. */
 function warmCache() {
+  activeUsers_(true);
   const lines = openLines_(true);
   try { alertNewLines_(lines); } catch (e) { console.error('New-line alert failed: ' + e); }
   reports_(null, { fresh: true });
-  try { storeLines_(true); } catch (e) { console.error('Store cache failed: ' + e); }
+  try { storeLines_(); } catch (e) { console.error('Store cache failed: ' + e); }
 }
 
 function cleanItems_(items) {
@@ -635,19 +701,17 @@ const UNIT_MAP = [
 function reports_(user, req) {
   const cache = CacheService.getScriptCache();
   const hit = req && req.fresh ? null : cacheGetBig_('reports_' + MODE);
-  if (hit) return { reports: hit };
+  if (hit) return hit.v && req && req.v === hit.v ? { same: true } : { reports: hit };
 
-  const sh = fms_();
-  const n = sh.getLastRow() - CFG.FIRST_ROW + 1;
-  const rows = n > 0 ? sh.getRange(CFG.FIRST_ROW, 1, n, 33).getValues() : [];
-  const stamps = n > 0 ? sh.getRange(CFG.FIRST_ROW, COL.TS, n, 1).getDisplayValues() : [];
+  const snap = fmsSnap_();
+  const n = snap.n, rows = snap.rows, stamps = snap.stamps;
   const fromKey = REPORT_FROM.y * 10000 + REPORT_FROM.m * 100 + REPORT_FROM.d;
   const pad = v => (v < 10 ? '0' : '') + v;
   const norm = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
 
   const decided = [];
   const remarks = remarksIndex_();
-  const acted = n > 0 ? sh.getRange(CFG.FIRST_ROW, COL.ACTUAL, n, 1).getDisplayValues() : [];
+  const acted = snap.acted;
   const nr = { pos: {}, order: [], excluded: {} };
   const ip = { pos: {}, order: [], excluded: {} };
   let year = CFG.START_YEAR, prevMonth = 1;
@@ -716,9 +780,10 @@ function reports_(user, req) {
     unitMap: UNIT_MAP.map(x => [x[0], x[1]]),
     from: REPORT_FROM.y + '-' + pad(REPORT_FROM.m) + '-' + pad(REPORT_FROM.d),
     asOf: Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm'),
+    v: String(Date.now()),
   };
   cachePutBig_('reports_' + MODE, out, REPORT_CACHE_SECONDS);
-  const dec = { lines: decided.reverse(), from: out.from, asOf: out.asOf, unitMap: out.unitMap,
+  const dec = { lines: decided.reverse(), from: out.from, asOf: out.asOf, unitMap: out.unitMap, v: out.v,
     approvers: activeUsers_().filter(u => u.isApprover).map(u => u.name) };   // everyone who can approve, for the filter
   cachePutBig_(DEC_CACHE, dec, REPORT_CACHE_SECONDS);
   return { reports: out, decisionsData: dec };
@@ -731,7 +796,7 @@ const DEC_CACHE = 'decisions_' + MODE;
 
 function decisions_(user, req) {
   const hit = req && req.fresh ? null : cacheGetBig_(DEC_CACHE);
-  if (hit) return { decisions: hit };
+  if (hit) return hit.v && req && req.v === hit.v ? { same: true } : { decisions: hit };
   return { decisions: reports_(user, { fresh: true }).decisionsData };
 }
 
@@ -768,6 +833,7 @@ function patchDecisions_(done, decision, user, remark) {
     };
   });
   dec.lines = fresh.concat(dec.lines.filter(l => !rows[l.row]));
+  dec.v = String(Date.now());
   cachePutBig_(DEC_CACHE, dec, REPORT_CACHE_SECONDS);
 }
 
@@ -842,6 +908,7 @@ function rebuildOpenLines_() {
   try {
     for (let i = 0; i < 3; i++) {
       const mark = c.get('open_dirty');
+      FMS_SNAP_ = null;   // read the sheet as it is now
       openLines_(true);
       if (c.get('open_dirty') === mark) break;
     }
@@ -962,34 +1029,35 @@ function storeMetaData_(fresh) {
     out.categories = byCount(cats).filter(c => cats[c] >= 3);
     out.uoms = byCount(uoms).filter(u => uoms[u] >= 3).slice(0, 25);
   }
-  cachePutBig_(STORE_CFG.META, out, 21600);
-  return out;
+  Object.keys(out.items).forEach(u => cachePutBig_(STORE_CFG.META + '_items_' + normU_(u), out.items[u], 21600));
+  const base = { units: out.units, categories: out.categories, uoms: out.uoms };
+  cachePutBig_(STORE_CFG.META, base, 21600);
+  return base;
 }
 
 function storeMeta_(user, req) {
   const unit = checkUnit_(user, req.unit);
   const m = storeMetaData_();
-  return { unit: unit, categories: m.categories, uoms: m.uoms, items: m.items[unit.toUpperCase()] || [] };
+  let items = cacheGetBig_(STORE_CFG.META + '_items_' + normU_(unit));
+  if (!items) { storeMetaData_(true); items = cacheGetBig_(STORE_CFG.META + '_items_' + normU_(unit)) || []; }
+  return { unit: unit, categories: m.categories, uoms: m.uoms, items: items };
 }
 
-/** Lines the storekeeper screens need: requests of the last LOOKBACK_DAYS, plus every line since REPORT_FROM
- * that still has to be received or invoiced. Kept ready in the cache (warmCache) and re-read after any change. */
-function storeLines_(fresh) {
-  if (!fresh) { const hit = cacheGetBig_(STORE_CFG.CACHE); if (hit) return hit; }
-  const sh = fms_();
-  const lastRow = sh.getLastRow();
-  const n = lastRow - CFG.FIRST_ROW + 1;
-  const out = { lines: [], asOf: Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm') };
-  if (n <= 0) { cachePutBig_(STORE_CFG.CACHE, out, OPEN_CACHE_SECONDS); return out; }
-  const rows = sh.getRange(CFG.FIRST_ROW, 1, n, SCOL.LAST).getValues();
-  const disp = sh.getRange(CFG.FIRST_ROW, COL.TS, n, 1).getDisplayValues();
-  const invDisp = sh.getRange(CFG.FIRST_ROW, SCOL.INVOICE, n, 1).getDisplayValues();
+/** Lines the storekeeper screens need: requests of the last STORE_DAYS days, plus every line since REPORT_FROM
+ * that still has to be received or invoiced. Kept ready in the cache PER UNIT (so a storekeeper only downloads and
+ * the server only unpacks their own unit), rebuilt by warmCache every 5 minutes and after every store change. */
+const STORE_DAYS = 60;
+const storeKey_ = unit => STORE_CFG.CACHE + '_' + normU_(unit);
+function storeLines_() {
+  const snap = fmsSnap_();
+  const rows = snap.rows, disp = snap.stamps, invDisp = snap.inv;
   const remarks = remarksIndex_();
   const links = poLinks_();
   const fromKey = REPORT_FROM.y * 10000 + REPORT_FROM.m * 100 + REPORT_FROM.d;
-  const cutoff = Date.now() - CFG.LOOKBACK_DAYS * 86400000;
+  const cutoff = Date.now() - STORE_DAYS * 86400000;
   const pad = v => (v < 10 ? '0' : '') + v;
   const num = v => (v === '' || v === null ? '' : (isFinite(Number(v)) ? Number(v) : String(v)));
+  const byUnit = {};
   let year = CFG.START_YEAR, prevMonth = 1;
   rows.forEach((r, i) => {
     const m = String(disp[i][0]).match(/^(\d{1,2})-(\d{1,2})(?:\((\d{1,2}):(\d{2})\))?/);
@@ -1007,22 +1075,29 @@ function storeLines_(fresh) {
     const toReceive = status === 'Approved' && po && !received;
     const toInvoice = status === 'Approved' && po && received && inv === 'UPDATE';
     if (ts < cutoff && !toReceive && !toInvoice) return;
-    out.lines.push({
-      row: CFG.FIRST_ROW + i, o: orderNo, ts: ts,
+    const unit = normU_(r[COL.UNIT - 1]);
+    if (!unit) return;
+    const l = {
+      row: CFG.FIRST_ROW + i, o: orderNo,
       d: year + '-' + pad(mon) + '-' + pad(day), at: pad(day) + '-' + pad(mon) + ' ' + pad(+(m[3] || 0)) + ':' + pad(+(m[4] || 0)),
       u: String(r[COL.UNIT - 1]).trim(), cat: String(r[COL.CAT - 1]).trim(), it: String(r[COL.ITEM - 1]).trim(),
-      pic: /^https?:\/\//.test(String(r[COL.PIC - 1])) ? String(r[COL.PIC - 1]).trim() : '',
-      q: num(r[COL.QTY - 1]), uom: String(r[COL.UOM - 1]).trim(),
-      s: status, ap: String(r[COL.APPROVED_BY - 1]).trim() || String(r[COL.APPROVER - 1]).trim(), aq: num(r[COL.APPR_QTY - 1]),
-      rm: status === 'Rejected' ? (remarks[orderNo] || '') : '',
-      po: po, pol: po ? (links[po.toUpperCase()] || '') : '', amt: Number(String(r[SCOL.PO_AMT - 1]).replace(/[^0-9.]/g, '')) || 0,
-      ven: String(r[SCOL.VENDOR - 1]).trim(), rcv: received ? num(r[SCOL.RECEIVED - 1]) : '',
-      inv: inv === 'UPDATE' ? 'pending' : (inv === 'INVOICE' ? 'done' : ''), invNo: String(r[SCOL.INV_NO - 1]).trim(),
-    });
+      q: num(r[COL.QTY - 1]), uom: String(r[COL.UOM - 1]).trim(), s: status,
+      ap: String(r[COL.APPROVED_BY - 1]).trim() || String(r[COL.APPROVER - 1]).trim(), aq: num(r[COL.APPR_QTY - 1]),
+      rcv: received ? num(r[SCOL.RECEIVED - 1]) : '', inv: inv === 'UPDATE' ? 'pending' : (inv === 'INVOICE' ? 'done' : ''),
+    };
+    // only what the screens use: leave out empty fields
+    if (/^https?:\/\//.test(String(r[COL.PIC - 1]))) l.pic = String(r[COL.PIC - 1]).trim();
+    if (status === 'Rejected' && remarks[orderNo]) l.rm = remarks[orderNo];
+    if (po) {
+      l.po = po; l.pol = links[po.toUpperCase()] || '';
+      l.amt = Number(String(r[SCOL.PO_AMT - 1]).replace(/[^0-9.]/g, '')) || 0; l.ven = String(r[SCOL.VENDOR - 1]).trim();
+    }
+    (byUnit[unit] = byUnit[unit] || []).push(l);
   });
-  out.lines.reverse();   // newest first
-  cachePutBig_(STORE_CFG.CACHE, out, OPEN_CACHE_SECONDS);
-  return out;
+  const asOf = Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm'), v = String(Date.now());
+  const units = unique_(storeMetaData_().units.map(normU_).concat(Object.keys(byUnit)));
+  units.forEach(u => cachePutBig_(storeKey_(u), { lines: (byUnit[u] || []).reverse(), asOf: asOf, v: v }, OPEN_CACHE_SECONDS + 300));
+  return byUnit;
 }
 
 /** PO number -> link of the PO file (P.Os tab B:C), last few thousand POs. */
@@ -1043,9 +1118,10 @@ function poLinks_() {
 /** Storekeeper: every line of one unit (only units this person may work on). */
 function storeList_(user, req) {
   const unit = checkUnit_(user, req.unit);
-  const data = storeLines_(req && req.fresh);
-  const key = normU_(unit);
-  return { unit: unit, lines: data.lines.filter(l => normU_(l.u) === key), asOf: data.asOf };
+  let data = req && req.fresh ? null : cacheGetBig_(storeKey_(unit));
+  if (!data) { storeLines_(); data = cacheGetBig_(storeKey_(unit)) || { lines: [], asOf: '', v: '' }; }
+  if (!(req && req.fresh) && req && req.v && req.v === data.v) return { same: true, unit: unit };
+  return { unit: unit, lines: data.lines, asOf: data.asOf, v: data.v };
 }
 
 /** Storekeeper: raise a purchase request with one or more lines. */
@@ -1215,15 +1291,18 @@ function uploadFolder_(sub) {
 
 /** After a storekeeper change: re-read the store lines; drop the ready report copies so they re-read too. */
 function afterStoreChange_(newLines) {
-  try { storeLines_(true); } catch (e) { console.warn('Store re-read failed: ' + e); }
+  FMS_SNAP_ = null;   // the sheet just changed
+  try { storeLines_(); } catch (e) { console.warn('Store re-read failed: ' + e); }
   CacheService.getScriptCache().removeAll(['reports_' + MODE, DEC_CACHE]);
   if (newLines) {
+    try { storeMetaData_(true); } catch (e) { console.warn('Meta re-read failed: ' + e); }
     try { const open = openLines_(true); alertNewLines_(open); } catch (e) { console.warn('Open lines re-read failed: ' + e); }
   }
 }
 
 /** A storekeeper (who is not HO, approver or admin) sees the reports of their own unit(s) only. */
 function scopeReports_(user, res) {
+  if (res.same) return res;
   if (!user.isStore || user.isHO || user.isApprover || (!user.previewBy && isAdmin_(user))) return res;
   const label = raw => { const u = normU_(raw); const m = UNIT_MAP.find(x => x[2].some(k => u.indexOf(k) !== -1)); return m ? m[1] : String(raw).trim(); };
   const mine = user.units.map(label);
@@ -1251,6 +1330,6 @@ function setupStore() {
   }
   uploadFolder_('Item photos'); uploadFolder_('Invoices');
   storeMetaData_(true);
-  storeLines_(true);
+  storeLines_();
   console.log('Storekeeper setup done. Units found: ' + storeMetaData_().units.join(', '));
 }
