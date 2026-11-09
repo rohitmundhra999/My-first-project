@@ -66,7 +66,8 @@ function doPost(e) {
     const realUser = auth_(req.idToken);
     const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_,
       reports: (u, r) => scopeReports_(u, reports_(u, r)), decisions: (u, r) => scopeReports_(u, decisions_(u, r)), testPush: testPush_,
-      storeMeta: storeMeta_, storeList: storeList_, storeRaise: storeRaise_, storeReceive: storeReceive_, storeInvoice: storeInvoice_ };
+      storeMeta: storeMeta_, storeList: storeList_, storeRaise: storeRaise_, storeReceive: storeReceive_, storeInvoice: storeInvoice_,
+      sync: sync_ };
     const fn = handlers[req.action];
     if (!fn) throw appError_('BAD_REQUEST', 'Unknown action.');
     const user = previewUser_(realUser, req);
@@ -94,6 +95,55 @@ function me_(user, req, realUser) {
     users: admin ? activeUsers_().map(u => ({ name: u.name, email: u.email, isHO: u.isHO, isApprover: u.isApprover, isStore: u.isStore, units: u.units })) : [],
     preview: user.previewBy ? true : false,
   };
+}
+
+// ======================= sync: everything a screen needs in ONE request =======================
+// Every request to Apps Script costs ~1-2 seconds just to start, and only a limited number can run at the same
+// time for everybody together. So the app asks for all it needs in one "sync" call, and gets back only what changed:
+//   want.me      -> who am I (first open)
+//   want.ho      -> HO lists           want.mine  -> approver lists
+//   want.reports -> { v }  (v = version the app already has: "same" comes back when nothing changed)
+//   want.dec     -> { v }  approval report
+//   want.store   -> { unit, v }        want.meta -> unit (lists for the request form)
+// Big lists are sent "packed" (field names once, then rows of values), which roughly halves the download.
+// A part that fails comes back as { error } without spoiling the other parts.
+function sync_(user, req, realUser) {
+  const w = req.want || {}, fresh = !!req.fresh, out = {};
+  const part = (k, fn) => {
+    try { out[k] = fn(); } catch (e) {
+      if (!e.appCode) console.error(e && e.stack ? e.stack : e);
+      out[k] = { error: e.appCode ? e.message : 'Something went wrong: ' + (e && e.message), code: e.appCode || 'SERVER' };
+    }
+  };
+  if (w.me) part('me', () => me_(user, req, realUser));
+  if (w.ho && user.isHO) part('ho', () => hoList_(user, { fresh: fresh }));
+  if (w.mine && user.isApprover) part('mine', () => myList_(user, { fresh: fresh }));
+  if (w.reports) part('reports', () => scopeReports_(user, reports_(user, { fresh: fresh, v: w.reports.v })));
+  if (w.dec) part('dec', () => {
+    // after a fresh reports read in this same request the decisions are already rebuilt: just pick them up
+    const r = scopeReports_(user, decisions_(user, { fresh: fresh && !w.reports, v: fresh ? '' : w.dec.v }));
+    if (r.decisions) r.decisions = Object.assign({}, r.decisions, { lines: pack_(r.decisions.lines) });
+    return r;
+  });
+  if (w.store && w.store.unit) part('store', () => {
+    const r = storeList_(user, { unit: w.store.unit, fresh: fresh, v: fresh ? '' : w.store.v });
+    if (r.lines) r.lines = pack_(r.lines);
+    return r;
+  });
+  if (w.meta) part('meta', () => storeMeta_(user, { unit: w.meta }));
+  return out;
+}
+
+/** Short fingerprint of the content: the same data always gives the same version, so the app downloads only real changes. */
+function ver_(obj) {
+  return Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, JSON.stringify(obj))).slice(0, 16);
+}
+
+/** [{a:1,b:2},{a:3}] -> { k:['a','b'], r:[[1,2],[3,null]] } */
+function pack_(list) {
+  const keys = [], at = {};
+  list.forEach(o => Object.keys(o).forEach(k => { if (!(k in at)) { at[k] = keys.length; keys.push(k); } }));
+  return { k: keys, r: list.map(o => keys.map(k => (o[k] === undefined ? null : o[k]))) };
 }
 
 // ======================= admin preview ("view as") =======================
@@ -656,7 +706,7 @@ const UNIT_MAP = [
 function reports_(user, req) {
   const cache = CacheService.getScriptCache();
   const hit = req && req.fresh ? null : cacheGetBig_('reports_' + MODE);
-  if (hit) return hit.v && req && req.v === hit.v ? { same: true } : { reports: hit };
+  if (hit) return hit.v && req && req.v === hit.v ? { same: true, asOf: hit.asOf } : { reports: hit };
 
   const snap = fmsSnap_();
   const n = snap.n, rows = snap.rows, stamps = snap.stamps;
@@ -735,11 +785,12 @@ function reports_(user, req) {
     unitMap: UNIT_MAP.map(x => [x[0], x[1]]),
     from: REPORT_FROM.y + '-' + pad(REPORT_FROM.m) + '-' + pad(REPORT_FROM.d),
     asOf: Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm'),
-    v: String(Date.now()),
   };
+  out.v = ver_([out.notReceived, out.invoicePending]);   // changes only when the report itself changes
   cachePutBig_('reports_' + MODE, out, REPORT_CACHE_SECONDS);
-  const dec = { lines: decided.reverse(), from: out.from, asOf: out.asOf, unitMap: out.unitMap, v: out.v,
+  const dec = { lines: decided.reverse(), from: out.from, asOf: out.asOf, unitMap: out.unitMap,
     approvers: activeUsers_().filter(u => u.isApprover).map(u => u.name) };   // everyone who can approve, for the filter
+  dec.v = ver_([dec.lines, dec.approvers]);
   cachePutBig_(DEC_CACHE, dec, REPORT_CACHE_SECONDS);
   return { reports: out, decisionsData: dec };
 }
@@ -751,7 +802,7 @@ const DEC_CACHE = 'decisions_' + MODE;
 
 function decisions_(user, req) {
   const hit = req && req.fresh ? null : cacheGetBig_(DEC_CACHE);
-  if (hit) return hit.v && req && req.v === hit.v ? { same: true } : { decisions: hit };
+  if (hit) return hit.v && req && req.v === hit.v ? { same: true, asOf: hit.asOf } : { decisions: hit };
   return { decisions: reports_(user, { fresh: true }).decisionsData };
 }
 
@@ -788,7 +839,7 @@ function patchDecisions_(done, decision, user, remark) {
     };
   });
   dec.lines = fresh.concat(dec.lines.filter(l => !rows[l.row]));
-  dec.v = String(Date.now());
+  dec.v = ver_([dec.lines, dec.approvers]);
   cachePutBig_(DEC_CACHE, dec, REPORT_CACHE_SECONDS);
 }
 
@@ -1049,9 +1100,9 @@ function storeLines_() {
     }
     (byUnit[unit] = byUnit[unit] || []).push(l);
   });
-  const asOf = Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm'), v = String(Date.now());
+  const asOf = Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm');
   const units = unique_(storeMetaData_().units.map(normU_).concat(Object.keys(byUnit)));
-  units.forEach(u => cachePutBig_(storeKey_(u), { lines: (byUnit[u] || []).reverse(), asOf: asOf, v: v }, OPEN_CACHE_SECONDS + 300));
+  units.forEach(u => { const lines = (byUnit[u] || []).reverse(); cachePutBig_(storeKey_(u), { lines: lines, asOf: asOf, v: ver_(lines) }, OPEN_CACHE_SECONDS + 300); });
   return byUnit;
 }
 
@@ -1075,7 +1126,7 @@ function storeList_(user, req) {
   const unit = checkUnit_(user, req.unit);
   let data = req && req.fresh ? null : cacheGetBig_(storeKey_(unit));
   if (!data) { storeLines_(); data = cacheGetBig_(storeKey_(unit)) || { lines: [], asOf: '', v: '' }; }
-  if (!(req && req.fresh) && req && req.v && req.v === data.v) return { same: true, unit: unit };
+  if (!(req && req.fresh) && req && req.v && req.v === data.v) return { same: true, unit: unit, asOf: data.asOf };
   return { unit: unit, lines: data.lines, asOf: data.asOf, v: data.v };
 }
 
