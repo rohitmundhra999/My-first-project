@@ -1465,7 +1465,7 @@ function makePO_(user, req) {
     const price = Number(src.price), tax = src.tax === '' || src.tax == null ? 0 : Number(src.tax);
     if (!(price >= 0) || price > 1e8) throw appError_('BAD_REQUEST', 'Enter the price for ' + it.orderNo + '.');
     if (!(tax >= 0) || tax > 100) throw appError_('BAD_REQUEST', 'Tax % for ' + it.orderNo + ' must be 0 to 100.');
-    return Object.assign(it, { price: price, tax: tax });
+    return Object.assign(it, { price: price, tax: tax, name: String(src.name || '').replace(/\s+/g, ' ').trim().slice(0, 200) });
   });
   if (items.length > PO_CFG.MAX_LINES) throw appError_('BAD_REQUEST', 'A PO can have at most ' + PO_CFG.MAX_LINES + ' lines.');
   if (!items.some(it => it.price > 0)) throw appError_('BAD_REQUEST', 'Enter the prices.');
@@ -1500,7 +1500,7 @@ function makePO_(user, req) {
       const qty = aq === '' || aq === null ? Number(r[COL.QTY - 1]) || 0 : Number(aq);
       const total = Math.round(qty * it.price * (1 + it.tax / 100) * 10) / 10;   // as the sheet: ROUND(qty*price*(1+tax%),1)
       return { row: it.row, orderNo: it.orderNo, unit: String(r[COL.UNIT - 1]).trim(), cat: String(r[COL.CAT - 1]).trim(),
-               item: String(r[COL.ITEM - 1]).trim(), qty: qty, uom: String(r[COL.UOM - 1]).trim(), price: it.price, tax: it.tax, total: total };
+               item: it.name || String(r[COL.ITEM - 1]).trim(), qty: qty, uom: String(r[COL.UOM - 1]).trim(), price: it.price, tax: it.tax, total: total };
     });
     const unit = lines[0].unit;
     if (lines.some(l => normU_(l.unit) !== normU_(unit))) throw appError_('BAD_REQUEST', 'All lines of a PO must be for the same hotel.');
@@ -1515,7 +1515,8 @@ function makePO_(user, req) {
     const poNo = (unit.slice(0, 2) + vendor[0].slice(0, 2)) + (lines.length < 10 ? '0' : '') + lines.length +
                  Utilities.formatDate(now, CFG.TZ, 'ddMM-H') + Utilities.formatDate(now, CFG.TZ, 'mm');
     const subtotal = Math.round(lines.reduce((a, l) => a + l.total, 0) * 100) / 100;
-      const discountAmt = typeof req.discountAmt === 'number' && req.discountAmt > 0 ? Math.round(req.discountAmt * 100) / 100 : 0;
+      const dRaw = Number(req.discountAmt != null ? req.discountAmt : req.discount) || 0;
+  const discountAmt = dRaw > 0 ? Math.min(Math.round(dRaw * 100) / 100, subtotal) : 0;
       const grand = Math.round((subtotal - discountAmt) * 100) / 100;
     const hotel = hotelInfo_(req.shipTo || unit);
     const billToHotel = hotelInfo_(req.billTo || unit);
@@ -1544,6 +1545,25 @@ function makePO_(user, req) {
 }
 
 /** Hotel name, address, phone, GST from the P.O tab's hotel table (Head Office -> company "GOODS" row). */
+/** Summit logo from the P.O tab (cell J6), as a data URI for the PDF; cached 6 h. */
+function poLogo_() {
+  const c = CacheService.getScriptCache();
+  const hit = c.get('poLogo');
+  if (hit) return hit === '-' ? '' : hit;
+  let d = '';
+  try {
+    const v = book_().getSheetByName(PO_CFG.TEMPLATE).getRange('J6').getValue();
+    let url = v && v.getContentUrl ? v.getContentUrl() : '';
+    if (url) {
+      url = url.replace(/=s\d+/, '=s240');
+      const r = UrlFetchApp.fetch(url, { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true });
+      if (r.getResponseCode() === 200) d = 'data:' + (r.getHeaders()['Content-Type'] || 'image/png').split(';')[0] + ';base64,' + Utilities.base64Encode(r.getContent());
+    }
+  } catch (err) { console.warn('Logo not loaded: ' + err); }
+  try { c.put('poLogo', d && d.length < 95000 ? d : (d ? '' : '-'), 21600); } catch (err) {}
+  return d;
+}
+
 /** Units for Ship To / Bill To: [key, hotel name] from the P.O tab. */
 function hotelList_() {
   const sh = book_().getSheetByName(PO_CFG.TEMPLATE);
@@ -1561,97 +1581,50 @@ function hotelInfo_(unit) {
            : { name: unit, address: '', phone: '', gst: '' };
 }
 
-/** Makes the PO PDF (matches the sheet's P.O layout) and returns a Drive link. */
+/** Makes the PO PDF from a copy of the sheet's P.O tab (same layout, logo and colours) and returns a Drive link. */
 function poPdf_(p) {
-  const e = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-  const money = n => Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const rows = p.lines.map((l, i) =>
-    '<tr' + (i % 2 ? ' class="z"' : '') + '><td class="c">' + (i + 1) + '</td><td>' + e(l.orderNo) + '</td><td>' + e(l.item) +
-    '</td><td class="n">' + e(l.qty) + '</td><td class="c">' + e(l.uom) +
-    '</td><td class="n">' + money(l.price) + '</td><td class="n">' + e(l.tax) + '%</td>' +
-    '<td class="n">' + money(l.total) + '</td></tr>'
-  ).join('');
-  const subtotal = p.subtotal != null ? p.subtotal : p.total;
-  const html =
-    '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
-    'body{font-family:Arial,Helvetica,sans-serif;font-size:10pt;color:#222;margin:28px 32px;line-height:1.35}' +
-    'table{border-collapse:collapse;width:100%}' +
-    '.hdr td{vertical-align:middle}' +
-    '.co{font-size:20pt;font-weight:bold;color:#1b5e20;letter-spacing:0.5px}' +
-    '.coaddr{font-size:9pt;color:#555;margin-top:2px}' +
-    '.title{font-size:16pt;font-weight:bold;color:#fff;background:#1b5e20;padding:6px 14px;text-align:center;letter-spacing:2px}' +
-    '.meta td{font-size:9.5pt;padding:2px 0}.meta .k{color:#666;padding-right:8px}' +
-    '.bar{border-top:3px solid #1b5e20;margin:10px 0 12px}' +
-    '.box{border:1px solid #9fbfa1;vertical-align:top;padding:0}' +
-    '.box .h{background:#e8f5e9;color:#1b5e20;font-weight:bold;font-size:9pt;letter-spacing:1px;padding:5px 10px;border-bottom:1px solid #9fbfa1}' +
-    '.box .b{padding:7px 10px;font-size:9.5pt;min-height:70px}' +
-    '.gst{margin-top:6px;padding:4px 6px;background:#fff8e1;border:1px solid #f0c36d;font-weight:bold;font-size:10pt}' +
-    '.t th{background:#1b5e20;color:#fff;font-size:9pt;padding:6px;border:1px solid #1b5e20;text-align:left}' +
-    '.t td{border:1px solid #c8c8c8;padding:5px 6px;font-size:9.5pt}' +
-    '.t tr.z td{background:#f7faf7}' +
-    '.n{text-align:right}.c{text-align:center}' +
-    '.sum td{border:1px solid #c8c8c8;padding:6px 8px;font-size:10pt}' +
-    '.sum .k{background:#f5f5f5;font-weight:bold}' +
-    '.sum .g td{background:#1b5e20;color:#fff;font-weight:bold;font-size:11pt}' +
-    '.lbl{font-size:9pt;color:#1b5e20;font-weight:bold;letter-spacing:0.5px}' +
-    '.sign td{padding-top:40px;font-size:9pt;color:#444}' +
-    '</style></head><body>' +
-    '<table class="hdr"><tr>' +
-    '<td style="width:62%"><div class="co">Summit Hotels and Resorts</div>' +
-    '<div class="coaddr">' + e(PO_CFG.COMPANY_ADDR) + '</div></td>' +
-    '<td style="width:38%"><div class="title">PURCHASE ORDER</div>' +
-    '<table class="meta" style="margin-top:6px"><tr><td class="k">PO No.</td><td class="n"><b>' + e(p.poNo) + '</b></td></tr>' +
-    '<tr><td class="k">PO Date</td><td class="n"><b>' + Utilities.formatDate(p.date, CFG.TZ, 'dd-MMM-yyyy').toUpperCase() + '</b></td></tr>' +
-    '<tr><td class="k">Delivery</td><td class="n"><b>' + e(p.days) + ' days</b></td></tr>' +
-    (p.terms ? '<tr><td class="k">Payment Terms</td><td class="n"><b>' + e(p.terms) + '</b></td></tr>' : '') +
-    '</table></td></tr></table>' +
-    '<div class="bar"></div>' +
-    '<table><tr><td class="box" style="width:100%"><div class="h">VENDOR</div><div class="b" style="min-height:0">' +
-    '<b>' + e(p.vendor[0]) + '</b>' +
-    (p.vendor[1] ? '<br>' + e(p.vendor[1]) : '') +
-    (p.vendor[2] ? '<br>Mobile: ' + e(p.vendor[2]) : '') +
-    '</div></td></tr></table><div style="height:10px"></div>' +
-    '<table><tr>' +
-    '<td class="box" style="width:49%"><div class="h">SHIP TO</div><div class="b">' +
-    '<b>' + e(p.hotel.name) + '</b><br>' + e(p.hotel.address) +
-    (p.hotel.phone ? '<br>Phone: ' + e(p.hotel.phone) : '') +
-    '</div></td>' +
-    '<td style="width:2%"></td>' +
-    '<td class="box" style="width:49%"><div class="h">BILL TO</div><div class="b">' +
-    '<b>' + e(p.billToHotel.name) + '</b><br>' + e(p.billToHotel.address) +
-    (p.billToHotel.phone ? '<br>Phone: ' + e(p.billToHotel.phone) : '') +
-    '<div class="gst">GSTIN: ' + (p.billToHotel.gst ? e(p.billToHotel.gst) : '&#8212;') + '</div>' +
-    '</div></td>' +
-    '</tr></table><div style="height:12px"></div>' +
-    '<table class="t"><tr>' +
-    '<th class="c" style="width:5%">S.No</th>' +
-    '<th style="width:12%">Order #</th>' +
-    '<th>Description</th>' +
-    '<th class="n" style="width:7%">Qty</th>' +
-    '<th class="c" style="width:7%">Unit</th>' +
-    '<th class="n" style="width:12%">Rate (&#8377;)</th>' +
-    '<th class="n" style="width:7%">Tax %</th>' +
-    '<th class="n" style="width:14%">Amount (&#8377;)</th>' +
-    '</tr>' + rows + '</table>' +
-    '<table style="margin-top:0"><tr><td style="width:55%;vertical-align:top;padding-top:10px">' +
-    '<div class="lbl">SPECIAL INSTRUCTIONS</div>' +
-    '<div style="font-size:9.5pt">Freight Including' + (p.note ? ' &#8212; ' + e(p.note) : '') + '</div>' +
-    '<div style="font-size:9pt;color:#555;margin-top:6px">Please mention this PO number and the Bill To GSTIN on your invoice.</div>' +
-    '</td><td style="width:45%;vertical-align:top">' +
-    '<table class="sum">' +
-    '<tr><td class="k">Sub Total</td><td class="n">&#8377; ' + money(subtotal) + '</td></tr>' +
-    (p.discountAmt > 0 ? '<tr><td class="k">Less: Discount</td><td class="n" style="color:#c00">&#8211; &#8377; ' + money(p.discountAmt) + '</td></tr>' : '') +
-    '<tr class="g"><td>GRAND TOTAL</td><td class="n">&#8377; ' + money(p.total) + '</td></tr>' +
-    '</table></td></tr></table>' +
-    '<table class="sign"><tr><td style="width:50%">Prepared by: <b>' + e(p.by) + '</b></td>' +
-    '<td class="n">For <b>Summit Hotels and Resorts</b><br><br><br>Authorised Signatory</td></tr></table>' +
-    '<div style="font-size:8pt;color:#999;margin-top:14px">Generated on ' + Utilities.formatDate(p.date, CFG.TZ, 'dd-MMM-yyyy HH:mm') +
-    ' via Summit Purchase app' + (MODE === 'TRIAL' ? ' (TRIAL)' : '') + '</div>' +
-    '</body></html>';
-  const blob = Utilities.newBlob(html, 'text/html', p.poNo + '.html').getAs('application/pdf').setName(p.poNo + '.pdf');
-  const file = uploadFolder_('Purchase orders').createFile(blob);
-  try { file.setSharing(DriveApp.Access.DOMAIN_WITH_LINK, DriveApp.Permission.VIEW); } catch (err) { console.warn('Sharing not changed: ' + err); }
-  return 'https://drive.google.com/file/d/' + file.getId() + '/view?usp=drivesdk';
+  const ss = book_();
+  const tpl = ss.getSheetByName(PO_CFG.TEMPLATE);
+  let sh = null;
+  try {
+    sh = tpl.copyTo(ss).setName('PO_TMP_' + Date.now() + '_' + Math.floor(Math.random() * 1e4));
+    const put = (a1, v) => sh.getRange(a1).setValue(v);
+    sh.getRange('J24:T54').clearContent();
+    put('J13', '');
+    put('S8', "'" + Utilities.formatDate(p.date, CFG.TZ, 'dd-MMM-yy').toUpperCase());
+    put('S9', p.poNo);
+    put('J9', 'SUMMIT HOTELS AND RESORTS');
+    put('J10', PO_CFG.COMPANY_ADDR);
+    put('P12', p.hotel.name); put('P13', p.hotel.address);
+    put('J15', p.vendor[0]); put('J16', String(p.vendor[1] || '').toUpperCase()); put('J17', p.vendor[2] ? '(M) ' + p.vendor[2] : '');
+    put('P16', p.billToHotel.name); put('P17', p.billToHotel.address);
+    put('P21', p.billToHotel.gst ? 'GST - ' + p.billToHotel.gst : '');
+    put('M19', p.days);
+    const n = Math.min(p.lines.length, 31);
+    const col = (c, f) => sh.getRange(c + '24:' + c + (23 + n)).setValues(p.lines.slice(0, n).map(l => [f(l)]));
+    if (n) {
+      col('J', l => l.orderNo); col('L', l => l.item); col('P', l => l.qty); col('Q', l => l.uom);
+      col('R', l => l.price); col('S', l => l.tax); col('T', l => l.total);
+    }
+    const subtotal = p.subtotal != null ? p.subtotal : p.total;
+    put('T55', subtotal);
+    put('R57', 'DISCOUNT'); put('T57', p.discountAmt > 0 ? -p.discountAmt : '');
+    put('T59', p.total);
+    put('J56', 'FRIGHT INCLUDING' + (p.note ? ' - ' + p.note : ''));
+    if (p.terms) put('K59', p.terms);
+    SpreadsheetApp.flush();
+    const url = 'https://docs.google.com/spreadsheets/d/' + ss.getId() + '/export?format=pdf&gid=' + sh.getSheetId() +
+      '&r1=4&c1=9&r2=60&c2=21&size=A4&portrait=true&fitw=true&gridlines=false&printtitle=false&sheetnames=false' +
+      '&pagenum=UNDEFINED&fzr=false&horizontal_alignment=CENTER&top_margin=0.4&bottom_margin=0.4&left_margin=0.3&right_margin=0.3';
+    const res = UrlFetchApp.fetch(url, { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) throw new Error('PDF export failed (' + res.getResponseCode() + ')');
+    const blob = res.getBlob().setName(p.poNo + '.pdf');
+    const file = uploadFolder_('Purchase orders').createFile(blob);
+    try { file.setSharing(DriveApp.Access.DOMAIN_WITH_LINK, DriveApp.Permission.VIEW); } catch (err) { console.warn('Sharing not changed: ' + err); }
+    return 'https://drive.google.com/file/d/' + file.getId() + '/view?usp=drivesdk';
+  } finally {
+    if (sh) try { ss.deleteSheet(sh); } catch (err) { console.warn('Temp PO sheet not deleted: ' + err); }
+  }
 }
 
 
