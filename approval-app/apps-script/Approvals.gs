@@ -71,6 +71,25 @@ function doPost(e) {
     const fn = handlers[req.action];
     if (!fn) throw appError_('BAD_REQUEST', 'Unknown action.');
     const user = previewUser_(realUser, req);
+    // A save sent twice (the app tries again when Google drops a request) is done only once: the answer is kept
+    // under its requestId for 6 hours and simply given again.
+    const rid = WRITE_ACTIONS.indexOf(req.action) !== -1 && /^[\w-]{8,64}$/.test(String(req.requestId || '')) ? 'rq_' + req.requestId : '';
+    if (rid) {
+      const c = CacheService.getScriptCache();
+      for (let i = 0; i < 25; i++) {   // the first try may still be running: wait for its answer (max ~25 s)
+        const prev = c.get(rid);
+        if (!prev) break;
+        if (prev !== 'running') return ContentService.createTextOutput(prev).setMimeType(ContentService.MimeType.JSON);
+        if (i === 24) throw appError_('BUSY', 'Still saving your earlier tap. Please check in a minute before trying again.');
+        Utilities.sleep(1000);
+      }
+      c.put(rid, 'running', 300);
+      let text;
+      try { text = JSON.stringify(Object.assign({ ok: true }, fn(user, req, realUser))); }
+      catch (e) { c.remove(rid); throw e; }
+      c.put(rid, text.length < 90000 ? text : JSON.stringify({ ok: true, again: true }), 21600);
+      return ContentService.createTextOutput(text).setMimeType(ContentService.MimeType.JSON);
+    }
     return json_(Object.assign({ ok: true }, fn(user, req, realUser)));
   } catch (err) {
     const code = err && err.appCode ? err.appCode : 'SERVER';
