@@ -11,12 +11,15 @@ const state = {
   dec: null, decAt: 0, decShow: 200,
   df: { view: 'list', approver: '', status: '', cluster: '', unit: '', month: '', q: '' },
   // storekeeper
+  po: null, vendors: null, poSel: new Set(), poPrice: {}, poForm: { vendor: '', days: 25, terms: '', note: '', newVendor: null }, poUnit: '', poDone: null,
   store: { unit: '', view: 'raise', data: null, meta: {}, draft: null, rq: {}, inv: null, filter: 'all', q: '', show: 150, done: null, formUnit: '',
            byUnit: {}, raw: {}, base: null, prefetchedAt: 0, prefetching: false },
 };
 const STATUSES = ['Approved', 'Rejected', 'On Hold', 'Withdrawn'];
 const REMARK_MAX_WORDS = 10;
-const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice'];
+const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO'];
+/** Preview that may not change anything (LIVE). In TRIAL the admin can act as the person ("actAs"). */
+const readOnly = () => !!(state.me && state.me.preview && !state.me.actAs);
 
 // ---------- small helpers ----------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -44,7 +47,7 @@ async function api(action, data = {}) {
     res = await fetch(CFG.API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // "simple" request: no CORS preflight
-      body: JSON.stringify({ action, idToken: state.idToken, ...(state.viewAs && !WRITE_ACTIONS.includes(action) ? { viewAs: state.viewAs } : {}), ...data }),
+      body: JSON.stringify({ action, idToken: state.idToken, ...(state.viewAs && action !== 'register' ? { viewAs: state.viewAs } : {}), ...data }),
     });
   } catch { throw new ApiError('NETWORK', 'No connection. Check your internet and try again.'); }
   let out;
@@ -101,7 +104,7 @@ function saveLocal() {
   if (state.viewAs || !state.me) return;   // never keep someone else's screens (admin preview)
   const k = localKey(); if (!k) return;
   const sv = state.store;
-  const snap = { at: Date.now(), me: state.me, tab: state.tab, ho: state.ho, mine: state.mine, reports: state.reports,
+  const snap = { at: Date.now(), me: state.me, tab: state.tab, ho: state.ho, mine: state.mine, reports: state.reports, po: state.po, vendors: state.vendors,
     store: { unit: sv.unit, base: sv.base, meta: sv.meta[sv.unit] || null } };
   try { localStorage.setItem(k, JSON.stringify(snap)); } catch { /* no room: fine */ }
   // every unit's store lines, kept packed (as the server sent them) so they take little room
@@ -131,7 +134,7 @@ async function boot(prefetched) {
   if (prefetched) { state.me = prefetched; return startApp(); }
   const local = loadLocal();
   if (local) {   // show the last screens at once; the first sync also re-checks who I am
-    Object.assign(state, { me: local.me, ho: local.ho, mine: local.mine, reports: local.reports, dec: local.dec, tab: state.tab || local.tab });
+    Object.assign(state, { me: local.me, ho: local.ho, mine: local.mine, reports: local.reports, dec: local.dec, po: local.po || null, vendors: local.vendors || null, tab: state.tab || local.tab });
     const st = state.store;
     if (local.store) { st.unit = local.store.unit || ''; st.base = local.store.base || null; if (local.store.meta) st.meta[local.store.unit] = local.store.meta; }
     if (local.stores) Object.entries(local.stores).forEach(([u, p]) => putStore(u, p));
@@ -154,6 +157,7 @@ function setupChrome() {
   $('modeTag').hidden = state.me.mode === 'LIVE';
   $('btnSignOut').hidden = false; $('btnRefresh').hidden = false;
   $('tabAssign').hidden = !u.isHO; $('tabApprove').hidden = !u.isApprover;
+  $('tabPO').hidden = !u.isHO;
   $('tabStore').hidden = !hasStore();
   setupStoreUnits();
   $('approverPick').innerHTML = '<option value="">Choose approver…</option>' + state.me.approvers.map((n) => `<option>${esc(n)}</option>`).join('');
@@ -177,8 +181,11 @@ const hasStore = () => !!(state.me && state.me.storeUnits && state.me.storeUnits
 // ---------- admin preview ("view as") ----------
 function setupViewAs() {
   const me = state.me;
-  document.body.classList.toggle('preview', !!me.preview);
+  document.body.classList.toggle('preview', readOnly());
+  document.body.classList.toggle('actas', !!me.actAs);
   $('previewNote').hidden = !me.preview;
+  $('previewNote').textContent = me.actAs ? 'Acting as this person · trial' : 'Preview · read-only';
+  $('previewNote').className = me.actAs ? 'actnote' : 'previewnote';
   if (!me.admin) { $('viewAsBar').hidden = true; return; }
   $('viewAsBar').hidden = false;
   const others = me.users.filter((x) => x.email !== me.admin.email);
@@ -189,7 +196,7 @@ function setupViewAs() {
 async function changeViewAs(email) {
   const gen = ++state.gen;
   state.viewAs = email || null;
-  state.ho = state.mine = state.reports = state.dec = null; state.sel.clear(); state.qty = {}; state.pick = {}; state.tab = null;
+  state.ho = state.mine = state.reports = state.dec = state.po = state.vendors = state.poDone = null; state.poSel.clear(); state.poPrice = {}; state.sel.clear(); state.qty = {}; state.pick = {}; state.tab = null;
   Object.assign(state.store, { unit: '', data: null, draft: null, rq: {}, inv: null, done: null, formUnit: '', byUnit: {}, raw: {}, prefetchedAt: 0 });
   show('loading');
   let me;
@@ -212,10 +219,13 @@ function setTab(tab, withMe) {
   if (tab === 'assign' && !u.isHO) tab = u.isApprover ? 'approve' : 'reports';
   if (tab === 'approve' && !u.isApprover) tab = u.isHO ? 'assign' : 'reports';
   if (tab === 'store' && !hasStore()) tab = 'reports';
+  if (tab === 'po' && !u.isHO) tab = 'reports';
   state.tab = tab; state.sel.clear();
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
   $('viewAssign').hidden = tab !== 'assign'; $('viewApprove').hidden = tab !== 'approve'; $('viewReports').hidden = tab !== 'reports';
   $('viewStore').hidden = tab !== 'store';
+  $('viewPO').hidden = tab !== 'po';
+  if (tab === 'po') renderPO(true);
   if (tab === 'reports') renderReports();
   if (tab === 'store') renderStore(true);
   refresh(false, withMe);
@@ -232,6 +242,7 @@ async function refresh(fresh, withMe) {
   // Everything in one request; v = the version already here, so unchanged reports are not sent again.
   const want = { ho: u.isHO, mine: u.isApprover };
   if (withMe) want.me = true;
+  if (u.isHO && (state.tab === 'po' || state.po)) { want.po = { v: state.po?.v || '' }; if (!state.vendors) want.vendors = true; }
   if (state.tab === 'reports' || state.reports) want.reports = { v: state.reports?.v || '' };
   if ((state.tab === 'reports' && state.rep.type === 'dec') || state.dec) want.dec = { v: state.dec?.v || '' };
   if (hasStore() && st.unit && (state.tab === 'store' || st.data)) {
@@ -261,7 +272,7 @@ function applySync(r, unit) {
     if (changed && !$('app').hidden) {   // roles or units changed since last time
       setupChrome();
       const t = state.tab;
-      if ((t === 'assign' && !me.user.isHO) || (t === 'approve' && !me.user.isApprover) || (t === 'store' && !hasStore())) state.tab = null;
+      if ((t === 'assign' && !me.user.isHO) || (t === 'po' && !me.user.isHO) || (t === 'approve' && !me.user.isApprover) || (t === 'store' && !hasStore())) state.tab = null;
     }
   });
   take('ho', (p) => (state.ho = p));
@@ -272,6 +283,8 @@ function applySync(r, unit) {
   take('store', (p) => putStore(unit || p.unit, p));
   take('stores', (all) => Object.entries(all).forEach(([u, p]) => { if (!p.error) putStore(u, p); }));
   take('base', (p) => (state.store.base = p));
+  take('po', (p) => { if (!p.same) state.po = Object.assign({}, p, { lines: unpack(p.lines) }); else if (state.po && p.asOf) state.po.asOf = p.asOf; });
+  take('vendors', (p) => (state.vendors = p.list));
   take('meta', (p) => {
     const st = state.store, u = unit || p.unit;
     st.meta[u] = p; st.base = { categories: p.categories, uoms: p.uoms };
@@ -305,6 +318,8 @@ function render() {
   updateDocks();
   if (state.tab === 'reports') renderReports();
   if (state.tab === 'store') renderStore();
+  if (state.po) $('tabPO').querySelector('.count').textContent = state.po.lines.length || '';
+  if (state.tab === 'po') renderPO();
 }
 
 // ---------- reports ----------
@@ -610,7 +625,7 @@ const stockHtml = (l) => {
 
 function assignGroupHtml(g, mode) {
   const keys = g.lines.map(key).join(',');
-  const dis = state.me.preview ? 'disabled' : '';
+  const dis = readOnly() ? 'disabled' : '';
   const ready = g.lines.filter((l) => state.pick[key(l)] && state.pick[key(l)] !== l.approver).length;
   return `<article class="group">
     <div class="ghead assignhead">
@@ -628,7 +643,7 @@ function assignGroupHtml(g, mode) {
           <select data-pick="${esc(k)}" ${dis} aria-label="Approver for ${esc(l.item)}">${approverOptions(chosen)}</select></label>
       </div>`;
     }).join('')}
-    ${state.me.preview ? '' : `<div class="gfoot"><span class="sub">${ready ? ready + ' line' + (ready > 1 ? 's' : '') + ' ready' : mode === 'reassign' ? 'Change the approver to send again' : 'Choose an approver for each line'}</span>
+    ${readOnly() ? '' : `<div class="gfoot"><span class="sub">${ready ? ready + ' line' + (ready > 1 ? 's' : '') + ' ready' : mode === 'reassign' ? 'Change the approver to send again' : 'Choose an approver for each line'}</span>
       <button class="btn sm primary" data-gsend="${esc(keys)}" ${ready ? '' : 'disabled'}>Send${ready ? ' (' + ready + ')' : ''}</button></div>`}
   </article>`;
 }
@@ -845,6 +860,7 @@ function setupStoreUnits() {
   $('storeUnit').value = sv.unit;
   const note = $('storeNote');
   if (state.me.storeAll) { note.hidden = false; note.textContent = 'Trial: as admin you can work for every unit. A storekeeper will only see the unit(s) set against their email in APP USERS.'; }
+  else if (state.me.actAs) { note.hidden = false; note.textContent = 'Trial: you are acting as this storekeeper. What you submit is saved as them (the log also shows you).'; }
   else if (state.me.preview) { note.hidden = false; note.textContent = 'Preview of this storekeeper\'s screens. Nothing can be submitted while previewing.'; }
   else note.hidden = true;
 }
@@ -1096,7 +1112,7 @@ async function fileForUpload(file) {
 }
 
 // ---- actions ----
-const noPreview = () => { if (state.me.preview) { toast('This is a preview, so nothing can be submitted.', true); return false; } return true; };
+const noPreview = () => { if (readOnly()) { toast('This is a preview, so nothing can be submitted.', true); return false; } return true; };
 
 function submitRequest() {
   if (!noPreview()) return;
@@ -1216,11 +1232,152 @@ $('storeBody').addEventListener('click', (e) => {
   if (t.id === 'sMore') { sv.show += 300; renderStore(true); }
 });
 
+// ---------- HO: make PO ----------
+// Same steps as the sheet's P.O tab: choose the hotel, tick approved lines that have no PO yet, give price and tax %,
+// choose the vendor, delivery days and payment terms, and make the PO. The server writes P.Os and saves the PDF.
+const money = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const poKey = (l) => l.row + '|' + l.o;
+const lineTotal = (l, pr) => Math.round((Number(l.q) || 0) * (Number(pr?.price) || 0) * (1 + (Number(pr?.tax) || 0) / 100) * 10) / 10;
+
+function poUnits() {
+  const c = {};
+  (state.po?.lines || []).forEach((l) => (c[l.u] = (c[l.u] || 0) + 1));
+  return Object.keys(c).sort().map((u) => [u, c[u]]);
+}
+
+function renderPO(force) {
+  if (!state.me?.user.isHO) return;
+  const body = $('poBody');
+  if (!force && body.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;   // typing
+  if (!state.po) { body.innerHTML = '<p class="empty">Loading… this can take a few seconds.</p>'; return; }
+  const units = poUnits();
+  if (!units.some(([u]) => u === state.poUnit)) state.poUnit = units[0]?.[0] || '';
+  $('poUnit').innerHTML = units.map(([u, n]) => `<option value="${esc(u)}">${esc(u)} (${n})</option>`).join('') || '<option value="">No hotel waiting</option>';
+  $('poUnit').value = state.poUnit;
+  $('poAsOf').textContent = 'as of ' + state.po.asOf;
+  const done = state.poDone ? `<div class="done-msg">PO <b>${esc(state.poDone.poNo)}</b> made for ${esc(state.poDone.unit)} · ${esc(state.poDone.vendor)} ·
+    ${state.poDone.lines} line${state.poDone.lines > 1 ? 's' : ''} · ${money(state.poDone.total)}.
+    <a href="${esc(state.poDone.link)}" target="_blank" rel="noopener">Open the PO (PDF)</a>. It is in FMS (PO no, amount, vendor) and in the hotel's “Receive” list.</div>` : '';
+  const lines = (state.po.lines || []).filter((l) => l.u === state.poUnit);
+  if (!lines.length) { body.innerHTML = done + '<p class="empty">No approved lines waiting for a PO.</p>'; return; }
+  [...state.poSel].forEach((k) => { if (!lines.some((l) => poKey(l) === k)) state.poSel.delete(k); });
+  const sel = lines.filter((l) => state.poSel.has(poKey(l)));
+  const total = sel.reduce((a, l) => a + lineTotal(l, state.poPrice[poKey(l)]), 0);
+  const f = state.poForm, ro = readOnly();
+  const vendorOpts = (state.vendors || []).map((v) => `<option value="${esc(v[0])}">`).join('');
+  const terms = (state.po.terms || []).map((t) => `<option ${t === f.terms ? 'selected' : ''}>${esc(t)}</option>`).join('');
+  body.innerHTML = done + `<p class="sub">Tick the approved lines to put in one PO, then give the price and tax % of each.</p>
+    <article class="card">
+      <label class="ghead" style="margin:-12px -12px 0;border-radius:12px 12px 0 0"><input type="checkbox" id="poAll" ${sel.length === lines.length ? 'checked' : ''}>
+        <span><b>${esc(state.poUnit)}</b> <span class="sub">${lines.length} approved line${lines.length > 1 ? 's' : ''} without PO</span></span></label>
+      ${lines.map((l) => {
+        const k = poKey(l), on = state.poSel.has(k), pr = state.poPrice[k] || {};
+        return `<div class="poline">
+          <input type="checkbox" data-pok="${esc(k)}" ${on ? 'checked' : ''} aria-label="Put ${esc(l.it)} in the PO">
+          <div class="lmain"><span class="item">${esc(l.it)}</span>
+            <span class="sub">${esc(l.q)} ${esc(l.uom)} · ${esc(l.cat)} · approved by ${esc(l.ap)} · ${esc(l.at)} · ${esc(l.o)}${l.pt ? ' · ' + esc(l.pt) : ''}</span></div>
+          ${on ? `<div class="price"><label>Price ₹ <input type="number" inputmode="decimal" min="0" step="any" data-pp="${esc(k)}" value="${esc(pr.price ?? '')}" aria-label="Price of ${esc(l.it)}"></label>
+            <label>Tax % <input class="tax" type="number" inputmode="decimal" min="0" max="100" step="any" data-pt="${esc(k)}" value="${esc(pr.tax ?? '')}" aria-label="Tax % of ${esc(l.it)}"></label>
+            <span>Total <b data-ptot="${esc(k)}">${money(lineTotal(l, pr))}</b></span></div>` : ''}
+        </div>`;
+      }).join('')}
+    </article>
+    ${sel.length ? `<article class="card">
+      <h3>PO details</h3>
+      <div class="grid2">
+        ${f.newVendor ? `<label class="field full">New vendor name<input data-pf="nvName" maxlength="80" value="${esc(f.newVendor.name || '')}"></label>
+          <label class="field full">Vendor address<input data-pf="nvAddress" maxlength="200" value="${esc(f.newVendor.address || '')}"></label>
+          <label class="field">Vendor phone<input data-pf="nvPhone" inputmode="tel" maxlength="20" value="${esc(f.newVendor.phone || '')}"></label>
+          <div class="field"><span>&nbsp;</span><button type="button" class="linkbtn" id="poPickVendor">Pick an existing vendor instead</button></div>`
+        : `<label class="field full">Vendor<input data-pf="vendor" list="poVendors" value="${esc(f.vendor)}" placeholder="Type to search ${(state.vendors || []).length} vendors"><datalist id="poVendors">${vendorOpts}</datalist></label>
+          <div class="field full"><button type="button" class="linkbtn" id="poNewVendor">+ Vendor not in the list? Add a new vendor</button></div>`}
+        <label class="field">Delivery days<input data-pf="days" type="number" inputmode="numeric" min="0" max="365" value="${esc(f.days)}"></label>
+        <label class="field">Payment terms<select data-pf="terms"><option value="">Not now</option>${terms}</select></label>
+        <label class="field full">Comments on the PO (optional)<input data-pf="note" maxlength="300" value="${esc(f.note)}"></label>
+      </div>
+      <div class="pototal"><span>${sel.length} line${sel.length > 1 ? 's' : ''} · PO total</span><b id="poTotal">${money(total)}</b></div>
+      ${ro ? '' : `<button class="btn primary" id="poMake" style="width:100%">Make PO</button>`}
+    </article>` : ''}`;
+}
+
+function updatePOTotals() {
+  const lines = (state.po?.lines || []).filter((l) => l.u === state.poUnit && state.poSel.has(poKey(l)));
+  let total = 0;
+  lines.forEach((l) => { const t = lineTotal(l, state.poPrice[poKey(l)]); total += t; const el = document.querySelector(`[data-ptot="${CSS.escape(poKey(l))}"]`); if (el) el.textContent = money(t); });
+  if ($('poTotal')) $('poTotal').textContent = money(total);
+}
+
+function makePO() {
+  if (!noPreview()) return;
+  const lines = (state.po?.lines || []).filter((l) => l.u === state.poUnit && state.poSel.has(poKey(l)));
+  const f = state.poForm;
+  if (!lines.length) return toast('Tick at least one line.', true);
+  for (const l of lines) {
+    const pr = state.poPrice[poKey(l)] || {};
+    if (pr.price === undefined || pr.price === '' || !(Number(pr.price) >= 0)) return toast(`Enter the price for ${l.it}.`, true);
+    if (pr.tax !== undefined && pr.tax !== '' && !(Number(pr.tax) >= 0 && Number(pr.tax) <= 100)) return toast(`Tax % for ${l.it} must be 0 to 100.`, true);
+  }
+  let vendor = '', newVendor = null;
+  if (f.newVendor) {
+    if (!String(f.newVendor.name || '').trim()) return toast('Enter the new vendor name.', true);
+    newVendor = f.newVendor;
+  } else {
+    vendor = String(f.vendor || '').trim();
+    if (!(state.vendors || []).some((v) => v[0] === vendor)) return toast('Choose the vendor from the list (or add a new vendor).', true);
+  }
+  if (!(Number(f.days) >= 0)) return toast('Enter the delivery days.', true);
+  const total = lines.reduce((a, l) => a + lineTotal(l, state.poPrice[poKey(l)]), 0);
+  if (!confirm(`Make PO for ${state.poUnit}: ${lines.length} line${lines.length > 1 ? 's' : ''}, ${vendor || newVendor.name}, total ${money(total)}?`)) return;
+  run('makePO', async () => {
+    toast('Making the PO…');
+    const r = await api('makePO', {
+      items: lines.map((l) => ({ row: l.row, orderNo: l.o, price: Number(state.poPrice[poKey(l)].price), tax: state.poPrice[poKey(l)].tax === '' || state.poPrice[poKey(l)].tax == null ? 0 : Number(state.poPrice[poKey(l)].tax) })),
+      vendor, newVendor, days: Number(f.days), terms: f.terms, note: f.note,
+    });
+    state.poDone = r;
+    lines.forEach((l) => { state.poSel.delete(poKey(l)); delete state.poPrice[poKey(l)]; });
+    state.po.lines = state.po.lines.filter((l) => !lines.includes(l));   // gone at once; the sync below confirms
+    if (newVendor) state.vendors = null;   // re-read so the new vendor is in the list
+    state.poForm = { vendor: '', days: 25, terms: '', note: '', newVendor: null };
+    toast(`PO ${r.poNo} made.`);
+    renderPO(true); window.scrollTo(0, 0);
+    refresh();
+  });
+}
+
+$('poUnit').onchange = (e) => { state.poUnit = e.target.value; state.poDone = null; renderPO(true); };
+$('poBody').addEventListener('change', (e) => {
+  const t = e.target;
+  if (t.id === 'poAll') {
+    (state.po?.lines || []).filter((l) => l.u === state.poUnit).forEach((l) => (t.checked ? state.poSel.add(poKey(l)) : state.poSel.delete(poKey(l))));
+    return renderPO(true);
+  }
+  if (t.dataset.pok) { t.checked ? state.poSel.add(t.dataset.pok) : state.poSel.delete(t.dataset.pok); return renderPO(true); }
+  if (t.dataset.pf === 'terms') state.poForm.terms = t.value;
+});
+$('poBody').addEventListener('input', (e) => {
+  const t = e.target, f = state.poForm;
+  if (t.dataset.pp) { (state.poPrice[t.dataset.pp] = state.poPrice[t.dataset.pp] || {}).price = t.value; return updatePOTotals(); }
+  if (t.dataset.pt) { (state.poPrice[t.dataset.pt] = state.poPrice[t.dataset.pt] || {}).tax = t.value; return updatePOTotals(); }
+  const k = t.dataset.pf;
+  if (k === 'vendor' || k === 'days' || k === 'note') f[k] = t.value;
+  else if (k === 'nvName') f.newVendor.name = t.value;
+  else if (k === 'nvAddress') f.newVendor.address = t.value;
+  else if (k === 'nvPhone') f.newVendor.phone = t.value;
+});
+$('poBody').addEventListener('click', (e) => {
+  const t = e.target;
+  if (t.id === 'poMake') return makePO();
+  if (t.id === 'poNewVendor') { state.poForm.newVendor = { name: state.poForm.vendor || '', address: '', phone: '' }; return renderPO(true); }
+  if (t.id === 'poPickVendor') { state.poForm.newVendor = null; return renderPO(true); }
+});
+
 // ---------- wiring ----------
 $('tabAssign').onclick = () => setTab('assign');
 $('tabApprove').onclick = () => setTab('approve');
 $('tabReports').onclick = () => setTab('reports');
 $('tabStore').onclick = () => setTab('store');
+$('tabPO').onclick = () => setTab('po');
 [['dApprover', 'approver'], ['dStatus', 'status'], ['dCluster', 'cluster'], ['dUnit', 'unit'], ['dMonth', 'month']].forEach(([id, k]) =>
   ($(id).onchange = (e) => { state.df[k] = e.target.value; if (k === 'cluster') state.df.unit = ''; state.decShow = 200; renderDecisions(); }));
 $('dSearch').oninput = (e) => { state.df.q = e.target.value; state.decShow = 200; renderDecisions(); };

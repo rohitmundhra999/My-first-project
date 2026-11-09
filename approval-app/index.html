@@ -10,8 +10,8 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Summit Purchase Reports and Approvals">
-<link rel="stylesheet" href="styles.css?v=20261109e">
-<script src="config.js?v=20261109e"></script>
+<link rel="stylesheet" href="styles.css?v=20261109f">
+<script src="config.js?v=20261109f"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
@@ -47,7 +47,8 @@
   <section id="app" hidden>
     <nav class="tabs" role="tablist">
       <button id="tabStore" data-tab="store" hidden>Store <span class="count"></span></button>
-      <button id="tabAssign" data-tab="assign" hidden>Assign <span class="count"></span></button>
+      <button id="tabAssign" data-tab="assign" hidden>Assign approver <span class="count"></span></button>
+      <button id="tabPO" data-tab="po" hidden>Make PO <span class="count"></span></button>
       <button id="tabApprove" data-tab="approve" hidden>To approve <span class="count"></span></button>
       <button id="tabReports" data-tab="reports">Reports</button>
     </nav>
@@ -68,6 +69,16 @@
       </div>
       <div id="storeBody"><p class="empty">Loading…</p></div>
       <p class="sub asof" id="storeAsOf"></p>
+    </div>
+
+    <!-- HO in-charge: make PO for approved lines (same as the sheet's P.O tab) -->
+    <div id="viewPO" hidden>
+      <div class="storehead">
+        <label for="poUnit">Hotel</label>
+        <select id="poUnit" aria-label="Hotel"></select>
+      </div>
+      <div id="poBody"><p class="empty">Loading…</p></div>
+      <p class="sub asof" id="poAsOf"></p>
     </div>
 
     <!-- HO in-charge -->
@@ -191,6 +202,6 @@
 </div>
 
 <div id="toast" class="toast" role="status" hidden></div>
-<script type="module" src="app.js?v=20261109e"></script>
+<script type="module" src="app.js?v=20261109f"></script>
 </body>
 </html>
