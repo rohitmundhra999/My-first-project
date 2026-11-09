@@ -10,10 +10,12 @@ const state = {
   rep: { type: 'nr', view: 'list', cluster: '', unit: '', month: '', age: '', q: '', sort: 'old' },
   dec: null, decAt: 0, decShow: 200,
   df: { view: 'list', approver: '', status: '', cluster: '', unit: '', month: '', q: '' },
+  // storekeeper
+  store: { unit: '', view: 'raise', data: null, meta: {}, draft: null, rq: {}, inv: null, filter: 'all', q: '', show: 150, done: null, formUnit: '' },
 };
 const STATUSES = ['Approved', 'Rejected', 'On Hold', 'Withdrawn'];
 const REMARK_MAX_WORDS = 10;
-const WRITE_ACTIONS = ['assign', 'decide', 'register'];
+const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice'];
 
 // ---------- small helpers ----------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -106,14 +108,21 @@ async function boot(prefetched) {
   $('modeTag').hidden = state.me.mode === 'LIVE';
   $('btnSignOut').hidden = false; $('btnRefresh').hidden = false;
   $('tabAssign').hidden = !u.isHO; $('tabApprove').hidden = !u.isApprover;
+  $('tabStore').hidden = !hasStore();
+  setupStoreUnits();
   $('approverPick').innerHTML = '<option value="">Choose approver…</option>' + state.me.approvers.map((n) => `<option>${esc(n)}</option>`).join('');
   setupViewAs();
   show('app');
-  setTab(state.tab || (u.isHO ? 'assign' : u.isApprover ? 'approve' : 'reports'));
+  setTab(state.tab || (u.isHO ? 'assign' : u.isApprover ? 'approve' : hasStore() ? 'store' : 'reports'));
   if (state.me.preview) banner(''); else setupNotifications();
 }
 
-const roleLabel = (u) => (u.isHO && u.isApprover ? 'HO in-charge & approver' : u.isHO ? 'HO in-charge' : u.isApprover ? 'Approver' : 'Reports only');
+const roleLabel = (u) => {
+  const base = u.isHO && u.isApprover ? 'HO in-charge & approver' : u.isHO ? 'HO in-charge' : u.isApprover ? 'Approver' : '';
+  const sk = u.isStore ? 'Storekeeper · ' + (u.units || []).join(', ') : '';
+  return [base, sk].filter(Boolean).join(' · ') || 'Reports only';
+};
+const hasStore = () => !!(state.me && state.me.storeUnits && state.me.storeUnits.length);
 
 // ---------- admin preview ("view as") ----------
 function setupViewAs() {
@@ -131,6 +140,7 @@ async function changeViewAs(email) {
   const gen = ++state.gen;
   state.viewAs = email || null;
   state.ho = state.mine = null; state.sel.clear(); state.qty = {}; state.pick = {}; state.tab = null;
+  Object.assign(state.store, { unit: '', data: null, draft: null, rq: {}, inv: null, done: null, formUnit: '' });
   show('loading');
   let me;
   try { me = await api('me'); } catch (e) { if (gen !== state.gen) return; state.viewAs = null; $('viewAsPick').value = ''; show('app'); return handleError(e); }
@@ -151,10 +161,13 @@ function setTab(tab) {
   const u = state.me.user;
   if (tab === 'assign' && !u.isHO) tab = u.isApprover ? 'approve' : 'reports';
   if (tab === 'approve' && !u.isApprover) tab = u.isHO ? 'assign' : 'reports';
+  if (tab === 'store' && !hasStore()) tab = 'reports';
   state.tab = tab; state.sel.clear();
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
   $('viewAssign').hidden = tab !== 'assign'; $('viewApprove').hidden = tab !== 'approve'; $('viewReports').hidden = tab !== 'reports';
+  $('viewStore').hidden = tab !== 'store';
   if (tab === 'reports') renderReports();
+  if (tab === 'store') renderStore(true);
   refresh();
 }
 
@@ -169,6 +182,7 @@ async function refresh(fresh) {
     const jobs = [];
     if (u.isHO) jobs.push(api('hoList', { fresh }).then((r) => { if (gen === state.gen) state.ho = r; }));
     if (u.isApprover) jobs.push(api('myList', { fresh }).then((r) => { if (gen === state.gen) state.mine = r; }));
+    if (hasStore() && state.store.unit && (state.tab === 'store' || state.store.data)) jobs.push(loadStore(fresh, gen));
     let repJob = null;
     const wantDec = (state.tab === 'reports' && state.rep.type === 'dec') || state.dec;
     if (state.tab === 'reports' || state.reports) jobs.push(repJob = api('reports', { fresh }).then((r) => { state.reports = r.reports; state.repAt = Date.now(); }));
@@ -202,6 +216,7 @@ function render() {
   }
   updateDocks();
   if (state.tab === 'reports') renderReports();
+  if (state.tab === 'store') renderStore();
 }
 
 // ---------- reports ----------
@@ -701,10 +716,356 @@ function addTestButton() {
   document.querySelector('.bar-actions').prepend(b);
 }
 
+// ---------- storekeeper ----------
+// Everything here is for ONE unit at a time. The server checks the unit again on every read and write,
+// so a storekeeper can never see or change another unit's lines, whatever this page sends.
+const UNIT_KEY = 'nlp.storeUnit';
+const blankLine = () => ({ cat: '', item: '', qty: '', uom: '', stock: '', photo: null });
+const sv = state.store;
+
+function setupStoreUnits() {
+  const units = state.me.storeUnits || [];
+  if (!units.length) return;
+  const saved = store.get(UNIT_KEY);
+  if (!units.includes(sv.unit)) sv.unit = units.includes(saved) ? saved : units[0];
+  const one = units.length === 1;
+  $('storeUnit').hidden = one; $('storeUnitOnly').hidden = !one;
+  $('storeUnitOnly').textContent = units[0];
+  $('storeUnit').innerHTML = units.map((u) => `<option>${esc(u)}</option>`).join('');
+  $('storeUnit').value = sv.unit;
+  const note = $('storeNote');
+  if (state.me.storeAll) { note.hidden = false; note.textContent = 'Trial: as admin you can work for every unit. A storekeeper will only see the unit(s) set against their email in APP USERS.'; }
+  else if (state.me.preview) { note.hidden = false; note.textContent = 'Preview of this storekeeper\'s screens. Nothing can be submitted while previewing.'; }
+  else note.hidden = true;
+}
+
+async function changeStoreUnit(u) {
+  sv.unit = u; store.set(UNIT_KEY, u);
+  Object.assign(sv, { data: null, draft: null, rq: {}, inv: null, done: null, formUnit: '', show: 150 });
+  renderStore(true);
+  run('storeList', () => loadStore(false, state.gen).then(() => renderStore(true)));
+}
+
+async function loadStore(fresh, gen) {
+  const unit = sv.unit;
+  const [list, meta] = await Promise.all([
+    api('storeList', { unit, fresh: !!fresh }),
+    sv.meta[unit] ? Promise.resolve(null) : api('storeMeta', { unit }),
+  ]);
+  if (gen !== state.gen || unit !== sv.unit) return;
+  sv.data = list;
+  if (meta) sv.meta[unit] = meta;
+}
+
+// ---- what each screen shows ----
+const isCentral = (v) => /central\s*store/i.test(v || '');
+function poGroups(filter) {
+  const map = new Map();
+  (sv.data?.lines || []).filter(filter).forEach((l) => {
+    const k = l.po.toUpperCase();
+    if (!map.has(k)) map.set(k, { po: l.po, pol: l.pol, ven: l.ven, amt: l.amt, d: l.d, lines: [] });
+    map.get(k).lines.push(l);
+  });
+  return [...map.values()].sort((a, b) => a.d.localeCompare(b.d));   // oldest first
+}
+const toReceive = () => poGroups((l) => l.s === 'Approved' && l.po && l.rcv === '');
+const toInvoice = () => poGroups((l) => l.s === 'Approved' && l.po && l.rcv !== '' && l.inv === 'pending' && !isCentral(l.ven));
+
+function lineStatus(l) {
+  if (l.inv === 'done') return ['Invoice uploaded', 'done'];
+  if (l.rcv !== '' && l.rcv != null) return [`Received ${l.rcv} ${l.uom}` + (l.inv === 'pending' ? ' · invoice pending' : ''), 'received'];
+  if (l.s === 'Approved' && l.po) return ['PO raised · to receive', 'po'];
+  if (l.s === 'Approved') return ['Approved · PO pending', 'approved'];
+  if (l.s === 'Rejected') return ['Rejected', 'rejected'];
+  if (l.s === 'On Hold') return ['On hold', 'onhold'];
+  if (l.s === 'Withdrawn') return ['Withdrawn', 'waiting'];
+  if (l.ap) return ['Waiting for ' + l.ap, 'waiting'];
+  return ['With HO', 'waiting'];
+}
+const STATUS_FILTERS = [
+  ['all', 'All'], ['pending', 'Pending'], ['approved', 'Approved'], ['po', 'PO raised'], ['received', 'Received'], ['rejected', 'Rejected / hold'],
+];
+function statusMatch(l, f) {
+  const c = lineStatus(l)[1];
+  if (f === 'all') return true;
+  if (f === 'pending') return c === 'waiting' && l.s !== 'Withdrawn';
+  if (f === 'approved') return l.s === 'Approved';
+  if (f === 'po') return c === 'po';
+  if (f === 'received') return c === 'received' || c === 'done';
+  if (f === 'rejected') return c === 'rejected' || c === 'onhold' || l.s === 'Withdrawn';
+  return true;
+}
+
+// ---- rendering ----
+function renderStore(force) {
+  if (!hasStore()) return;
+  const busyForm = $('storeBody').contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName);
+  if (!force && sv.view !== 'raise' && (busyForm || (sv.view === 'invoice' && sv.inv))) return;   // background refresh: don't wipe what is being typed
+  document.querySelectorAll('[data-stype]').forEach((b) => b.classList.toggle('on', b.dataset.stype === sv.view));
+  const loaded = !!sv.data;
+  $('cReceive').textContent = loaded ? toReceive().length || '' : '';
+  $('cInvoice').textContent = loaded ? toInvoice().length || '' : '';
+  $('tabStore').querySelector('.count').textContent = loaded ? (toReceive().length + toInvoice().length) || '' : '';
+  $('storeAsOf').textContent = loaded ? `${sv.unit} · as of ${sv.data.asOf}` : '';
+  const body = $('storeBody');
+  if (sv.view === 'raise') {
+    if (!sv.meta[sv.unit]) { body.innerHTML = '<p class="empty">Loading…</p>'; return; }
+    if (sv.formUnit === sv.unit && body.querySelector('#raiseForm')) return;   // keep what is being typed
+    body.innerHTML = raiseHtml(); sv.formUnit = sv.unit; return;
+  }
+  sv.formUnit = '';
+  if (!loaded) { body.innerHTML = '<p class="empty">Loading… this can take a few seconds.</p>'; return; }
+  if (sv.view === 'receive') body.innerHTML = receiveHtml();
+  else if (sv.view === 'invoice') body.innerHTML = invoiceHtml();
+  else body.innerHTML = statusHtml();
+}
+
+function raiseHtml() {
+  const meta = sv.meta[sv.unit];
+  if (!sv.draft) sv.draft = [blankLine()];
+  const done = sv.done ? `<div class="done-msg">Request sent: ${sv.done.lines.length} item${sv.done.lines.length > 1 ? 's' : ''} for ${esc(sv.done.unit)}.
+    HO will choose the approver. Order no: ${sv.done.lines.map((l) => `<code>${esc(l.orderNo)}</code>`).join(', ')}</div>` : '';
+  const cats = (sel) => '<option value="">Choose…</option>' + meta.categories.map((c) => `<option ${c === sel ? 'selected' : ''}>${esc(c)}</option>`).join('');
+  const uoms = (sel) => '<option value="">Unit…</option>' + meta.uoms.map((u) => `<option ${u === sel ? 'selected' : ''}>${esc(u)}</option>`).join('');
+  return `${done}<form id="raiseForm" autocomplete="off">
+    <datalist id="pastItems">${meta.items.map((x) => `<option value="${esc(x[0])}">`).join('')}</datalist>
+    ${sv.draft.map((l, i) => `<div class="card">
+      <div class="top"><h3>Item ${i + 1}</h3>${sv.draft.length > 1 ? `<button type="button" class="btn sm ghost storeact" data-rmline="${i}">Remove</button>` : ''}</div>
+      <div class="grid2">
+        <label class="field full">Item name<input data-f="item" data-i="${i}" list="pastItems" maxlength="100" required value="${esc(l.item)}" placeholder="Type or pick a past item"></label>
+        <label class="field full">Category<select data-f="cat" data-i="${i}" required>${cats(l.cat)}</select></label>
+        <label class="field">Quantity needed<input data-f="qty" data-i="${i}" type="number" inputmode="decimal" min="0" step="any" required value="${esc(l.qty)}"></label>
+        <label class="field">Unit<select data-f="uom" data-i="${i}" required>${uoms(l.uom)}</select></label>
+        <label class="field">Stock in hand<input data-f="stock" data-i="${i}" type="number" inputmode="decimal" min="0" step="any" required value="${esc(l.stock)}" placeholder="0 if none"></label>
+        <div class="field">Photo (optional)<div class="photorow">
+          ${l.photo ? `<img class="thumb" src="${l.photo.preview}" alt="Photo of item ${i + 1}"><button type="button" class="btn sm ghost" data-rmphoto="${i}">Remove</button>`
+            : `<input type="file" accept="image/*" data-photo="${i}" aria-label="Photo of item ${i + 1}">`}
+        </div></div>
+      </div>
+    </div>`).join('')}
+    <div class="formfoot storeact">
+      <button type="button" class="btn" id="addLine" ${sv.draft.length >= 30 ? 'disabled' : ''}>+ Add another item</button>
+      <button type="submit" class="btn primary">Send request (${sv.draft.length} item${sv.draft.length > 1 ? 's' : ''})</button>
+    </div>
+  </form>`;
+}
+
+function receiveHtml() {
+  const groups = toReceive();
+  if (!groups.length) return '<p class="empty">Nothing to receive. Approved lines show here once their PO is made.</p>';
+  return `<p class="sub">Enter the quantity that actually arrived. Clear the box for items that have not come yet.</p>` + groups.map((g) => {
+    const days = daysSince(g.d);
+    return `<article class="card">
+      <div class="top"><h3>PO ${esc(g.po)}</h3><span class="age ${days > 30 ? 'bad' : days > 15 ? 'warn' : ''}">${days} days</span></div>
+      <div class="sub">${esc(g.ven || 'Vendor not given')} · ${fmtDate(g.d)}${g.amt ? ' · ' + inr(g.amt) : ''}${g.pol ? ` · <a href="${esc(g.pol)}" target="_blank" rel="noopener">View PO</a>` : ''}</div>
+      ${g.lines.map((l) => {
+        const k = l.row + '|' + l.o, ordered = l.aq !== '' && l.aq != null ? l.aq : l.q;
+        const v = k in sv.rq ? sv.rq[k] : ordered;
+        return `<div class="rline">
+          <div class="lmain"><span class="item">${esc(l.it)}</span><span class="sub">Ordered ${esc(ordered)} ${esc(l.uom)} · ${esc(l.o)}</span></div>
+          <label class="qty">Recd <input type="number" inputmode="decimal" min="0" step="any" data-rq="${esc(k)}" value="${esc(v)}" aria-label="Received quantity of ${esc(l.it)}"></label>
+        </div>`;
+      }).join('')}
+      <div class="formfoot storeact" style="margin:8px 0 0"><span></span><button class="btn primary" data-recv="${esc(g.po)}">Save received</button></div>
+    </article>`;
+  }).join('');
+}
+
+function invoiceHtml() {
+  const groups = toInvoice();
+  if (!groups.length) return '<p class="empty">No invoice pending. A PO shows here once its material is received.</p>';
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  return groups.map((g) => {
+    const open = sv.inv && sv.inv.po === g.po;
+    const f = open ? sv.inv : null;
+    return `<article class="card">
+      <div class="top"><h3>PO ${esc(g.po)}</h3>${g.amt ? `<span class="amt">${inr(g.amt)}</span>` : ''}</div>
+      <div class="sub">${esc(g.ven || 'Vendor not given')} · ${fmtDate(g.d)} · ${g.lines.length} line${g.lines.length > 1 ? 's' : ''} received${g.pol ? ` · <a href="${esc(g.pol)}" target="_blank" rel="noopener">View PO</a>` : ''}</div>
+      <div class="items">${g.lines.map((l) => esc(l.it) + ' (' + esc(l.rcv) + ' ' + esc(l.uom) + ')').join(', ')}</div>
+      ${open ? `<form class="grid2" id="invForm" data-po="${esc(g.po)}">
+        <label class="field">Invoice number<input name="no" maxlength="40" required value="${esc(f.no || '')}"></label>
+        <label class="field">Invoice date<input name="date" type="date" max="${today}" required value="${esc(f.date || today)}"></label>
+        <label class="field">Invoice total (₹)<input name="amount" type="number" inputmode="decimal" min="0" step="any" required value="${esc(f.amount ?? (g.amt || ''))}"></label>
+        <label class="field">Invoice photo or PDF<input name="file" type="file" accept="image/*,application/pdf" required></label>
+        <div class="formfoot field full storeact"><button type="button" class="btn ghost" data-invcancel>Cancel</button><button type="submit" class="btn primary">Upload invoice</button></div>
+      </form>` : `<div class="formfoot storeact" style="margin:8px 0 0"><span></span><button class="btn primary" data-invopen="${esc(g.po)}">Upload invoice</button></div>`}
+    </article>`;
+  }).join('');
+}
+
+function statusHtml() {
+  const q = sv.q.trim().toLowerCase();
+  const all = (sv.data?.lines || []);
+  const rows = all.filter((l) => statusMatch(l, sv.filter) && (!q || [l.it, l.o, l.po, l.cat, l.ven].join(' ').toLowerCase().includes(q)));
+  const chips = STATUS_FILTERS.map(([k, label]) => {
+    const n = all.filter((l) => statusMatch(l, k)).length;
+    return `<button class="chip ${sv.filter === k ? 'on' : ''}" data-sfilter="${k}">${label} ${n}</button>`;
+  }).join('');
+  const list = rows.slice(0, sv.show).map((l) => {
+    const [label, cls] = lineStatus(l);
+    const qty = l.aq !== '' && l.aq != null && l.s === 'Approved' && Number(l.aq) !== Number(l.q) ? `${esc(l.q)} → ${esc(l.aq)}` : esc(l.q);
+    return `<div class="po dec">
+      <div class="top"><b>${esc(l.it)}</b><span class="st ${cls}">${esc(label)}</span></div>
+      <div class="sub">${qty} ${esc(l.uom)} · ${esc(l.cat)} · ${esc(l.at)} · ${esc(l.o)}${l.po ? ' · PO ' + esc(l.po) : ''}${l.pic ? ` · <a href="${esc(l.pic)}" target="_blank" rel="noopener">photo</a>` : ''}</div>
+      ${l.rm ? `<div class="remark">Reason: ${esc(l.rm)}${l.ap ? ' (' + esc(l.ap) + ')' : ''}</div>` : ''}
+    </div>`;
+  }).join('');
+  return `<input id="sSearch" class="field" type="search" placeholder="Search item, order no or PO" value="${esc(sv.q)}" aria-label="Search" style="width:100%;margin:2px 0 8px;font:inherit;padding:8px;border-radius:9px;border:1px solid var(--border);background:var(--surface);color:var(--ink)">
+    <div class="chips">${chips}</div>
+    ${rows.length ? list : '<p class="empty">No lines.</p>'}
+    ${rows.length > sv.show ? `<button class="btn sm more" id="sMore">Show more (${rows.length - sv.show} left)</button>` : ''}`;
+}
+
+// ---- files: photos are made smaller on the phone before upload ----
+function readAsDataUrl(file) {
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(new Error('Could not read the file.')); r.readAsDataURL(file); });
+}
+async function shrinkImage(file, maxSide, quality) {
+  const url = await readAsDataUrl(file);
+  const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('That photo could not be opened. Try a JPG or PNG.')); i.src = url; });
+  const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  const out = c.toDataURL('image/jpeg', quality);
+  return { type: 'image/jpeg', data: out.split(',')[1], preview: out, name: file.name };
+}
+async function fileForUpload(file) {
+  if (file.type === 'application/pdf') {
+    if (file.size > 8 * 1024 * 1024) throw new Error('The PDF is too big (max 8 MB).');
+    const url = await readAsDataUrl(file);
+    return { type: 'application/pdf', data: url.split(',')[1], name: file.name };
+  }
+  if (!/^image\//.test(file.type)) throw new Error('Choose a photo or a PDF.');
+  return shrinkImage(file, 2000, 0.8);
+}
+
+// ---- actions ----
+const noPreview = () => { if (state.me.preview) { toast('This is a preview, so nothing can be submitted.', true); return false; } return true; };
+
+function submitRequest() {
+  if (!noPreview()) return;
+  const meta = sv.meta[sv.unit];
+  for (const [i, l] of sv.draft.entries()) {
+    const n = `Item ${i + 1}: `;
+    if (!l.item.trim()) return toast(n + 'enter the item name.', true);
+    if (!meta.categories.includes(l.cat)) return toast(n + 'choose the category.', true);
+    if (!(Number(l.qty) > 0)) return toast(n + 'enter the quantity needed.', true);
+    if (!l.uom) return toast(n + 'choose the unit (Pcs, Kg…).', true);
+    if (l.stock === '' || Number(l.stock) < 0) return toast(n + 'enter the stock in hand (0 if none).', true);
+  }
+  const unit = sv.unit;
+  run('storeRaise', async () => {
+    const r = await api('storeRaise', {
+      unit,
+      lines: sv.draft.map((l) => ({ item: l.item.trim(), category: l.cat, qty: Number(l.qty), uom: l.uom, stock: l.stock, photo: l.photo ? { type: l.photo.type, data: l.photo.data } : null })),
+    });
+    sv.done = r; sv.draft = [blankLine()]; sv.formUnit = ''; delete sv.meta[unit];   // re-read so new items appear as suggestions
+    toast(`Request sent: ${r.raised} item${r.raised > 1 ? 's' : ''}.`);
+    window.scrollTo(0, 0);
+    await loadStore(false, state.gen);
+    renderStore(true);
+  });
+}
+
+function saveReceived(po) {
+  if (!noPreview()) return;
+  const g = toReceive().find((x) => x.po === po);
+  if (!g) return;
+  const items = [];
+  for (const l of g.lines) {
+    const k = l.row + '|' + l.o;
+    const input = document.querySelector(`[data-rq="${CSS.escape(k)}"]`);
+    const v = input ? input.value.trim() : '';
+    if (v === '') continue;
+    const n = Number(v);
+    if (!(n > 0)) return toast(`Enter a quantity above 0 for ${l.it}, or clear the box.`, true);
+    items.push({ row: l.row, orderNo: l.o, qty: n, it: l.it, ordered: l.aq !== '' && l.aq != null ? Number(l.aq) : Number(l.q) });
+  }
+  if (!items.length) return toast('Enter the received quantity for at least one item.', true);
+  const over = items.filter((i) => i.qty > i.ordered);
+  if (over.length && !confirm(`More than ordered for: ${over.map((i) => i.it).join(', ')}. Save anyway?`)) return;
+  run('storeReceive', async () => {
+    const r = await api('storeReceive', { items: items.map(({ row, orderNo, qty }) => ({ row, orderNo, qty })) });
+    items.forEach((i) => delete sv.rq[i.row + '|' + i.orderNo]);
+    toast(`${r.received} item${r.received === 1 ? '' : 's'} marked received for PO ${po}.` + skippedText(r.skipped), r.skipped.length > 0);
+    await loadStore(false, state.gen);
+    renderStore(true);
+  });
+}
+
+async function uploadInvoice(form) {
+  if (!noPreview()) return;
+  const po = form.dataset.po;
+  const no = form.no.value.trim(), date = form.date.value, amount = form.amount.value, file = form.file.files[0];
+  if (!no) return toast('Enter the invoice number.', true);
+  if (!date) return toast('Enter the invoice date.', true);
+  if (!(Number(amount) > 0)) return toast('Enter the invoice total.', true);
+  if (!file) return toast('Choose the invoice photo or PDF.', true);
+  run('storeInvoice', async () => {
+    let f;
+    try { f = await fileForUpload(file); } catch (e) { return toast(e.message, true); }
+    toast('Uploading invoice…');
+    await api('storeInvoice', { po, invoiceNo: no, date, amount: Number(amount), file: { type: f.type, data: f.data } });
+    sv.inv = null;
+    toast(`Invoice uploaded for PO ${po}.`);
+    await loadStore(false, state.gen);
+    renderStore(true);
+  });
+}
+
+// ---- wiring (store) ----
+$('storeUnit').onchange = (e) => changeStoreUnit(e.target.value);
+document.querySelectorAll('[data-stype]').forEach((b) => (b.onclick = () => {
+  sv.view = b.dataset.stype; if (sv.view !== 'raise') sv.done = null; renderStore(true);
+  if (!sv.data && sv.view !== 'raise') run('storeList', () => loadStore(false, state.gen).then(() => renderStore(true)));
+}));
+$('storeBody').addEventListener('input', (e) => {
+  const t = e.target;
+  if (t.dataset.f) {
+    const l = sv.draft[+t.dataset.i]; l[t.dataset.f] = t.value;
+    if (t.dataset.f === 'item') {   // picked a past item: fill its category and unit
+      const hit = (sv.meta[sv.unit]?.items || []).find((x) => x[0].toLowerCase() === t.value.trim().toLowerCase());
+      if (hit) {
+        const card = t.closest('.card');
+        if (!l.cat && hit[1]) { l.cat = hit[1]; const s = card.querySelector('[data-f="cat"]'); if (s) s.value = hit[1]; }
+        if (!l.uom && hit[2]) { l.uom = hit[2]; const s = card.querySelector('[data-f="uom"]'); if (s) s.value = hit[2]; }
+      }
+    }
+  } else if (t.dataset.rq) sv.rq[t.dataset.rq] = t.value;
+  else if (t.id === 'sSearch') { sv.q = t.value; sv.show = 150; const pos = t.selectionStart; renderStore(true); const n = $('sSearch'); n.focus(); n.setSelectionRange(pos, pos); }
+  else if (t.form && t.form.id === 'invForm' && sv.inv && t.name !== 'file') sv.inv[t.name] = t.value;
+});
+$('storeBody').addEventListener('change', async (e) => {
+  const t = e.target;
+  if (t.dataset.f) sv.draft[+t.dataset.i][t.dataset.f] = t.value;
+  if (t.dataset.photo !== undefined && t.files[0]) {
+    try { sv.draft[+t.dataset.photo].photo = await shrinkImage(t.files[0], 1280, 0.75); } catch (err) { return toast(err.message, true); }
+    sv.formUnit = ''; renderStore(true);
+  }
+});
+$('storeBody').addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (e.target.id === 'raiseForm') submitRequest();
+  else if (e.target.id === 'invForm') uploadInvoice(e.target);
+});
+$('storeBody').addEventListener('click', (e) => {
+  const t = e.target;
+  if (t.id === 'addLine') { sv.draft.push(blankLine()); sv.formUnit = ''; renderStore(true); return; }
+  if (t.dataset.rmline !== undefined) { sv.draft.splice(+t.dataset.rmline, 1); sv.formUnit = ''; renderStore(true); return; }
+  if (t.dataset.rmphoto !== undefined) { sv.draft[+t.dataset.rmphoto].photo = null; sv.formUnit = ''; renderStore(true); return; }
+  if (t.dataset.recv) return saveReceived(t.dataset.recv);
+  if (t.dataset.invopen) { sv.inv = { po: t.dataset.invopen }; renderStore(true); return; }
+  if (t.dataset.invcancel !== undefined) { sv.inv = null; renderStore(true); return; }
+  if (t.dataset.sfilter) { sv.filter = t.dataset.sfilter; sv.show = 150; renderStore(true); return; }
+  if (t.id === 'sMore') { sv.show += 300; renderStore(true); }
+});
+
 // ---------- wiring ----------
 $('tabAssign').onclick = () => setTab('assign');
 $('tabApprove').onclick = () => setTab('approve');
 $('tabReports').onclick = () => setTab('reports');
+$('tabStore').onclick = () => setTab('store');
 [['dApprover', 'approver'], ['dStatus', 'status'], ['dCluster', 'cluster'], ['dUnit', 'unit'], ['dMonth', 'month']].forEach(([id, k]) =>
   ($(id).onchange = (e) => { state.df[k] = e.target.value; if (k === 'cluster') state.df.unit = ''; state.decShow = 200; renderDecisions(); }));
 $('dSearch').oninput = (e) => { state.df.q = e.target.value; state.decShow = 200; renderDecisions(); };

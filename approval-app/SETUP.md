@@ -127,3 +127,16 @@ Your phone should buzz within a few seconds.
 - **Approver notifications** are sent both when HO picks the approver in the app and when someone picks a
   name in FMS column L directly (after running `installFmsTrigger` once). The app's own writes don't fire
   the sheet trigger, so nobody gets two notifications for the same assignment.
+
+## Storekeepers (added Nov 2026)
+
+1. In **APP USERS**, give the storekeeper the role **STOREKEEPER** and put their unit in column **E**
+   (exactly as in FMS column C, e.g. `SAMTHAR`; several units separated by commas).
+2. The storekeeper signs in with their @summithotels.in Google account and sees a **Store** tab with:
+   **New request** (goes into FORMDATA, so FMS picks it up like a Google Form entry), **Receive**
+   (writes FMS AB RECEIVED), **Invoice** (saves the file in Drive under *Summit Purchase App uploads* and adds a
+   row to INVOICES) and **My requests** (status of every line).
+3. The server checks the unit of every line on every action: a storekeeper can never see or change another unit.
+   Their Reports tab also shows only their unit. The admin can work for every unit (for the trial).
+4. Going live: once storekeepers use the app, close the old request and invoice Google Forms for them, so the
+   same request is not entered twice.

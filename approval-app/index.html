@@ -10,8 +10,8 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Summit Purchase Reports and Approvals">
-<link rel="stylesheet" href="styles.css?v=20261108e">
-<script src="config.js?v=20261108e"></script>
+<link rel="stylesheet" href="styles.css?v=20261109a">
+<script src="config.js?v=20261109a"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
@@ -46,10 +46,29 @@
 
   <section id="app" hidden>
     <nav class="tabs" role="tablist">
+      <button id="tabStore" data-tab="store" hidden>Store <span class="count"></span></button>
       <button id="tabAssign" data-tab="assign" hidden>Assign <span class="count"></span></button>
       <button id="tabApprove" data-tab="approve" hidden>To approve <span class="count"></span></button>
       <button id="tabReports" data-tab="reports">Reports</button>
     </nav>
+
+    <!-- Storekeeper: only the lines of the chosen unit; the server checks the unit on every action -->
+    <div id="viewStore" hidden>
+      <div class="storehead">
+        <label for="storeUnit">Unit</label>
+        <select id="storeUnit" aria-label="Unit"></select>
+        <span id="storeUnitOnly" class="unitonly" hidden></span>
+      </div>
+      <p id="storeNote" class="sub storenote" hidden></p>
+      <div class="seg" role="group" aria-label="Store activity">
+        <button data-stype="raise" class="on">New request</button>
+        <button data-stype="receive">Receive <span class="count" id="cReceive"></span></button>
+        <button data-stype="invoice">Invoice <span class="count" id="cInvoice"></span></button>
+        <button data-stype="status">My requests</button>
+      </div>
+      <div id="storeBody"><p class="empty">Loading…</p></div>
+      <p class="sub asof" id="storeAsOf"></p>
+    </div>
 
     <!-- HO in-charge -->
     <div id="viewAssign" hidden>
@@ -172,6 +191,6 @@
 </div>
 
 <div id="toast" class="toast" role="status" hidden></div>
-<script type="module" src="app.js?v=20261108e"></script>
+<script type="module" src="app.js?v=20261109a"></script>
 </body>
 </html>
