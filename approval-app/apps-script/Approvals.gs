@@ -529,7 +529,7 @@ function findStock_(index, r, orderNo, day, mon, hh, mm) {
 
 // ---- Open lines cache: reading FMS + FORMDATA takes ~10 seconds, so the open lines (no decision yet, or
 // On Hold) are kept ready in the script cache. A timer rebuilds them every 5 minutes (installTriggers),
-// and the app's own assign/decide actions update the copy straight away. The app's ↻ button forces a re-read.
+// and the app's own assign/decide actions update the copy straight away. The app's â» button forces a re-read.
 const OPEN_CACHE = 'open_lines_' + MODE;
 const OPEN_CACHE_SECONDS = 21600;   // 6 h: kept current by warmCache / bgRefresh, never rebuilt while someone waits
 
@@ -554,7 +554,7 @@ function patchOpenLines_(rows, fn) {
 }
 
 function cachePutBig_(key, obj, ttl) {
-  const s = JSON.stringify(obj), size = 30000,   // ≤ 3 bytes per character keeps each piece under the 100 KB limit
+  const s = JSON.stringify(obj), size = 30000,   // â¤ 3 bytes per character keeps each piece under the 100 KB limit
     n = Math.max(1, Math.ceil(s.length / size));
   const map = {};
   for (let i = 0; i < n; i++) map[key + '_' + i] = s.substr(i * size, size);
@@ -708,7 +708,7 @@ function fcmAccessToken_(sa) {
 // Everyone in APP USERS can see the reports. Filters are applied in the app.
 
 const REPORT_FROM = { y: 2026, m: 4, d: 1 };   // 1 April 2026
-const REPORT_CACHE_SECONDS = 21600;            // kept ready by warmCache every 5 minutes; ↻ in the app re-reads
+const REPORT_CACHE_SECONDS = 21600;            // kept ready by warmCache every 5 minutes; â» in the app re-reads
 
 // Cluster, unit name shown in reports, and words used to recognise the unit in FMS (same as the emails)
 const UNIT_MAP = [
@@ -1197,7 +1197,7 @@ function storeRaise_(user, req) {
     if (!item || item.length > 100) throw appError_('BAD_REQUEST', n + 'enter the item name (up to 100 letters).');
     if (!meta.categories.some(c => c === cat)) throw appError_('BAD_REQUEST', n + 'choose a category from the list.');
     if (!(qty > 0) || qty > 1e6) throw appError_('BAD_REQUEST', n + 'enter a quantity above 0.');
-    if (!uom || uom.length > 15) throw appError_('BAD_REQUEST', n + 'choose the unit (Pcs, Kg…).');
+    if (!uom || uom.length > 15) throw appError_('BAD_REQUEST', n + 'choose the unit (Pcs, Kgâ¦).');
     const stock = String(l.stock === undefined || l.stock === null ? '' : l.stock).trim();
     if (stock === '' || stock.length > 20) throw appError_('BAD_REQUEST', n + 'enter the stock in hand (0 if none).');
     if (l.photo) checkFile_(l.photo, ['image/jpeg', 'image/png', 'image/webp'], STORE_CFG.MAX_PHOTO, n + 'photo');
@@ -1300,7 +1300,7 @@ function storeInvoice_(user, req) {
   withLock_(() => {
     const at = lastFilled_(inv, 1) + 1;
     inv.getRange(at, 1, 1, 6).setValues([[po, link, new Date(), amount, invNo, invDate]]);
-    log_(user, 'INVOICE', po, unit + ': invoice ' + invNo + ', ₹' + amount + ' (' + received + ' of ' + lines + ' lines received)');
+    log_(user, 'INVOICE', po, unit + ': invoice ' + invNo + ', â¹' + amount + ' (' + received + ' of ' + lines + ' lines received)');
   });
   try { patchStore_(unit, ls => ls.forEach(l => { if (l.po && l.po.toUpperCase() === key && l.rcv !== '') l.inv = 'done'; })); } catch (e) { console.warn(e); }
   scheduleRefresh_();
@@ -1514,9 +1514,12 @@ function makePO_(user, req) {
     const now = new Date();
     const poNo = (unit.slice(0, 2) + vendor[0].slice(0, 2)) + (lines.length < 10 ? '0' : '') + lines.length +
                  Utilities.formatDate(now, CFG.TZ, 'ddMM-H') + Utilities.formatDate(now, CFG.TZ, 'mm');
-    const grand = Math.round(lines.reduce((a, l) => a + l.total, 0) * 100) / 100;
+    const discount = typeof req.discount === 'number' && req.discount >= 0 && req.discount <= 100 ? Math.round(req.discount * 10) / 10 : 0;
+      const subtotal = Math.round(lines.reduce((a, l) => a + l.total, 0) * 100) / 100;
+      const discountAmt = discount > 0 ? Math.round(subtotal * discount / 100 * 100) / 100 : 0;
+      const grand = Math.round((subtotal - discountAmt) * 100) / 100;
     const hotel = hotelInfo_(unit);
-    const link = poPdf_({ poNo: poNo, date: now, unit: unit, hotel: hotel, vendor: vendor, days: days, lines: lines, total: grand, note: note, terms: terms, by: user.name });
+    const link = poPdf_({ poNo: poNo, date: now, unit: unit, hotel: hotel, vendor: vendor, days: days, lines: lines, subtotal: subtotal, discount: discount, discountAmt: discountAmt, total: grand, note: note, terms: terms, by: user.name });
 
     if (vendor[3] === true) {   // new vendor: add it to VENDORS like the vendor form does
       const vsh = book_().getSheetByName(PO_CFG.VENDORS);
@@ -1526,7 +1529,7 @@ function makePO_(user, req) {
     pos.getRange(at, 1, lines.length, 8).setValues(lines.map(l => [l.orderNo, poNo, link, now, vendor[0], days, grand, unit]));
     if (terms) lines.forEach(l => sh.getRange(l.row, 15).setValue(terms));   // FMS O: payment terms
     SpreadsheetApp.flush();
-    log_(user, 'PO', lines.map(l => l.orderNo).join(', '), poNo + ' | ' + vendor[0] + ' | ₹' + grand + ' | ' + link);
+    log_(user, 'PO', lines.map(l => l.orderNo).join(', '), poNo + ' | ' + vendor[0] + ' | â¹' + grand + ' | ' + link);
     result = { poNo: poNo, link: link, total: grand, unit: unit, vendor: vendor[0], lines: lines.length };
     rows = lines.map(l => l.row);
   });
@@ -1550,30 +1553,81 @@ function hotelInfo_(unit) {
            : { name: unit, address: '', phone: '', gst: '' };
 }
 
-/** Makes the PO PDF (same content as the sheet's P.O layout) and returns a link anyone at the company can open. */
+/** Makes the PO PDF (matches the sheet's P.O layout) and returns a Drive link. */
 function poPdf_(p) {
-  const e = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const e = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const money = n => Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const rows = p.lines.map(l => '<tr><td>' + e(l.orderNo) + '</td><td>' + e(l.item) + '</td><td class="n">' + e(l.qty) + '</td><td>' + e(l.uom) +
-    '</td><td class="n">' + money(l.price) + '</td><td class="n">' + e(l.tax) + '</td><td class="n">' + money(l.total) + '</td></tr>').join('');
-  const html = '<html><head><style>' +
-    'body{font-family:Arial,sans-serif;font-size:11px;color:#111;margin:24px}h1{font-size:20px;margin:0;color:#1b5e20}' +
-    '.top{display:flex;justify-content:space-between}.box{width:48%;vertical-align:top}table{border-collapse:collapse;width:100%}' +
-    '.t td,.t th{border:1px solid #999;padding:5px}.t th{background:#1b5e20;color:#fff}.n{text-align:right}.k{color:#555;font-size:10px}' +
+  const rows = p.lines.map((l, i) =>
+    '<tr><td class="n">' + (i + 1) + '</td><td>' + e(l.orderNo) + '</td><td>' + e(l.item) +
+    '</td><td class="n">' + e(l.qty) + '</td><td>' + e(l.uom) +
+    '</td><td class="n">&#8377; ' + money(l.price) + '</td><td class="n">' + e(l.tax) + '%</td>' +
+    '<td class="n">&#8377; ' + money(l.total) + '</td></tr>'
+  ).join('');
+  const subtotal = p.subtotal != null ? p.subtotal : p.total;
+  const discountRow = (p.discount > 0)
+    ? '<tr><td colspan="7" class="n"><b>Discount (' + p.discount + '%)</b></td><td class="n" style="color:#c00">&#8211; &#8377; ' + money(p.discountAmt) + '</td></tr>'
+    : '';
+  const html =
+    '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
+    'body{font-family:Arial,sans-serif;font-size:11pt;color:#111;margin:30px;line-height:1.4}' +
+    '.co-name{font-size:16pt;font-weight:bold;color:#1b5e20;text-transform:uppercase;letter-spacing:1px}' +
+    '.co-addr{font-size:9pt;color:#555;margin-top:3px}' +
+    '.po-title{font-size:18pt;font-weight:bold;color:#1b5e20;text-align:right}' +
+    '.sep{border-top:2.5px solid #1b5e20;margin:10px 0}' +
+    '.lbl{font-size:9pt;color:#777;text-transform:uppercase;letter-spacing:0.5px}' +
+    'table{border-collapse:collapse;width:100%}' +
+    '.t th{background:#1b5e20;color:#fff;font-size:10pt;padding:6px 8px;text-align:left}' +
+    '.t th.n{text-align:right}.t td{border:1px solid #ccc;padding:5px 8px;font-size:10pt}' +
+    '.n{text-align:right}' +
+    '.tot-row td{border-top:2px solid #1b5e20;background:#f9f9f9}' +
+    '.grand-row td{background:#e8f5e9;font-size:11pt}' +
     '</style></head><body>' +
-    '<table><tr><td class="box"><b style="font-size:14px">' + e(PO_CFG.COMPANY) + '</b><br>' + e(PO_CFG.COMPANY_ADDR) + '</td>' +
-    '<td class="box" style="text-align:right"><h1>PURCHASE ORDER</h1>DATE: <b>' + Utilities.formatDate(p.date, CFG.TZ, 'dd-MMM-yy').toUpperCase() +
-    '</b><br>PURCHASE ORDER #: <b>' + e(p.poNo) + '</b></td></tr></table><br>' +
-    '<table><tr><td class="box"><span class="k">VENDOR</span><br><b>' + e(p.vendor[0]) + '</b><br>' + e(String(p.vendor[1]).toUpperCase()) +
-    (p.vendor[2] ? '<br>(M) ' + e(p.vendor[2]) : '') + '<br><br><span class="k">TENTATIVE DELIVERY DAY(s):</span> <b>' + e(p.days) + '</b>' +
-    (p.terms ? '<br><span class="k">PAYMENT TERMS:</span> <b>' + e(p.terms) + '</b>' : '') + '</td>' +
-    '<td class="box"><span class="k">SHIP TO</span><br><b>' + e(p.hotel.name) + '</b><br>' + e(p.hotel.address) +
-    '<br><br><span class="k">BILLING ADDRESS</span><br><b>' + e(p.hotel.name) + '</b><br>' + e(p.hotel.address) +
-    (p.hotel.phone ? '<br>PHONE: ' + e(p.hotel.phone) : '') + (p.hotel.gst ? '<br>GST - ' + e(p.hotel.gst) : '') + '</td></tr></table><br>' +
-    '<table class="t"><tr><th>ORDER #</th><th>DESCRIPTION</th><th>QTY</th><th>UNIT</th><th>PRICE</th><th>TAX%</th><th>TOTAL</th></tr>' + rows +
-    '<tr><td colspan="6" class="n"><b>TOTAL</b></td><td class="n"><b>₹ ' + money(p.total) + '</b></td></tr></table><br>' +
-    '<span class="k">Comments or Special Instructions</span><br>FREIGHT INCLUDING' + (p.note ? '<br>' + e(p.note) : '') +
-    '<br><br><span class="k">Made by ' + e(p.by) + ' in Summit Purchase app' + (MODE === 'TRIAL' ? ' (TRIAL)' : '') + '</span>' +
+    '<table><tr>' +
+    '<td style="vertical-align:top;width:65%">' +
+    '<div class="co-name">Summit Hotels &amp; Resorts Pvt. Ltd.</div>' +
+    '<div class="co-addr">' + e(PO_CFG.COMPANY_ADDR) + '</div>' +
+    '</td>' +
+    '<td style="vertical-align:bottom;text-align:right">' +
+    '<div class="po-title">PURCHASE ORDER</div>' +
+    '<div style="margin-top:4px"><span class="lbl">PO No: </span><b>' + e(p.poNo) + '</b></div>' +
+    '<div><span class="lbl">Date: </span><b>' + Utilities.formatDate(p.date, CFG.TZ, 'dd-MMM-yyyy').toUpperCase() + '</b></div>' +
+    '</td></tr></table>' +
+    '<div class="sep"></div>' +
+    '<table><tr>' +
+    '<td style="width:50%;vertical-align:top;padding-right:20px">' +
+    '<div class="lbl">Vendor</div>' +
+    '<div><b>' + e(p.vendor[0]) + '</b></div>' +
+    (p.vendor[1] ? '<div>' + e(String(p.vendor[1]).toUpperCase()) + '</div>' : '') +
+    (p.vendor[2] ? '<div>(M) ' + e(p.vendor[2]) + '</div>' : '') +
+    '<div style="margin-top:8px"><span class="lbl">Delivery Days: </span><b>' + e(p.days) + '</b></div>' +
+    (p.terms ? '<div><span class="lbl">Payment Terms: </span><b>' + e(p.terms) + '</b></div>' : '') +
+    '</td>' +
+    '<td style="width:50%;vertical-align:top">' +
+    '<div class="lbl">Ship To / Bill To</div>' +
+    '<div><b>' + e(p.hotel.name) + '</b></div>' +
+    '<div>' + e(p.hotel.address) + '</div>' +
+    (p.hotel.phone ? '<div>Phone: ' + e(p.hotel.phone) + '</div>' : '') +
+    (p.hotel.gst ? '<div>GST: ' + e(p.hotel.gst) + '</div>' : '') +
+    '</td></tr></table><br>' +
+    '<table class="t"><tr>' +
+    '<th class="n" style="width:4%">S.No</th>' +
+    '<th style="width:12%">Order #</th>' +
+    '<th>Description</th>' +
+    '<th class="n" style="width:5%">Qty</th>' +
+    '<th style="width:5%">Unit</th>' +
+    '<th class="n" style="width:11%">Unit Price</th>' +
+    '<th class="n" style="width:5%">Tax%</th>' +
+    '<th class="n" style="width:11%">Line Total</th>' +
+    '</tr>' + rows +
+    '<tr class="tot-row"><td colspan="7" class="n"><b>Sub Total</b></td><td class="n"><b>&#8377; ' + money(subtotal) + '</b></td></tr>' +
+    discountRow +
+    '<tr class="grand-row"><td colspan="7" class="n"><b>GRAND TOTAL</b></td><td class="n"><b>&#8377; ' + money(p.total) + '</b></td></tr>' +
+    '</table><br>' +
+    '<div class="lbl">Special Instructions</div>' +
+    '<div>Freight Including' + (p.note ? ' &mdash; ' + e(p.note) : '') + '</div>' +
+    '<br><div style="font-size:9pt;color:#888">Made by ' + e(p.by) + ' on ' +
+    Utilities.formatDate(p.date, CFG.TZ, 'dd-MMM-yyyy HH:mm') +
+    ' via Summit Purchase app' + (MODE === 'TRIAL' ? ' (TRIAL)' : '') + '</div>' +
     '</body></html>';
   const blob = Utilities.newBlob(html, 'text/html', p.poNo + '.html').getAs('application/pdf').setName(p.poNo + '.pdf');
   const file = uploadFolder_('Purchase orders').createFile(blob);
