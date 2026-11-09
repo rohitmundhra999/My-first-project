@@ -11,7 +11,7 @@ const state = {
   dec: null, decAt: 0, decShow: 200,
   df: { view: 'list', approver: '', status: '', cluster: '', unit: '', month: '', q: '' },
   // storekeeper
-  po: null, vendors: null, poSel: new Set(), poPrice: {}, poForm: { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: '', newVendor: null }, poUnit: '', poDone: null,
+  po: null, vendors: null, poSel: new Set(), poPrice: {}, poForm: { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: '', shipTo: '', newVendor: null }, poUnit: '', poDone: null,
   store: { unit: '', view: 'raise', data: null, meta: {}, draft: null, rq: {}, inv: null, filter: 'all', q: '', show: 150, done: null, formUnit: '',
            byUnit: {}, raw: {}, base: null, prefetchedAt: 0, prefetching: false },
 };
@@ -327,7 +327,7 @@ function applySync(r, unit) {
   take('stores', (all) => Object.entries(all).forEach(([u, p]) => { if (!p.error) putStore(u, p); }));
   take('base', (p) => (state.store.base = p));
   take('po', (p) => { if (!p.same) state.po = Object.assign({}, p, { lines: unpack(p.lines) }); else if (state.po && p.asOf) state.po.asOf = p.asOf; });
-  take('vendors', (p) => (state.vendors = p.list));
+  take('vendors', (p) => { state.vendors = p.list; if (p.hotels) state.hotels = p.hotels; });
   take('meta', (p) => {
     const st = state.store, u = unit || p.unit;
     st.meta[u] = p; st.base = { categories: p.categories, uoms: p.uoms };
@@ -1310,7 +1310,14 @@ function renderPO(force) {
   const total = sel.reduce((a, l) => a + lineTotal(l, state.poPrice[poKey(l)]), 0);
   const f = state.poForm, ro = readOnly();
   const vendorOpts = (state.vendors || []).map((v) => `<option value="${esc(v[0])}">`).join('');
-  const billToOpts = poUnits().map(([u]) => `<option value="${esc(u)}"${(f.billTo || state.poUnit) === u ? ' selected' : ''}>${esc(u)}</option>`).join('');
+  const hl = (state.hotels && state.hotels.length) ? state.hotels : poUnits().map(([u]) => [u, u, '']);
+  const nz = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const defH = hl.find((h) => nz(h[0]) === nz(state.poUnit) || nz(h[1]) === nz(state.poUnit)) || hl.find((h) => nz(h[0]) && nz(state.poUnit).indexOf(nz(h[0])) === 0);
+  const defKey = defH ? defH[0] : state.poUnit;
+  if (!f.shipTo) f.shipTo = defKey;
+  if (!f.billTo) f.billTo = defKey;
+  const hOpts = (cur) => hl.map((h) => `<option value="${esc(h[0])}"${cur === h[0] ? ' selected' : ''}>${esc(h[1])}${h[2] ? ' (GST ' + esc(h[2]) + ')' : ''}</option>`).join('') + (hl.some((h) => h[0] === cur) ? '' : `<option value="${esc(cur)}" selected>${esc(cur)}</option>`);
+  const shipToOpts = hOpts(f.shipTo), billToOpts = hOpts(f.billTo);
   const terms = (state.po.terms || []).map((t) => `<option ${t === f.terms ? 'selected' : ''}>${esc(t)}</option>`).join('');
   const priceRow = (l) => {
     const k = poKey(l), pr = state.poPrice[k] || {};
@@ -1333,13 +1340,16 @@ function renderPO(force) {
           <div class="field"><span>&nbsp;</span><button type="button" class="linkbtn" id="poPickVendor">Pick an existing vendor instead</button></div>`
         : `<label class="field full">Vendor<input data-pf="vendor" list="poVendors" value="${esc(f.vendor)}" placeholder="Type to search ${(state.vendors || []).length} vendors"><datalist id="poVendors">${vendorOpts}</datalist></label>
           <div class="field full"><button type="button" class="linkbtn" id="poNewVendor">+ Vendor not in the list? Add a new vendor</button></div>`}
-        <label class="field">Bill To<select data-pf="billTo">${billToOpts}</select></label>
+        <label class="field full">Ship To (delivery unit)<select data-pf="shipTo">${shipToOpts}</select></label>
+        <label class="field full">Bill To (invoice in this unit's name &amp; GST)<select data-pf="billTo">${billToOpts}</select></label>
         <label class="field">Delivery days<input data-pf="days" type="number" inputmode="numeric" min="0" max="365" value="${esc(f.days)}"></label>
         <label class="field">Payment terms<select data-pf="terms"><option value="">Not now</option>${terms}</select></label>
         <label class="field full">Comments on the PO (optional)<input data-pf="note" maxlength="300" value="${esc(f.note)}"></label>
       </div>
-            <div class="porow"><label>Discount Amt (Rs.)<input type="number" min="0" step="0.01" data-pf="discountAmt" value="${f.discountAmt || 0}"></label></div>
-      <div class="pototal"><span>${sel.length} line${sel.length > 1 ? 's' : ''} · PO total</span><b id="poTotal">${money(Math.round((total - (Number(f.discountAmt)||0)) * 100) / 100)}</b></div>
+      <label class="field full">Discount (Rs.)<input type="number" inputmode="decimal" min="0" step="0.01" data-pf="discountAmt" value="${f.discountAmt || ''}" placeholder="0"></label>
+      <div class="pototal"><span>${sel.length} line${sel.length > 1 ? 's' : ''} · Sub total</span><b id="poSub">${money(total)}</b></div>
+      <div class="pototal"><span>Less: Discount</span><b id="poDisc">${money(Number(f.discountAmt) || 0)}</b></div>
+      <div class="pototal"><span>Grand total</span><b id="poTotal">${money(Math.round((total - (Number(f.discountAmt) || 0)) * 100) / 100)}</b></div>
       ${ro ? '' : `<button class="btn primary" id="poMake" style="width:100%">Make PO</button>`}
     </article>` : '';
   body.innerHTML = done + details + `<p class="sub">${sel.length ? 'Tick more lines of this hotel to add them to the PO.' : 'Tick the approved lines to put in one PO. Price, vendor and the Make PO button then show here at the top.'}</p>
@@ -1361,7 +1371,10 @@ function updatePOTotals() {
   const lines = (state.po?.lines || []).filter((l) => l.u === state.poUnit && state.poSel.has(poKey(l)));
   let total = 0;
   lines.forEach((l) => { const t = lineTotal(l, state.poPrice[poKey(l)]); total += t; const el = document.querySelector(`[data-ptot="${CSS.escape(poKey(l))}"]`); if (el) el.textContent = money(t); });
-  if ($('poTotal')) $('poTotal').textContent = money(total);
+  const disc = Number(state.poForm.discountAmt) || 0;
+  if ($('poSub')) $('poSub').textContent = money(total);
+  if ($('poDisc')) $('poDisc').textContent = money(disc);
+  if ($('poTotal')) $('poTotal').textContent = money(Math.round((total - disc) * 100) / 100);
 }
 
 function makePO() {
@@ -1387,7 +1400,7 @@ function makePO() {
   if (!confirm(`Make PO for ${state.poUnit}: ${lines.length} line${lines.length > 1 ? 's' : ''}, ${vendor || newVendor.name}, total ${money(total)}?`)) return;
   const payload = {
     items: lines.map((l) => ({ row: l.row, orderNo: l.o, price: Number(state.poPrice[poKey(l)].price), tax: state.poPrice[poKey(l)].tax === '' || state.poPrice[poKey(l)].tax == null ? 0 : Number(state.poPrice[poKey(l)].tax) })),
-    vendor, newVendor, days: Number(f.days), terms: f.terms, note: f.note, discountAmt: Number(f.discountAmt) || 0, billTo: f.billTo || state.poUnit,
+    vendor, newVendor, days: Number(f.days), terms: f.terms, note: f.note, discountAmt: Number(f.discountAmt) || 0, billTo: f.billTo || state.poUnit, shipTo: f.shipTo || state.poUnit,
   };
   // at once: the lines leave the list and the form clears, so the next PO can be started; the PO number and
   // PDF link show when the server has made it (a few seconds). Everything is put back if it fails.
@@ -1396,7 +1409,7 @@ function makePO() {
   state.poDone = { poNo: '…', unit, vendor: vendor || newVendor.name, lines: lines.length, total, making: true };
   lines.forEach((l) => { state.poSel.delete(poKey(l)); delete state.poPrice[poKey(l)]; });
   state.po.lines = state.po.lines.filter((l) => !lines.includes(l));
-  state.poForm = { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: state.poUnit, newVendor: null };
+  state.poForm = { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: '', shipTo: '', newVendor: null };
   renderPO(true); window.scrollTo(0, 0);
   const sid = beginSave();
   api('makePO', payload)
@@ -1408,7 +1421,7 @@ function makePO() {
     .finally(() => { endSave(sid); renderPO(true); if (!saving()) refresh(); });
 }
 
-$('poUnit').onchange = (e) => { state.poUnit = e.target.value; state.poDone = null; renderPO(true); };
+$('poUnit').onchange = (e) => { state.poUnit = e.target.value; state.poDone = null; state.poForm.shipTo = ''; state.poForm.billTo = ''; renderPO(true); };
 $('poBody').addEventListener('change', (e) => {
   const t = e.target;
   if (t.id === 'poAll') {
@@ -1416,14 +1429,14 @@ $('poBody').addEventListener('change', (e) => {
     return renderPO(true);
   }
   if (t.dataset.pok) { t.checked ? state.poSel.add(t.dataset.pok) : state.poSel.delete(t.dataset.pok); return renderPO(true); }
-  if (t.dataset.pf === 'terms') state.poForm.terms = t.value;
+  if (t.dataset.pf === 'terms' || t.dataset.pf === 'billTo' || t.dataset.pf === 'shipTo') state.poForm[t.dataset.pf] = t.value;
 });
 $('poBody').addEventListener('input', (e) => {
   const t = e.target, f = state.poForm;
   if (t.dataset.pp) { (state.poPrice[t.dataset.pp] = state.poPrice[t.dataset.pp] || {}).price = t.value; return updatePOTotals(); }
   if (t.dataset.pt) { (state.poPrice[t.dataset.pt] = state.poPrice[t.dataset.pt] || {}).tax = t.value; return updatePOTotals(); }
   const k = t.dataset.pf;
-  if (k === 'vendor' || k === 'days' || k === 'note' || k === 'discountAmt' || k === 'billTo') f[k] = t.value;
+  if (k === 'vendor' || k === 'days' || k === 'note' || k === 'discountAmt' || k === 'billTo' || k === 'shipTo') { f[k] = t.value; if (k === 'discountAmt') updatePOTotals(); }
   else if (k === 'nvName') f.newVendor.name = t.value;
   else if (k === 'nvAddress') f.newVendor.address = t.value;
   else if (k === 'nvPhone') f.newVendor.phone = t.value;
