@@ -41,20 +41,45 @@ const configured = () => CFG.API_URL && !/PASTE/.test(CFG.API_URL) && CFG.GOOGLE
 
 // ---------- API ----------
 class ApiError extends Error { constructor(code, msg) { super(msg); this.code = code; } }
+// Google Apps Script now and then drops a request without any answer. So every request has a time limit, and is
+// tried once more if Google did not answer. Saves carry a requestId: the server remembers it, so a save that is
+// tried twice is still saved only once.
+const newId = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
 async function api(action, data = {}) {
-  let res;
-  try {
-    res = await fetch(CFG.API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // "simple" request: no CORS preflight
-      body: JSON.stringify({ action, idToken: state.idToken, ...(state.viewAs && action !== 'register' ? { viewAs: state.viewAs } : {}), ...data }),
-    });
-  } catch { throw new ApiError('NETWORK', 'No connection. Check your internet and try again.'); }
-  let out;
-  try { out = await res.json(); } catch { throw new ApiError('SERVER', 'Unexpected reply from the server (' + res.status + ').'); }
-  if (!out.ok) throw new ApiError(out.code, out.error || 'Something went wrong.');
-  return out;
+  const write = WRITE_ACTIONS.includes(action) && action !== 'register';
+  const body = JSON.stringify({ action, idToken: state.idToken, ...(state.viewAs && action !== 'register' ? { viewAs: state.viewAs } : {}),
+    ...(write ? { requestId: newId() } : {}), ...data });
+  const limit = write ? 120000 : 45000;
+  let lastErr = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 1500));
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), limit);
+    let res, out;
+    try {
+      res = await fetch(CFG.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body, signal: ctl.signal });   // "simple" request: no CORS preflight
+      out = await res.json();
+    } catch (e) {
+      lastErr = e && e.name === 'AbortError' ? new ApiError('NETWORK', 'No reply from the server. Nothing may have been saved: please check and try again.')
+        : res ? new ApiError('SERVER', 'Google did not answer properly (' + res.status + '). Please try again.')
+        : new ApiError('NETWORK', 'No connection. Check your internet and try again.');
+      continue;   // try once more (a save is never done twice: see requestId)
+    } finally { clearTimeout(timer); }
+    if (!out.ok) {
+      if (out.code === 'BUSY' && attempt === 0) { lastErr = new ApiError(out.code, out.error); continue; }
+      throw new ApiError(out.code, out.error || 'Something went wrong.');
+    }
+    return out;
+  }
+  throw lastErr;
 }
+
+// Saves in progress: while one is on its way, the background refresh waits so its lines do not flicker back.
+// A save can never block refreshing for more than 2 minutes, even if Google never answers.
+const pending = new Map();
+const beginSave = () => { const id = newId(); pending.set(id, Date.now()); return id; };
+const endSave = (id) => pending.delete(id);
+const saving = () => { const now = Date.now(); for (const [id, t] of pending) if (now - t > 125000) pending.delete(id); return pending.size > 0; };
 
 // ---------- sign-in (Google Identity Services) ----------
 function waitForGsi() {
@@ -252,7 +277,7 @@ function setTab(tab, withMe) {
 async function refresh(fresh, withMe) {
   fresh = fresh === true;   // only the ↻ button re-reads the sheet; otherwise the server's ready copy is used
   if (!state.me) return;
-  if (state.inflight && !fresh && !withMe) return;   // a decision is on its way: don't bring its lines back yet
+  if (saving() && !fresh && !withMe) return;   // a decision is on its way: don't bring its lines back yet
   const u = state.me.user, gen = state.gen, st = state.store;
   const wait = '<p class="empty">Loading… this can take a few seconds.</p>';
   if (u.isHO && !state.ho) $('listUnassigned').innerHTML = wait;
@@ -784,9 +809,9 @@ async function decide(decision, lines) {
 function optimistic(apply, call) {
   const before = { ho: state.ho && structuredClone(state.ho), mine: state.mine && structuredClone(state.mine) };
   apply(); render();
-  state.inflight = (state.inflight || 0) + 1;
+  const sid = beginSave();
   call().catch((e) => { state.ho = before.ho; state.mine = before.mine; render(); handleError(e); })
-    .finally(() => { state.inflight--; if (!state.inflight) refresh(); });
+    .finally(() => { endSave(sid); if (!saving()) refresh(); });
 }
 const skippedText = (s) => (s && s.length ? ` ${s.length} skipped: ${s.map((x) => x.orderNo + ' (' + x.why + ')').join('; ')}` : '');
 
@@ -1148,11 +1173,11 @@ function submitRequest() {
   // at once: clear the form and say it is on its way; the order numbers fill in when the server answers
   sv.done = { unit, lines: draft.map(() => ({ orderNo: '…' })), sending: true }; sv.draft = [blankLine()]; sv.formUnit = '';
   renderStore(true); window.scrollTo(0, 0);
-  state.inflight = (state.inflight || 0) + 1;
+  const sid = beginSave();
   api('storeRaise', { unit, lines })
     .then((r) => { sv.done = r; toast(`Request sent: ${r.raised} item${r.raised > 1 ? 's' : ''}.`); return loadStore(false, state.gen); })
     .catch((e) => { sv.done = null; sv.draft = draft; sv.formUnit = ''; handleError(e); })
-    .finally(() => { state.inflight--; if (sv.view === 'raise' && sv.unit === unit) { sv.formUnit = ''; renderStore(true); } else renderStore(); });
+    .finally(() => { endSave(sid); if (sv.view === 'raise' && sv.unit === unit) { sv.formUnit = ''; renderStore(true); } else renderStore(); });
 }
 
 function saveReceived(po) {
@@ -1177,11 +1202,11 @@ function saveReceived(po) {
   const lines = (sv.data?.lines || []).filter((l) => l.row in byRow);
   lines.forEach((l) => { l.rcv = byRow[l.row]; if (l.inv === '') l.inv = 'pending'; delete sv.rq[l.row + '|' + l.o]; });
   renderStore(true);
-  state.inflight = (state.inflight || 0) + 1;
+  const sid = beginSave();
   api('storeReceive', { items: items.map(({ row, orderNo, qty }) => ({ row, orderNo, qty })) })
     .then((r) => { toast(`${r.received} item${r.received === 1 ? '' : 's'} marked received for PO ${po}.` + skippedText(r.skipped), r.skipped.length > 0); return loadStore(false, state.gen); })
     .catch((e) => { lines.forEach((l) => { l.rcv = ''; l.inv = ''; }); handleError(e); })
-    .finally(() => { state.inflight--; renderStore(true); });
+    .finally(() => { endSave(sid); renderStore(true); });
 }
 
 async function uploadInvoice(form) {
@@ -1370,14 +1395,14 @@ function makePO() {
   state.po.lines = state.po.lines.filter((l) => !lines.includes(l));
   state.poForm = { vendor: '', days: 25, terms: '', note: '', newVendor: null };
   renderPO(true); window.scrollTo(0, 0);
-  state.inflight = (state.inflight || 0) + 1;
+  const sid = beginSave();
   api('makePO', payload)
     .then((r) => { state.poDone = r; if (newVendor) state.vendors = null; toast(`PO ${r.poNo} made.`); })
     .catch((e) => {
       state.po.lines = lines.concat(state.po.lines); state.poPrice = keep.prices; state.poForm = keep.form; state.poSel = keep.sel; state.poDone = null; state.poUnit = unit;
       handleError(e);
     })
-    .finally(() => { state.inflight--; renderPO(true); if (!state.inflight) refresh(); });
+    .finally(() => { endSave(sid); renderPO(true); if (!saving()) refresh(); });
 }
 
 $('poUnit').onchange = (e) => { state.poUnit = e.target.value; state.poDone = null; renderPO(true); };
