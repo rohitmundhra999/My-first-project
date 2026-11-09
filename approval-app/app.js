@@ -11,7 +11,8 @@ const state = {
   dec: null, decAt: 0, decShow: 200,
   df: { view: 'list', approver: '', status: '', cluster: '', unit: '', month: '', q: '' },
   // storekeeper
-  store: { unit: '', view: 'raise', data: null, meta: {}, draft: null, rq: {}, inv: null, filter: 'all', q: '', show: 150, done: null, formUnit: '' },
+  store: { unit: '', view: 'raise', data: null, meta: {}, draft: null, rq: {}, inv: null, filter: 'all', q: '', show: 150, done: null, formUnit: '',
+           byUnit: {}, raw: {}, base: null, prefetchedAt: 0, prefetching: false },
 };
 const STATUSES = ['Approved', 'Rejected', 'On Hold', 'Withdrawn'];
 const REMARK_MAX_WORDS = 10;
@@ -101,8 +102,10 @@ function saveLocal() {
   const k = localKey(); if (!k) return;
   const sv = state.store;
   const snap = { at: Date.now(), me: state.me, tab: state.tab, ho: state.ho, mine: state.mine, reports: state.reports,
-    store: sv.data ? { unit: sv.unit, data: sv.data, meta: sv.meta[sv.unit] || null } : null };
+    store: { unit: sv.unit, base: sv.base, meta: sv.meta[sv.unit] || null } };
   try { localStorage.setItem(k, JSON.stringify(snap)); } catch { /* no room: fine */ }
+  // every unit's store lines, kept packed (as the server sent them) so they take little room
+  try { localStorage.setItem(k + '.stores', JSON.stringify(sv.raw)); } catch { try { localStorage.removeItem(k + '.stores'); } catch { /* ignore */ } }
   try { if (state.dec) localStorage.setItem(k + '.dec', JSON.stringify(state.dec)); } catch { try { localStorage.removeItem(k + '.dec'); } catch { /* ignore */ } }
 }
 function loadLocal() {
@@ -111,10 +114,11 @@ function loadLocal() {
     const s = JSON.parse(localStorage.getItem(k) || 'null');
     if (!s || !s.me || Date.now() - s.at > 7 * 86400000) return null;
     try { s.dec = JSON.parse(localStorage.getItem(k + '.dec') || 'null'); } catch { s.dec = null; }
+    try { s.stores = JSON.parse(localStorage.getItem(k + '.stores') || 'null'); } catch { s.stores = null; }
     return s;
   } catch { return null; }
 }
-function clearLocal() { const k = localKey(); if (!k) return; try { localStorage.removeItem(k); localStorage.removeItem(k + '.dec'); } catch { /* ignore */ } }
+function clearLocal() { const k = localKey(); if (!k) return; try { localStorage.removeItem(k); localStorage.removeItem(k + '.dec'); localStorage.removeItem(k + '.stores'); } catch { /* ignore */ } }
 /** packed list from the server ({k:[names], r:[[values]]}) -> list of objects */
 const unpack = (p) => (p && p.k ? p.r.map((row) => { const o = {}; p.k.forEach((k, i) => { if (row[i] !== null) o[k] = row[i]; }); return o; }) : (p || []));
 
@@ -128,7 +132,10 @@ async function boot(prefetched) {
   const local = loadLocal();
   if (local) {   // show the last screens at once; the first sync also re-checks who I am
     Object.assign(state, { me: local.me, ho: local.ho, mine: local.mine, reports: local.reports, dec: local.dec, tab: state.tab || local.tab });
-    if (local.store) { state.store.unit = local.store.unit; state.store.data = local.store.data; if (local.store.meta) state.store.meta[local.store.unit] = local.store.meta; }
+    const st = state.store;
+    if (local.store) { st.unit = local.store.unit || ''; st.base = local.store.base || null; if (local.store.meta) st.meta[local.store.unit] = local.store.meta; }
+    if (local.stores) Object.entries(local.stores).forEach(([u, p]) => putStore(u, p));
+    st.data = st.byUnit[st.unit] || null;
     return startApp(true);
   }
   show('loading');
@@ -183,7 +190,7 @@ async function changeViewAs(email) {
   const gen = ++state.gen;
   state.viewAs = email || null;
   state.ho = state.mine = state.reports = state.dec = null; state.sel.clear(); state.qty = {}; state.pick = {}; state.tab = null;
-  Object.assign(state.store, { unit: '', data: null, draft: null, rq: {}, inv: null, done: null, formUnit: '' });
+  Object.assign(state.store, { unit: '', data: null, draft: null, rq: {}, inv: null, done: null, formUnit: '', byUnit: {}, raw: {}, prefetchedAt: 0 });
   show('loading');
   let me;
   try { me = await api('me'); } catch (e) { if (gen !== state.gen) return; state.viewAs = null; $('viewAsPick').value = ''; show('app'); return handleError(e); }
@@ -228,8 +235,9 @@ async function refresh(fresh, withMe) {
   if (state.tab === 'reports' || state.reports) want.reports = { v: state.reports?.v || '' };
   if ((state.tab === 'reports' && state.rep.type === 'dec') || state.dec) want.dec = { v: state.dec?.v || '' };
   if (hasStore() && st.unit && (state.tab === 'store' || st.data)) {
-    want.store = { unit: st.unit, v: st.data && st.data.unit === st.unit ? st.data.v : '' };
-    if (!st.meta[st.unit]) want.meta = st.unit;
+    want.store = { unit: st.unit, v: st.byUnit[st.unit] ? st.byUnit[st.unit].v : '' };
+    if (!st.base) want.base = true;
+    if (!st.meta[st.unit] && st.view === 'raise') want.meta = st.unit;
   }
   let r;
   try { r = await api('sync', { want, fresh }); } catch (e) { if (gen !== state.gen) return; return handleError(e); }
@@ -240,6 +248,7 @@ async function refresh(fresh, withMe) {
   [...state.sel].forEach((k) => { if (!visible.has(k)) state.sel.delete(k); });
   render();
   saveLocal();
+  if (state.tab === 'store') prefetchStores();
 }
 
 /** Puts the parts of a sync reply into the app. */
@@ -260,12 +269,15 @@ function applySync(r, unit) {
   // "same" = nothing changed since the copy here: keep it, just update its "as of" time
   take('reports', (p) => { if (!p.same) state.reports = p.reports; else if (state.reports && p.asOf) state.reports.asOf = p.asOf; state.repAt = Date.now(); });
   take('dec', (p) => { if (!p.same) state.dec = Object.assign({}, p.decisions, { lines: unpack(p.decisions.lines) }); else if (state.dec && p.asOf) state.dec.asOf = p.asOf; state.decAt = Date.now(); });
-  take('store', (p) => {
-    if (unit !== state.store.unit) return;
-    if (!p.same) state.store.data = Object.assign({}, p, { lines: unpack(p.lines) });
-    else if (state.store.data && p.asOf) state.store.data.asOf = p.asOf;
+  take('store', (p) => putStore(unit || p.unit, p));
+  take('stores', (all) => Object.entries(all).forEach(([u, p]) => { if (!p.error) putStore(u, p); }));
+  take('base', (p) => (state.store.base = p));
+  take('meta', (p) => {
+    const st = state.store, u = unit || p.unit;
+    st.meta[u] = p; st.base = { categories: p.categories, uoms: p.uoms };
+    // the request form may already be open: only refresh its item suggestions, so nothing typed is lost
+    if (u === st.unit && $('pastItems')) $('pastItems').innerHTML = p.items.map((x) => `<option value="${esc(x[0])}">`).join('');
   });
-  take('meta', (p) => { if (unit) state.store.meta[unit] = p; else state.store.meta[p.unit] = p; });
   if (state.me && !state.tab && !$('app').hidden) setTab(defaultTab());
   if (errs.length) {
     const e = errs[0];
@@ -837,21 +849,59 @@ function setupStoreUnits() {
   else note.hidden = true;
 }
 
-async function changeStoreUnit(u) {
+/** Keeps one unit's store lines (packed as sent by the server) and makes them the current lines if it is the unit shown. */
+function putStore(unit, p) {
+  if (!unit || !p) return;
+  if (p.same) {
+    const d = sv.byUnit[unit]; if (d && p.asOf) { d.asOf = p.asOf; if (sv.raw[unit]) sv.raw[unit].asOf = p.asOf; }
+  } else if (p.lines) {
+    sv.raw[unit] = { lines: p.lines, pol: p.pol || {}, asOf: p.asOf, v: p.v };
+    const lines = unpack(p.lines), pol = p.pol || {};
+    lines.forEach((l) => { if (l.po) l.pol = pol[l.po] || ''; });
+    sv.byUnit[unit] = { unit, lines, asOf: p.asOf, v: p.v };
+  }
+  if (unit === sv.unit) sv.data = sv.byUnit[unit] || null;
+}
+
+// Switching unit shows that unit AT ONCE from the copy kept here; a quiet check then brings it up to date.
+function changeStoreUnit(u) {
   sv.unit = u; store.set(UNIT_KEY, u);
-  Object.assign(sv, { data: null, draft: null, rq: {}, inv: null, done: null, formUnit: '', show: 150 });
+  Object.assign(sv, { data: sv.byUnit[u] || null, draft: null, rq: {}, inv: null, done: null, formUnit: '', show: 150 });
   renderStore(true);
-  run('storeList', () => loadStore(false, state.gen).then(() => renderStore(true)));
+  const gen = state.gen;
+  loadStore(false, gen).then(() => { if (gen === state.gen && u === sv.unit) renderStore(); }).catch(handleError);
 }
 
 async function loadStore(fresh, gen) {
   const unit = sv.unit;
-  const want = { store: { unit, v: !fresh && sv.data && sv.data.unit === unit ? sv.data.v : '' } };
-  if (!sv.meta[unit]) want.meta = unit;
+  const want = { store: { unit, v: !fresh && sv.byUnit[unit] ? sv.byUnit[unit].v : '' } };
+  if (!sv.base) want.base = true;
+  if (!sv.meta[unit] && sv.view === 'raise') want.meta = unit;
   const r = await api('sync', { want, fresh: !!fresh });
-  if (gen !== state.gen || unit !== sv.unit) return;
+  if (gen !== state.gen) return;
   applySync(r, unit);
   saveLocal();
+}
+
+/** In the background, fetch every unit this person can work on (several per request, only those that changed),
+ * so that switching unit never has to wait. Runs when the Store tab is used, at most every 5 minutes. */
+async function prefetchStores() {
+  const units = state.me?.storeUnits || [];
+  if (units.length < 2 || sv.prefetching || Date.now() - sv.prefetchedAt < 300000) return;
+  sv.prefetching = true;
+  const gen = state.gen;
+  try {
+    const others = units.filter((u) => u !== sv.unit);
+    for (let i = 0; i < others.length; i += 9) {
+      const chunk = others.slice(i, i + 9);
+      const r = await api('sync', { want: { stores: chunk.map((u) => ({ unit: u, v: sv.byUnit[u] ? sv.byUnit[u].v : '' })) } });
+      if (gen !== state.gen) return;
+      applySync(r);
+    }
+    sv.prefetchedAt = Date.now();
+    saveLocal();
+  } catch (e) { console.warn('Prefetch of units failed', e); }
+  finally { sv.prefetching = false; }
 }
 
 // ---- what each screen shows ----
@@ -906,8 +956,9 @@ function renderStore(force) {
   $('storeAsOf').textContent = loaded ? `${sv.unit} · as of ${sv.data.asOf}` : '';
   const body = $('storeBody');
   if (sv.view === 'raise') {
-    if (!sv.meta[sv.unit]) { body.innerHTML = '<p class="empty">Loading…</p>'; return; }
+    if (!sv.base) { body.innerHTML = '<p class="empty">Loading…</p>'; return; }
     if (sv.formUnit === sv.unit && body.querySelector('#raiseForm')) return;   // keep what is being typed
+    if (!sv.meta[sv.unit]) loadMeta(sv.unit);   // past-item suggestions arrive a moment later
     body.innerHTML = raiseHtml(); sv.formUnit = sv.unit; return;
   }
   sv.formUnit = '';
@@ -917,8 +968,15 @@ function renderStore(force) {
   else body.innerHTML = statusHtml();
 }
 
+let metaLoading = '';
+function loadMeta(unit) {
+  if (metaLoading === unit) return;
+  metaLoading = unit;
+  api('sync', { want: { meta: unit } }).then((r) => applySync(r, unit)).catch(() => {}).finally(() => { if (metaLoading === unit) metaLoading = ''; });
+}
+
 function raiseHtml() {
-  const meta = sv.meta[sv.unit];
+  const meta = { categories: sv.base.categories, uoms: sv.base.uoms, items: sv.meta[sv.unit]?.items || [] };
   if (!sv.draft) sv.draft = [blankLine()];
   const done = sv.done ? `<div class="done-msg">Request sent: ${sv.done.lines.length} item${sv.done.lines.length > 1 ? 's' : ''} for ${esc(sv.done.unit)}.
     HO will choose the approver. Order no: ${sv.done.lines.map((l) => `<code>${esc(l.orderNo)}</code>`).join(', ')}</div>` : '';
@@ -1042,7 +1100,7 @@ const noPreview = () => { if (state.me.preview) { toast('This is a preview, so n
 
 function submitRequest() {
   if (!noPreview()) return;
-  const meta = sv.meta[sv.unit];
+  const meta = sv.base;
   for (const [i, l] of sv.draft.entries()) {
     const n = `Item ${i + 1}: `;
     if (!l.item.trim()) return toast(n + 'enter the item name.', true);
@@ -1115,7 +1173,7 @@ async function uploadInvoice(form) {
 $('storeUnit').onchange = (e) => changeStoreUnit(e.target.value);
 document.querySelectorAll('[data-stype]').forEach((b) => (b.onclick = () => {
   sv.view = b.dataset.stype; if (sv.view !== 'raise') sv.done = null; renderStore(true);
-  if (!sv.data && sv.view !== 'raise') run('storeList', () => loadStore(false, state.gen).then(() => renderStore(true)));
+  if (!sv.data && sv.view !== 'raise') loadStore(false, state.gen).then(() => renderStore(true)).catch(handleError);
 }));
 $('storeBody').addEventListener('input', (e) => {
   const t = e.target;
