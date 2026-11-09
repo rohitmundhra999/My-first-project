@@ -130,6 +130,19 @@ function sync_(user, req, realUser) {
     if (r.lines) r.lines = pack_(r.lines);
     return r;
   });
+  // several units at once (admin / storekeeper with more than one unit): the app keeps them all, so switching unit is instant
+  if (Array.isArray(w.stores) && w.stores.length) part('stores', () => {
+    const res = {};
+    w.stores.slice(0, 60).forEach(x => {
+      try {
+        const r = storeList_(user, { unit: x.unit, fresh: fresh, v: fresh ? '' : x.v });
+        if (r.lines) r.lines = pack_(r.lines);
+        res[x.unit] = r;
+      } catch (e) { res[x.unit] = { error: e.message, code: e.appCode || 'SERVER' }; }
+    });
+    return res;
+  });
+  if (w.base) part('base', () => { const m = storeMetaData_(); return { categories: m.categories, uoms: m.uoms }; });
   if (w.meta) part('meta', () => storeMeta_(user, { unit: w.meta }));
   return out;
 }
@@ -1053,6 +1066,7 @@ function storeMeta_(user, req) {
  * that still has to be received or invoiced. Kept ready in the cache PER UNIT (so a storekeeper only downloads and
  * the server only unpacks their own unit), rebuilt by warmCache every 5 minutes and after every store change. */
 const STORE_DAYS = 60;
+let STORE_BUILT_ = false;   // store lines already rebuilt in this run (a fresh read of many units rebuilds once)
 const storeKey_ = unit => STORE_CFG.CACHE + '_' + normU_(unit);
 function storeLines_() {
   const snap = fmsSnap_();
@@ -1063,7 +1077,7 @@ function storeLines_() {
   const cutoff = Date.now() - STORE_DAYS * 86400000;
   const pad = v => (v < 10 ? '0' : '') + v;
   const num = v => (v === '' || v === null ? '' : (isFinite(Number(v)) ? Number(v) : String(v)));
-  const byUnit = {};
+  const byUnit = {}, polByUnit = {};
   let year = CFG.START_YEAR, prevMonth = 1;
   rows.forEach((r, i) => {
     const m = String(disp[i][0]).match(/^(\d{1,2})-(\d{1,2})(?:\((\d{1,2}):(\d{2})\))?/);
@@ -1086,7 +1100,7 @@ function storeLines_() {
     const l = {
       row: CFG.FIRST_ROW + i, o: orderNo,
       d: year + '-' + pad(mon) + '-' + pad(day), at: pad(day) + '-' + pad(mon) + ' ' + pad(+(m[3] || 0)) + ':' + pad(+(m[4] || 0)),
-      u: String(r[COL.UNIT - 1]).trim(), cat: String(r[COL.CAT - 1]).trim(), it: String(r[COL.ITEM - 1]).trim(),
+      cat: String(r[COL.CAT - 1]).trim(), it: String(r[COL.ITEM - 1]).trim(),
       q: num(r[COL.QTY - 1]), uom: String(r[COL.UOM - 1]).trim(), s: status,
       ap: String(r[COL.APPROVED_BY - 1]).trim() || String(r[COL.APPROVER - 1]).trim(), aq: num(r[COL.APPR_QTY - 1]),
       rcv: received ? num(r[SCOL.RECEIVED - 1]) : '', inv: inv === 'UPDATE' ? 'pending' : (inv === 'INVOICE' ? 'done' : ''),
@@ -1095,14 +1109,19 @@ function storeLines_() {
     if (/^https?:\/\//.test(String(r[COL.PIC - 1]))) l.pic = String(r[COL.PIC - 1]).trim();
     if (status === 'Rejected' && remarks[orderNo]) l.rm = remarks[orderNo];
     if (po) {
-      l.po = po; l.pol = links[po.toUpperCase()] || '';
+      l.po = po;   // the PO file link goes once per PO in "pol", not on every line
+      if (links[po.toUpperCase()]) (polByUnit[unit] = polByUnit[unit] || {})[po] = links[po.toUpperCase()];
       l.amt = Number(String(r[SCOL.PO_AMT - 1]).replace(/[^0-9.]/g, '')) || 0; l.ven = String(r[SCOL.VENDOR - 1]).trim();
     }
     (byUnit[unit] = byUnit[unit] || []).push(l);
   });
   const asOf = Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm');
   const units = unique_(storeMetaData_().units.map(normU_).concat(Object.keys(byUnit)));
-  units.forEach(u => { const lines = (byUnit[u] || []).reverse(); cachePutBig_(storeKey_(u), { lines: lines, asOf: asOf, v: ver_(lines) }, OPEN_CACHE_SECONDS + 300); });
+  units.forEach(u => {
+    const lines = (byUnit[u] || []).reverse(), pol = polByUnit[u] || {};
+    cachePutBig_(storeKey_(u), { lines: lines, pol: pol, asOf: asOf, v: ver_([lines, pol]) }, OPEN_CACHE_SECONDS + 300);
+  });
+  STORE_BUILT_ = true;
   return byUnit;
 }
 
@@ -1124,10 +1143,11 @@ function poLinks_() {
 /** Storekeeper: every line of one unit (only units this person may work on). */
 function storeList_(user, req) {
   const unit = checkUnit_(user, req.unit);
-  let data = req && req.fresh ? null : cacheGetBig_(storeKey_(unit));
-  if (!data) { storeLines_(); data = cacheGetBig_(storeKey_(unit)) || { lines: [], asOf: '', v: '' }; }
+  const fresh = req && req.fresh && !STORE_BUILT_;
+  let data = fresh ? null : cacheGetBig_(storeKey_(unit));
+  if (!data) { storeLines_(); data = cacheGetBig_(storeKey_(unit)) || { lines: [], pol: {}, asOf: '', v: '' }; }
   if (!(req && req.fresh) && req && req.v && req.v === data.v) return { same: true, unit: unit, asOf: data.asOf };
-  return { unit: unit, lines: data.lines, asOf: data.asOf, v: data.v };
+  return { unit: unit, lines: data.lines, pol: data.pol || {}, asOf: data.asOf, v: data.v };
 }
 
 /** Storekeeper: raise a purchase request with one or more lines. */
