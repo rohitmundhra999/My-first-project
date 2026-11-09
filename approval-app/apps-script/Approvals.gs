@@ -1454,7 +1454,7 @@ function vendors_() {
     .map(r => [String(r[0]).trim(), String(r[1]).trim(), String(r[2]).trim()])
     .filter(r => r[0] && !seen[r[0].toLowerCase()] && (seen[r[0].toLowerCase()] = true));
   list.sort((a, b) => a[0].localeCompare(b[0]));
-  return { list: list };   // [name, address, phone]
+  return { list: list, hotels: hotelList_() };   // [name, address, phone]
 }
 
 /** HO: make one PO for some approved lines of one hotel. */
@@ -1517,7 +1517,7 @@ function makePO_(user, req) {
     const subtotal = Math.round(lines.reduce((a, l) => a + l.total, 0) * 100) / 100;
       const discountAmt = typeof req.discountAmt === 'number' && req.discountAmt > 0 ? Math.round(req.discountAmt * 100) / 100 : 0;
       const grand = Math.round((subtotal - discountAmt) * 100) / 100;
-    const hotel = hotelInfo_(unit);
+    const hotel = hotelInfo_(req.shipTo || unit);
     const billToHotel = hotelInfo_(req.billTo || unit);
     const link = poPdf_({ poNo: poNo, date: now, unit: unit, hotel: hotel, billToHotel: billToHotel, vendor: vendor, days: days, lines: lines, subtotal: subtotal, discountAmt: discountAmt, total: grand, note: note, terms: terms, by: user.name });
 
@@ -1544,6 +1544,14 @@ function makePO_(user, req) {
 }
 
 /** Hotel name, address, phone, GST from the P.O tab's hotel table (Head Office -> company "GOODS" row). */
+/** Units for Ship To / Bill To: [key, hotel name] from the P.O tab. */
+function hotelList_() {
+  const sh = book_().getSheetByName(PO_CFG.TEMPLATE);
+  if (!sh) return [];
+  return sh.getRange(PO_CFG.HOTELS).getValues().filter(r => String(r[0]).trim() && String(r[1]).trim())
+    .map(r => [String(r[0]).trim(), String(r[1]).trim(), String(r[4]).trim()]);
+}
+
 function hotelInfo_(unit) {
   const sh = book_().getSheetByName(PO_CFG.TEMPLATE);
   const rows = sh ? sh.getRange(PO_CFG.HOTELS).getValues() : [];
@@ -1558,80 +1566,86 @@ function poPdf_(p) {
   const e = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const money = n => Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const rows = p.lines.map((l, i) =>
-    '<tr><td class="n">' + (i + 1) + '</td><td>' + e(l.orderNo) + '</td><td>' + e(l.item) +
-    '</td><td class="n">' + e(l.qty) + '</td><td>' + e(l.uom) +
-    '</td><td class="n">&#8377; ' + money(l.price) + '</td><td class="n">' + e(l.tax) + '%</td>' +
-    '<td class="n">&#8377; ' + money(l.total) + '</td></tr>'
+    '<tr' + (i % 2 ? ' class="z"' : '') + '><td class="c">' + (i + 1) + '</td><td>' + e(l.orderNo) + '</td><td>' + e(l.item) +
+    '</td><td class="n">' + e(l.qty) + '</td><td class="c">' + e(l.uom) +
+    '</td><td class="n">' + money(l.price) + '</td><td class="n">' + e(l.tax) + '%</td>' +
+    '<td class="n">' + money(l.total) + '</td></tr>'
   ).join('');
   const subtotal = p.subtotal != null ? p.subtotal : p.total;
-  const discountRow = (p.discountAmt > 0)
-    ? '<tr><td colspan="7" class="n"><b>Discount</b></td><td class="n" style="color:#c00">&#8211; &#8377; ' + money(p.discountAmt) + '</td></tr>'
-    : '';
   const html =
     '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
-    'body{font-family:Arial,sans-serif;font-size:11pt;color:#111;margin:30px;line-height:1.4}' +
-    '.co-name{font-size:16pt;font-weight:bold;color:#1b5e20;text-transform:uppercase;letter-spacing:1px}' +
-    '.co-addr{font-size:9pt;color:#555;margin-top:3px}' +
-    '.po-title{font-size:18pt;font-weight:bold;color:#1b5e20;text-align:right}' +
-    '.sep{border-top:2.5px solid #1b5e20;margin:10px 0}' +
-    '.lbl{font-size:9pt;color:#777;text-transform:uppercase;letter-spacing:0.5px}' +
+    'body{font-family:Arial,Helvetica,sans-serif;font-size:10pt;color:#222;margin:28px 32px;line-height:1.35}' +
     'table{border-collapse:collapse;width:100%}' +
-    '.t th{background:#1b5e20;color:#fff;font-size:10pt;padding:6px 8px;text-align:left}' +
-    '.t th.n{text-align:right}.t td{border:1px solid #ccc;padding:5px 8px;font-size:10pt}' +
-    '.n{text-align:right}' +
-    '.tot-row td{border-top:2px solid #1b5e20;background:#f9f9f9}' +
-    '.grand-row td{background:#e8f5e9;font-size:11pt}' +
+    '.hdr td{vertical-align:middle}' +
+    '.co{font-size:20pt;font-weight:bold;color:#1b5e20;letter-spacing:0.5px}' +
+    '.coaddr{font-size:9pt;color:#555;margin-top:2px}' +
+    '.title{font-size:16pt;font-weight:bold;color:#fff;background:#1b5e20;padding:6px 14px;text-align:center;letter-spacing:2px}' +
+    '.meta td{font-size:9.5pt;padding:2px 0}.meta .k{color:#666;padding-right:8px}' +
+    '.bar{border-top:3px solid #1b5e20;margin:10px 0 12px}' +
+    '.box{border:1px solid #9fbfa1;vertical-align:top;padding:0}' +
+    '.box .h{background:#e8f5e9;color:#1b5e20;font-weight:bold;font-size:9pt;letter-spacing:1px;padding:5px 10px;border-bottom:1px solid #9fbfa1}' +
+    '.box .b{padding:7px 10px;font-size:9.5pt;min-height:70px}' +
+    '.gst{margin-top:6px;padding:4px 6px;background:#fff8e1;border:1px solid #f0c36d;font-weight:bold;font-size:10pt}' +
+    '.t th{background:#1b5e20;color:#fff;font-size:9pt;padding:6px;border:1px solid #1b5e20;text-align:left}' +
+    '.t td{border:1px solid #c8c8c8;padding:5px 6px;font-size:9.5pt}' +
+    '.t tr.z td{background:#f7faf7}' +
+    '.n{text-align:right}.c{text-align:center}' +
+    '.sum td{border:1px solid #c8c8c8;padding:6px 8px;font-size:10pt}' +
+    '.sum .k{background:#f5f5f5;font-weight:bold}' +
+    '.sum .g td{background:#1b5e20;color:#fff;font-weight:bold;font-size:11pt}' +
+    '.lbl{font-size:9pt;color:#1b5e20;font-weight:bold;letter-spacing:0.5px}' +
+    '.sign td{padding-top:40px;font-size:9pt;color:#444}' +
     '</style></head><body>' +
+    '<table class="hdr"><tr>' +
+    '<td style="width:62%"><div class="co">Summit Hotels and Resorts</div>' +
+    '<div class="coaddr">' + e(PO_CFG.COMPANY_ADDR) + '</div></td>' +
+    '<td style="width:38%"><div class="title">PURCHASE ORDER</div>' +
+    '<table class="meta" style="margin-top:6px"><tr><td class="k">PO No.</td><td class="n"><b>' + e(p.poNo) + '</b></td></tr>' +
+    '<tr><td class="k">PO Date</td><td class="n"><b>' + Utilities.formatDate(p.date, CFG.TZ, 'dd-MMM-yyyy').toUpperCase() + '</b></td></tr>' +
+    '<tr><td class="k">Delivery</td><td class="n"><b>' + e(p.days) + ' days</b></td></tr>' +
+    (p.terms ? '<tr><td class="k">Payment Terms</td><td class="n"><b>' + e(p.terms) + '</b></td></tr>' : '') +
+    '</table></td></tr></table>' +
+    '<div class="bar"></div>' +
+    '<table><tr><td class="box" style="width:100%"><div class="h">VENDOR</div><div class="b" style="min-height:0">' +
+    '<b>' + e(p.vendor[0]) + '</b>' +
+    (p.vendor[1] ? '<br>' + e(p.vendor[1]) : '') +
+    (p.vendor[2] ? '<br>Mobile: ' + e(p.vendor[2]) : '') +
+    '</div></td></tr></table><div style="height:10px"></div>' +
     '<table><tr>' +
-    '<td style="vertical-align:top;width:65%">' +
-    '<div class="co-name">Summit Hotels and Resorts</div>' +
-    '<div class="co-addr">' + e(PO_CFG.COMPANY_ADDR) + '</div>' +
-    '</td>' +
-    '<td style="vertical-align:bottom;text-align:right">' +
-    '<div class="po-title">PURCHASE ORDER</div>' +
-    '<div style="margin-top:4px"><span class="lbl">PO No: </span><b>' + e(p.poNo) + '</b></div>' +
-    '<div><span class="lbl">Date: </span><b>' + Utilities.formatDate(p.date, CFG.TZ, 'dd-MMM-yyyy').toUpperCase() + '</b></div>' +
-    '</td></tr></table>' +
-    '<div class="sep"></div>' +
-    '<table><tr>' +
-    '<td style="width:50%;vertical-align:top;padding-right:20px">' +
-    '<div class="lbl">Vendor</div>' +
-    '<div><b>' + e(p.vendor[0]) + '</b></div>' +
-    (p.vendor[1] ? '<div>' + e(String(p.vendor[1]).toUpperCase()) + '</div>' : '') +
-    (p.vendor[2] ? '<div>(M) ' + e(p.vendor[2]) + '</div>' : '') +
-    '<div style="margin-top:8px"><span class="lbl">Delivery Days: </span><b>' + e(p.days) + '</b></div>' +
-    (p.terms ? '<div><span class="lbl">Payment Terms: </span><b>' + e(p.terms) + '</b></div>' : '') +
-    '</td>' +
-    '<td style="width:50%;vertical-align:top">' +
-    '<div class="lbl">Ship To</div>' +
-    '<div><b>' + e(p.hotel.name) + '</b></div>' +
-    '<div>' + e(p.hotel.address) + '</div>' +
-    (p.hotel.phone ? '<div>Phone: ' + e(p.hotel.phone) + '</div>' : '') +
-    '</td></tr></table><br>' +
-    '<table><tr><td colspan="2" style="vertical-align:top;padding-bottom:8px">' +
-    '<div class="lbl">Bill To</div>' +
-    '<div><b>' + e(p.billToHotel.name) + '</b></div>' +
-    '<div>' + e(p.billToHotel.address) + '</div>' +
-    (p.billToHotel.gst ? '<div><b>GST: ' + e(p.billToHotel.gst) + '</b></div>' : '') +
-    '</td></tr></table><br>' +
+    '<td class="box" style="width:49%"><div class="h">SHIP TO</div><div class="b">' +
+    '<b>' + e(p.hotel.name) + '</b><br>' + e(p.hotel.address) +
+    (p.hotel.phone ? '<br>Phone: ' + e(p.hotel.phone) : '') +
+    '</div></td>' +
+    '<td style="width:2%"></td>' +
+    '<td class="box" style="width:49%"><div class="h">BILL TO</div><div class="b">' +
+    '<b>' + e(p.billToHotel.name) + '</b><br>' + e(p.billToHotel.address) +
+    (p.billToHotel.phone ? '<br>Phone: ' + e(p.billToHotel.phone) : '') +
+    '<div class="gst">GSTIN: ' + (p.billToHotel.gst ? e(p.billToHotel.gst) : '&#8212;') + '</div>' +
+    '</div></td>' +
+    '</tr></table><div style="height:12px"></div>' +
     '<table class="t"><tr>' +
-    '<th class="n" style="width:4%">S.No</th>' +
+    '<th class="c" style="width:5%">S.No</th>' +
     '<th style="width:12%">Order #</th>' +
     '<th>Description</th>' +
-    '<th class="n" style="width:5%">Qty</th>' +
-    '<th style="width:5%">Unit</th>' +
-    '<th class="n" style="width:11%">Unit Price</th>' +
-    '<th class="n" style="width:5%">Tax%</th>' +
-    '<th class="n" style="width:11%">Line Total</th>' +
-    '</tr>' + rows +
-    '<tr class="tot-row"><td colspan="7" class="n"><b>Sub Total</b></td><td class="n"><b>&#8377; ' + money(subtotal) + '</b></td></tr>' +
-    discountRow +
-    '<tr class="grand-row"><td colspan="7" class="n"><b>GRAND TOTAL</b></td><td class="n"><b>&#8377; ' + money(p.total) + '</b></td></tr>' +
-    '</table><br>' +
-    '<div class="lbl">Special Instructions</div>' +
-    '<div>Freight Including' + (p.note ? ' &mdash; ' + e(p.note) : '') + '</div>' +
-    '<br><div style="font-size:9pt;color:#888">Made by ' + e(p.by) + ' on ' +
-    Utilities.formatDate(p.date, CFG.TZ, 'dd-MMM-yyyy HH:mm') +
+    '<th class="n" style="width:7%">Qty</th>' +
+    '<th class="c" style="width:7%">Unit</th>' +
+    '<th class="n" style="width:12%">Rate (&#8377;)</th>' +
+    '<th class="n" style="width:7%">Tax %</th>' +
+    '<th class="n" style="width:14%">Amount (&#8377;)</th>' +
+    '</tr>' + rows + '</table>' +
+    '<table style="margin-top:0"><tr><td style="width:55%;vertical-align:top;padding-top:10px">' +
+    '<div class="lbl">SPECIAL INSTRUCTIONS</div>' +
+    '<div style="font-size:9.5pt">Freight Including' + (p.note ? ' &#8212; ' + e(p.note) : '') + '</div>' +
+    '<div style="font-size:9pt;color:#555;margin-top:6px">Please mention this PO number and the Bill To GSTIN on your invoice.</div>' +
+    '</td><td style="width:45%;vertical-align:top">' +
+    '<table class="sum">' +
+    '<tr><td class="k">Sub Total</td><td class="n">&#8377; ' + money(subtotal) + '</td></tr>' +
+    (p.discountAmt > 0 ? '<tr><td class="k">Less: Discount</td><td class="n" style="color:#c00">&#8211; &#8377; ' + money(p.discountAmt) + '</td></tr>' : '') +
+    '<tr class="g"><td>GRAND TOTAL</td><td class="n">&#8377; ' + money(p.total) + '</td></tr>' +
+    '</table></td></tr></table>' +
+    '<table class="sign"><tr><td style="width:50%">Prepared by: <b>' + e(p.by) + '</b></td>' +
+    '<td class="n">For <b>Summit Hotels and Resorts</b><br><br><br>Authorised Signatory</td></tr></table>' +
+    '<div style="font-size:8pt;color:#999;margin-top:14px">Generated on ' + Utilities.formatDate(p.date, CFG.TZ, 'dd-MMM-yyyy HH:mm') +
     ' via Summit Purchase app' + (MODE === 'TRIAL' ? ' (TRIAL)' : '') + '</div>' +
     '</body></html>';
   const blob = Utilities.newBlob(html, 'text/html', p.poNo + '.html').getAs('application/pdf').setName(p.poNo + '.pdf');
