@@ -11,7 +11,7 @@ const state = {
   dec: null, decAt: 0, decShow: 200,
   df: { view: 'list', approver: '', status: '', cluster: '', unit: '', month: '', q: '' },
   // storekeeper
-  po: null, vendors: null, poSel: new Set(), poPrice: {}, poForm: { vendor: '', days: 25, terms: '', note: '', discount: 0, newVendor: null }, poUnit: '', poDone: null,
+  po: null, vendors: null, poSel: new Set(), poPrice: {}, poForm: { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: '', newVendor: null }, poUnit: '', poDone: null,
   store: { unit: '', view: 'raise', data: null, meta: {}, draft: null, rq: {}, inv: null, filter: 'all', q: '', show: 150, done: null, formUnit: '',
            byUnit: {}, raw: {}, base: null, prefetchedAt: 0, prefetching: false },
 };
@@ -1310,6 +1310,7 @@ function renderPO(force) {
   const total = sel.reduce((a, l) => a + lineTotal(l, state.poPrice[poKey(l)]), 0);
   const f = state.poForm, ro = readOnly();
   const vendorOpts = (state.vendors || []).map((v) => `<option value="${esc(v[0])}">`).join('');
+  const billToOpts = poUnits().map(([u]) => `<option value="${esc(u)}"${(f.billTo || state.poUnit) === u ? ' selected' : ''}>${esc(u)}</option>`).join('');
   const terms = (state.po.terms || []).map((t) => `<option ${t === f.terms ? 'selected' : ''}>${esc(t)}</option>`).join('');
   const priceRow = (l) => {
     const k = poKey(l), pr = state.poPrice[k] || {};
@@ -1332,12 +1333,13 @@ function renderPO(force) {
           <div class="field"><span>&nbsp;</span><button type="button" class="linkbtn" id="poPickVendor">Pick an existing vendor instead</button></div>`
         : `<label class="field full">Vendor<input data-pf="vendor" list="poVendors" value="${esc(f.vendor)}" placeholder="Type to search ${(state.vendors || []).length} vendors"><datalist id="poVendors">${vendorOpts}</datalist></label>
           <div class="field full"><button type="button" class="linkbtn" id="poNewVendor">+ Vendor not in the list? Add a new vendor</button></div>`}
+        <label class="field">Bill To<select data-pf="billTo">${billToOpts}</select></label>
         <label class="field">Delivery days<input data-pf="days" type="number" inputmode="numeric" min="0" max="365" value="${esc(f.days)}"></label>
         <label class="field">Payment terms<select data-pf="terms"><option value="">Not now</option>${terms}</select></label>
         <label class="field full">Comments on the PO (optional)<input data-pf="note" maxlength="300" value="${esc(f.note)}"></label>
       </div>
-            <div class="porow"><label>Discount %<input type="number" min="0" max="100" step="0.5" data-pf="discount" value="${f.discount || 0}"></label></div>
-      <div class="pototal"><span>${sel.length} line${sel.length > 1 ? 's' : ''} · PO total</span><b id="poTotal">${money(Math.round((total - total * (Number(f.discount)||0) / 100) * 100) / 100)}</b></div>
+            <div class="porow"><label>Discount Amt (Rs.)<input type="number" min="0" step="0.01" data-pf="discountAmt" value="${f.discountAmt || 0}"></label></div>
+      <div class="pototal"><span>${sel.length} line${sel.length > 1 ? 's' : ''} · PO total</span><b id="poTotal">${money(Math.round((total - (Number(f.discountAmt)||0)) * 100) / 100)}</b></div>
       ${ro ? '' : `<button class="btn primary" id="poMake" style="width:100%">Make PO</button>`}
     </article>` : '';
   body.innerHTML = done + details + `<p class="sub">${sel.length ? 'Tick more lines of this hotel to add them to the PO.' : 'Tick the approved lines to put in one PO. Price, vendor and the Make PO button then show here at the top.'}</p>
@@ -1385,7 +1387,7 @@ function makePO() {
   if (!confirm(`Make PO for ${state.poUnit}: ${lines.length} line${lines.length > 1 ? 's' : ''}, ${vendor || newVendor.name}, total ${money(total)}?`)) return;
   const payload = {
     items: lines.map((l) => ({ row: l.row, orderNo: l.o, price: Number(state.poPrice[poKey(l)].price), tax: state.poPrice[poKey(l)].tax === '' || state.poPrice[poKey(l)].tax == null ? 0 : Number(state.poPrice[poKey(l)].tax) })),
-    vendor, newVendor, days: Number(f.days), terms: f.terms, note: f.note, discount: Number(f.discount) || 0,
+    vendor, newVendor, days: Number(f.days), terms: f.terms, note: f.note, discountAmt: Number(f.discountAmt) || 0, billTo: f.billTo || state.poUnit,
   };
   // at once: the lines leave the list and the form clears, so the next PO can be started; the PO number and
   // PDF link show when the server has made it (a few seconds). Everything is put back if it fails.
@@ -1394,7 +1396,7 @@ function makePO() {
   state.poDone = { poNo: '…', unit, vendor: vendor || newVendor.name, lines: lines.length, total, making: true };
   lines.forEach((l) => { state.poSel.delete(poKey(l)); delete state.poPrice[poKey(l)]; });
   state.po.lines = state.po.lines.filter((l) => !lines.includes(l));
-  state.poForm = { vendor: '', days: 25, terms: '', note: '', discount: 0, newVendor: null };
+  state.poForm = { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: state.poUnit, newVendor: null };
   renderPO(true); window.scrollTo(0, 0);
   const sid = beginSave();
   api('makePO', payload)
@@ -1421,7 +1423,7 @@ $('poBody').addEventListener('input', (e) => {
   if (t.dataset.pp) { (state.poPrice[t.dataset.pp] = state.poPrice[t.dataset.pp] || {}).price = t.value; return updatePOTotals(); }
   if (t.dataset.pt) { (state.poPrice[t.dataset.pt] = state.poPrice[t.dataset.pt] || {}).tax = t.value; return updatePOTotals(); }
   const k = t.dataset.pf;
-  if (k === 'vendor' || k === 'days' || k === 'note' || k === 'discount') f[k] = t.value;
+  if (k === 'vendor' || k === 'days' || k === 'note' || k === 'discountAmt' || k === 'billTo') f[k] = t.value;
   else if (k === 'nvName') f.newVendor.name = t.value;
   else if (k === 'nvAddress') f.newVendor.address = t.value;
   else if (k === 'nvPhone') f.newVendor.phone = t.value;
