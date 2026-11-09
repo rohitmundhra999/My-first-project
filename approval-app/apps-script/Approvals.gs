@@ -9,6 +9,11 @@
  *      and sends that approver a push notification.
  *   2. The approver (and only that approver) chooses Approved / On Hold / Rejected / Withdrawn
  *      and the quantity -> writes K (APPROVAL), M (APPROVED BY), N (QTY) and J (ACTUAL time).
+ *   3. Storekeepers (role STOREKEEPER, unit(s) in APP USERS column E) work only on their own unit:
+ *      raise a request (-> new FORMDATA row, which FMS picks up by itself), mark material received
+ *      (-> FMS AB RECEIVED) and upload the vendor invoice (-> Drive file + INVOICES row).
+ *      Every storekeeper action is checked here against the unit of the line, so nobody can change
+ *      another unit's data. The admin can act for every unit (trial).
  *
  * Everyone signs in with Google. Every request carries a Google ID token, which is checked here
  * (right app, verified @summithotels.in email) before anything is read or written.
@@ -59,7 +64,9 @@ function doPost(e) {
   try {
     const req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     const realUser = auth_(req.idToken);
-    const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_, reports: reports_, decisions: decisions_, testPush: testPush_ };
+    const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_,
+      reports: (u, r) => scopeReports_(u, reports_(u, r)), decisions: (u, r) => scopeReports_(u, decisions_(u, r)), testPush: testPush_,
+      storeMeta: storeMeta_, storeList: storeList_, storeRaise: storeRaise_, storeReceive: storeReceive_, storeInvoice: storeInvoice_ };
     const fn = handlers[req.action];
     if (!fn) throw appError_('BAD_REQUEST', 'Unknown action.');
     const user = previewUser_(realUser, req);
@@ -76,13 +83,15 @@ function doPost(e) {
 function me_(user, req, realUser) {
   const admin = isAdmin_(realUser);
   return {
-    user: { name: user.name, email: user.email, isHO: user.isHO, isApprover: user.isApprover },
+    user: { name: user.name, email: user.email, isHO: user.isHO, isApprover: user.isApprover, isStore: user.isStore, units: user.units },
+    storeUnits: storeUnits_(user),
+    storeAll: !user.previewBy && isAdmin_(user),   // trial: the admin can work for every unit
     approvers: user.isHO ? activeUsers_().filter(u => u.isApprover).map(u => u.name) : [],
     decisions: DECISIONS,
     mode: MODE,
     // Admin only: everyone in APP USERS, so the admin can preview the app as them.
     admin: admin ? { name: realUser.name, email: realUser.email } : null,
-    users: admin ? activeUsers_().map(u => ({ name: u.name, email: u.email, isHO: u.isHO, isApprover: u.isApprover })) : [],
+    users: admin ? activeUsers_().map(u => ({ name: u.name, email: u.email, isHO: u.isHO, isApprover: u.isApprover, isStore: u.isStore, units: u.units })) : [],
     preview: user.previewBy ? true : false,
   };
 }
@@ -92,7 +101,7 @@ function me_(user, req, realUser) {
 // another user sees it. Preview is READ-ONLY: nothing can be assigned, decided or registered while
 // previewing, so the sheet and the APP LOG always show the real person who acted.
 
-const WRITE_ACTIONS = ['assign', 'decide', 'register'];
+const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice'];
 
 function isAdmin_(u) {
   if (u.isAdmin) return true;
@@ -298,9 +307,11 @@ function activeUsers_() {
   const sh = book_().getSheetByName(CFG.USERS);
   if (!sh) throw appError_('SETUP', 'The "' + CFG.USERS + '" tab is missing. Run setup() once.');
   USERS_CACHE_ = sh.getDataRange().getValues().slice(1)
-    .map(r => ({ name: String(r[0]).trim(), email: String(r[1]).trim().toLowerCase(), role: String(r[2]).toUpperCase(), active: String(r[3]).trim().toUpperCase() }))
+    .map(r => ({ name: String(r[0]).trim(), email: String(r[1]).trim().toLowerCase(), role: String(r[2]).toUpperCase(), active: String(r[3]).trim().toUpperCase(),
+                 units: String(r[4] === undefined ? '' : r[4]).split(/[,;\n]/).map(x => x.trim()).filter(Boolean) }))
     .filter(u => u.name && u.email && u.active !== 'NO')
-    .map(u => ({ name: u.name, email: u.email, isHO: /\bHO\b/.test(u.role), isApprover: /APPROVER/.test(u.role), isAdmin: /ADMIN/.test(u.role) }));
+    .map(u => ({ name: u.name, email: u.email, isHO: /\bHO\b/.test(u.role), isApprover: /APPROVER/.test(u.role), isAdmin: /ADMIN/.test(u.role),
+                 isStore: /STORE/.test(u.role) && u.units.length > 0, units: /STORE/.test(u.role) ? u.units : [] }));
   return USERS_CACHE_;
 }
 
@@ -457,6 +468,7 @@ function warmCache() {
   const lines = openLines_(true);
   try { alertNewLines_(lines); } catch (e) { console.error('New-line alert failed: ' + e); }
   reports_(null, { fresh: true });
+  try { storeLines_(true); } catch (e) { console.error('Store cache failed: ' + e); }
 }
 
 function cleanItems_(items) {
@@ -778,7 +790,7 @@ function json_(obj) { return ContentService.createTextOutput(JSON.stringify(obj)
 function setup() {
   const ss = book_();
   if (!ss.getSheetByName(CFG.USERS)) {
-    const sh = tab_(CFG.USERS, ['Name (exactly as in column L)', 'Email', 'Role (HO / APPROVER / HO+APPROVER)', 'Active (YES / NO)']);
+    const sh = tab_(CFG.USERS, ['Name (exactly as in column L)', 'Email', 'Role (HO / APPROVER / HO+APPROVER / STOREKEEPER)', 'Active (YES / NO)', 'Unit(s) - storekeepers only']);
     // Start with the names already allowed in column L (APPROVER).
     const rule = fms_().getRange(CFG.FIRST_ROW, COL.APPROVER).getDataValidation();
     const names = rule && rule.getCriteriaType() === SpreadsheetApp.DataValidationCriteria.VALUE_IN_LIST ? rule.getCriteriaValues()[0] : [];
@@ -788,6 +800,7 @@ function setup() {
   tab_(CFG.DEVICES, ['Email', 'Token', 'Device', 'Updated']);
   tab_(CFG.LOG, ['Time', 'Email', 'Name', 'Action', 'Lines', 'Note']);
   tab_(CFG.REMARKS, REMARK_HEADER);
+  setupStore();
   console.log('Done (' + MODE + ' sheet: ' + ss.getName() + '). Fill in the emails and roles in the "' + CFG.USERS + '" tab.');
 }
 
@@ -879,4 +892,365 @@ function onFmsEdit(e) {
       'to ' + approver.name + ' | push ' + sent.push + (sent.email ? ' | emailed' : '')]);
   });
   rebuildOpenLines_(); // pick up lines that were not in the app's ready copy (e.g. a decision cleared in the sheet)
+}
+
+// ======================= storekeeper =======================
+// A storekeeper is a row in APP USERS with STOREKEEPER in the role and their unit(s) in column E
+// (exactly as the unit is written in FORMDATA / FMS column C, e.g. SAMTHAR; several units separated by commas).
+// Every storekeeper action checks the unit of the line on the server, so a storekeeper can never see or change
+// another unit's lines. The admin (script owner, or ADMIN in the role) can work for every unit while on trial.
+//
+//   Raise request   -> new row in FORMDATA (A-I, same columns as the Google Form). FMS B:H is a QUERY on FORMDATA,
+//                      and FMS A builds the order number, so the line appears in FMS and the app by itself.
+//   Material recd   -> received quantity in FMS AB (RECEIVED), per line, only for approved lines with a PO.
+//   Upload invoice  -> file saved in Drive + a row in INVOICES (A-F, same columns as the invoice Google Form),
+//                      which FMS Z / AC-AF read by PO number.
+
+const SCOL = { PO: 20, PO_AMT: 21, RECEIVED: 28, INVOICE: 29, INV_NO: 30, INV_DATE: 31, INV_AMT: 32, VENDOR: 33, LAST: 33 };
+const STORE_CFG = {
+  INVOICES: 'INVOICES',          // A P.O NUMBER, B UPLOAD INVOICE (link), C Timestamp, D AMOUNT, E INVOICE NUMBER, F INVOICE DATE
+  POS: 'P.Os',                   // B PO NUMBER, C LINK
+  FOLDER: 'Summit Purchase App uploads',
+  MAX_LINES: 30,                 // lines in one request
+  MAX_PHOTO: 3 * 1024 * 1024,    // bytes after decoding (the app shrinks photos to well under this)
+  MAX_FILE: 8 * 1024 * 1024,     // invoice file
+  CACHE: 'store_lines_' + MODE,
+  META: 'store_meta_' + MODE,
+};
+const normU_ = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/** Units this person may work on. */
+function storeUnits_(user) {
+  if (!user.previewBy && isAdmin_(user)) return storeMetaData_().units;
+  if (!user.isStore) return [];
+  const known = storeMetaData_().units;
+  return user.units.map(u => known.find(k => normU_(k) === normU_(u)) || u);
+}
+
+/** Returns the unit name if this person may work on it, otherwise stops with an error. */
+function checkUnit_(user, unit) {
+  const mine = storeUnits_(user);
+  const hit = mine.find(u => normU_(u) === normU_(unit));
+  if (!normU_(unit) || !hit) {
+    throw appError_('FORBIDDEN', mine.length ? 'You can only work on ' + mine.join(', ') + '.' : 'You are not set up as a storekeeper.');
+  }
+  return hit;
+}
+
+/** Units, categories and units of measure used in FORMDATA, plus items the unit asked for before (for suggestions). */
+function storeMetaData_(fresh) {
+  if (!fresh) { const hit = cacheGetBig_(STORE_CFG.META); if (hit) return hit; }
+  const sh = book_().getSheetByName(FORMDATA.TAB);
+  const last = sh ? sh.getLastRow() : 0;
+  const out = { units: [], categories: [], uoms: [], items: {} };
+  if (last >= 2) {
+    const first = Math.max(2, last - FORMDATA.MAX_ROWS + 1);
+    const rows = sh.getRange(first, 1, last - first + 1, 7).getValues();
+    const count = (map, v) => { v = String(v).trim().toUpperCase(); if (v) map[v] = (map[v] || 0) + 1; };
+    const units = {}, cats = {}, uoms = {};
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const r = rows[i];
+      const unit = String(r[1]).trim().toUpperCase(), item = String(r[3]).replace(/\s+/g, ' ').trim();
+      if (!unit || !item) continue;
+      count(units, unit); count(cats, r[2]);
+      const uom = String(r[6]).trim(); if (uom) uoms[uom] = (uoms[uom] || 0) + 1;
+      const list = out.items[unit] = out.items[unit] || [];
+      if (list.length < 400 && !list.some(x => x[0].toLowerCase() === item.toLowerCase())) list.push([item, String(r[2]).trim().toUpperCase(), uom]);
+    }
+    const byCount = m => Object.keys(m).sort((a, b) => m[b] - m[a]);
+    out.units = Object.keys(units).filter(u => units[u] >= 3).sort();
+    out.categories = byCount(cats).filter(c => cats[c] >= 3);
+    out.uoms = byCount(uoms).filter(u => uoms[u] >= 3).slice(0, 25);
+  }
+  cachePutBig_(STORE_CFG.META, out, 21600);
+  return out;
+}
+
+function storeMeta_(user, req) {
+  const unit = checkUnit_(user, req.unit);
+  const m = storeMetaData_();
+  return { unit: unit, categories: m.categories, uoms: m.uoms, items: m.items[unit.toUpperCase()] || [] };
+}
+
+/** Lines the storekeeper screens need: requests of the last LOOKBACK_DAYS, plus every line since REPORT_FROM
+ * that still has to be received or invoiced. Kept ready in the cache (warmCache) and re-read after any change. */
+function storeLines_(fresh) {
+  if (!fresh) { const hit = cacheGetBig_(STORE_CFG.CACHE); if (hit) return hit; }
+  const sh = fms_();
+  const lastRow = sh.getLastRow();
+  const n = lastRow - CFG.FIRST_ROW + 1;
+  const out = { lines: [], asOf: Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm') };
+  if (n <= 0) { cachePutBig_(STORE_CFG.CACHE, out, OPEN_CACHE_SECONDS); return out; }
+  const rows = sh.getRange(CFG.FIRST_ROW, 1, n, SCOL.LAST).getValues();
+  const disp = sh.getRange(CFG.FIRST_ROW, COL.TS, n, 1).getDisplayValues();
+  const invDisp = sh.getRange(CFG.FIRST_ROW, SCOL.INVOICE, n, 1).getDisplayValues();
+  const remarks = remarksIndex_();
+  const links = poLinks_();
+  const fromKey = REPORT_FROM.y * 10000 + REPORT_FROM.m * 100 + REPORT_FROM.d;
+  const cutoff = Date.now() - CFG.LOOKBACK_DAYS * 86400000;
+  const pad = v => (v < 10 ? '0' : '') + v;
+  const num = v => (v === '' || v === null ? '' : (isFinite(Number(v)) ? Number(v) : String(v)));
+  let year = CFG.START_YEAR, prevMonth = 1;
+  rows.forEach((r, i) => {
+    const m = String(disp[i][0]).match(/^(\d{1,2})-(\d{1,2})(?:\((\d{1,2}):(\d{2})\))?/);
+    if (!m) return;
+    const day = +m[1], mon = +m[2];
+    if (prevMonth - mon >= 6) year++;
+    prevMonth = mon;
+    const orderNo = String(r[COL.ORDER - 1]).trim();
+    if (!orderNo || year * 10000 + mon * 100 + day < fromKey) return;
+    const ts = Date.UTC(year, mon - 1, day, +(m[3] || 0), +(m[4] || 0)) - 330 * 60000;
+    const status = String(r[COL.APPROVAL - 1]).trim();
+    const po = String(r[SCOL.PO - 1]).trim();
+    const received = r[SCOL.RECEIVED - 1] !== '' && r[SCOL.RECEIVED - 1] !== null;
+    const inv = String(invDisp[i][0]).trim().toUpperCase();
+    const toReceive = status === 'Approved' && po && !received;
+    const toInvoice = status === 'Approved' && po && received && inv === 'UPDATE';
+    if (ts < cutoff && !toReceive && !toInvoice) return;
+    out.lines.push({
+      row: CFG.FIRST_ROW + i, o: orderNo, ts: ts,
+      d: year + '-' + pad(mon) + '-' + pad(day), at: pad(day) + '-' + pad(mon) + ' ' + pad(+(m[3] || 0)) + ':' + pad(+(m[4] || 0)),
+      u: String(r[COL.UNIT - 1]).trim(), cat: String(r[COL.CAT - 1]).trim(), it: String(r[COL.ITEM - 1]).trim(),
+      pic: /^https?:\/\//.test(String(r[COL.PIC - 1])) ? String(r[COL.PIC - 1]).trim() : '',
+      q: num(r[COL.QTY - 1]), uom: String(r[COL.UOM - 1]).trim(),
+      s: status, ap: String(r[COL.APPROVED_BY - 1]).trim() || String(r[COL.APPROVER - 1]).trim(), aq: num(r[COL.APPR_QTY - 1]),
+      rm: status === 'Rejected' ? (remarks[orderNo] || '') : '',
+      po: po, pol: po ? (links[po.toUpperCase()] || '') : '', amt: Number(String(r[SCOL.PO_AMT - 1]).replace(/[^0-9.]/g, '')) || 0,
+      ven: String(r[SCOL.VENDOR - 1]).trim(), rcv: received ? num(r[SCOL.RECEIVED - 1]) : '',
+      inv: inv === 'UPDATE' ? 'pending' : (inv === 'INVOICE' ? 'done' : ''), invNo: String(r[SCOL.INV_NO - 1]).trim(),
+    });
+  });
+  out.lines.reverse();   // newest first
+  cachePutBig_(STORE_CFG.CACHE, out, OPEN_CACHE_SECONDS);
+  return out;
+}
+
+/** PO number -> link of the PO file (P.Os tab B:C), last few thousand POs. */
+function poLinks_() {
+  const out = {};
+  const sh = book_().getSheetByName(STORE_CFG.POS);
+  if (!sh) return out;
+  const last = sh.getLastRow();
+  if (last < 2) return out;
+  const first = Math.max(2, last - 4000 + 1);
+  sh.getRange(first, 2, last - first + 1, 2).getValues().forEach(r => {
+    const k = String(r[0]).trim().toUpperCase();
+    if (k && /^https?:\/\//.test(String(r[1]))) out[k] = String(r[1]).trim();
+  });
+  return out;
+}
+
+/** Storekeeper: every line of one unit (only units this person may work on). */
+function storeList_(user, req) {
+  const unit = checkUnit_(user, req.unit);
+  const data = storeLines_(req && req.fresh);
+  const key = normU_(unit);
+  return { unit: unit, lines: data.lines.filter(l => normU_(l.u) === key), asOf: data.asOf };
+}
+
+/** Storekeeper: raise a purchase request with one or more lines. */
+function storeRaise_(user, req) {
+  const unit = checkUnit_(user, req.unit);
+  const meta = storeMetaData_();
+  const lines = Array.isArray(req.lines) ? req.lines : [];
+  if (!lines.length) throw appError_('BAD_REQUEST', 'Add at least one item.');
+  if (lines.length > STORE_CFG.MAX_LINES) throw appError_('BAD_REQUEST', 'Too many items in one request (max ' + STORE_CFG.MAX_LINES + ').');
+  const clean = lines.map((l, i) => {
+    const n = 'Item ' + (i + 1) + ': ';
+    const item = String(l.item || '').replace(/\s+/g, ' ').trim();
+    const cat = String(l.category || '').trim().toUpperCase();
+    const uom = String(l.uom || '').trim();
+    const qty = Number(l.qty);
+    if (!item || item.length > 100) throw appError_('BAD_REQUEST', n + 'enter the item name (up to 100 letters).');
+    if (!meta.categories.some(c => c === cat)) throw appError_('BAD_REQUEST', n + 'choose a category from the list.');
+    if (!(qty > 0) || qty > 1e6) throw appError_('BAD_REQUEST', n + 'enter a quantity above 0.');
+    if (!uom || uom.length > 15) throw appError_('BAD_REQUEST', n + 'choose the unit (Pcs, Kg…).');
+    const stock = String(l.stock === undefined || l.stock === null ? '' : l.stock).trim();
+    if (stock === '' || stock.length > 20) throw appError_('BAD_REQUEST', n + 'enter the stock in hand (0 if none).');
+    if (l.photo) checkFile_(l.photo, ['image/jpeg', 'image/png', 'image/webp'], STORE_CFG.MAX_PHOTO, n + 'photo');
+    return { item: item, cat: cat, uom: uom, qty: qty, stock: isFinite(Number(stock)) ? Number(stock) : stock, photo: l.photo || null };
+  });
+
+  // Photos first (slow), outside the lock.
+  const stamp = Utilities.formatDate(new Date(), CFG.TZ, 'yyyyMMdd-HHmmss');
+  clean.forEach((l, i) => { l.pic = l.photo ? saveUpload_(l.photo, 'Item photos', unit + ' ' + stamp + ' ' + (i + 1) + ' ' + l.item) : ''; });
+
+  const made = [];
+  withLock_(() => {
+    const sh = book_().getSheetByName(FORMDATA.TAB);
+    if (!sh) throw appError_('SETUP', 'Tab ' + FORMDATA.TAB + ' not found.');
+    const at = lastFilled_(sh, 1) + 1;
+    // FMS A ends the order number with the hundredths of a second of the timestamp ("-00" in its TEXT format),
+    // so each line gets its own second plus random hundredths, like Google Form timestamps.
+    const base = Math.floor(Date.now() / 1000) * 1000;
+    const values = clean.map((l, i) => {
+      const cs = Math.floor(Math.random() * 100);
+      const t = new Date(base + i * 1000 + cs * 10 + 5);
+      made.push({ orderNo: orderNo_(unit, l.item, t, cs), item: l.item, qty: l.qty, uom: l.uom });
+      return [t, unit, l.cat, l.item, l.pic, l.qty, l.uom, l.stock, l.uom];
+    });
+    sh.getRange(at, 1, values.length, values[0].length).setValues(values);
+    SpreadsheetApp.flush();
+    log_(user, 'REQUEST', made.map(m => m.orderNo).join(', '), unit + ': ' + made.map(m => m.item + ' x' + m.qty + ' ' + m.uom).join('; '));
+  });
+  afterStoreChange_(true);
+  return { raised: made.length, unit: unit, lines: made };
+}
+
+/** Storekeeper: received quantity for approved lines that have a PO (FMS AB). */
+function storeReceive_(user, req) {
+  const items = cleanItems_(req.items);
+  const done = [], skipped = [];
+  withLock_(() => {
+    const sh = fms_();
+    items.forEach(it => {
+      const r = sh.getRange(it.row, 1, 1, SCOL.LAST).getValues()[0];
+      if (String(r[COL.ORDER - 1]).trim() !== it.orderNo) return skipped.push({ orderNo: it.orderNo, why: 'Line moved in the sheet. Refresh and try again.' });
+      checkUnit_(user, r[COL.UNIT - 1]);   // never another unit's line
+      if (String(r[COL.APPROVAL - 1]).trim() !== 'Approved') return skipped.push({ orderNo: it.orderNo, why: 'Not approved.' });
+      if (!String(r[SCOL.PO - 1]).trim()) return skipped.push({ orderNo: it.orderNo, why: 'No PO yet.' });
+      if (r[SCOL.RECEIVED - 1] !== '') return skipped.push({ orderNo: it.orderNo, why: 'Already received (' + r[SCOL.RECEIVED - 1] + ').' });
+      if (!(it.qty > 0) || it.qty > 99999) return skipped.push({ orderNo: it.orderNo, why: 'Enter the quantity received (1 to 99999).' });
+      sh.getRange(it.row, SCOL.RECEIVED).setValue(it.qty);
+      done.push(it.orderNo + ' x' + it.qty);
+    });
+    if (done.length) log_(user, 'RECEIVED', done.join(', '), '');
+  });
+  if (done.length) afterStoreChange_(false);
+  return { received: done.length, skipped: skipped };
+}
+
+/** Storekeeper: upload the vendor invoice for a PO whose material is received. */
+function storeInvoice_(user, req) {
+  const po = String(req.po || '').trim();
+  const invNo = String(req.invoiceNo || '').trim();
+  const amount = Number(String(req.amount || '').replace(/[^0-9.]/g, ''));
+  const dm = String(req.date || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!po) throw appError_('BAD_REQUEST', 'Choose the PO.');
+  if (!invNo || invNo.length > 40) throw appError_('BAD_REQUEST', 'Enter the invoice number.');
+  if (!dm) throw appError_('BAD_REQUEST', 'Enter the invoice date.');
+  if (!(amount > 0) || amount > 1e9) throw appError_('BAD_REQUEST', 'Enter the invoice total amount.');
+  const invDate = new Date(+dm[1], +dm[2] - 1, +dm[3]);
+  if (invDate.getTime() > Date.now() + 86400000) throw appError_('BAD_REQUEST', 'The invoice date is in the future.');
+  checkFile_(req.file, ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'], STORE_CFG.MAX_FILE, 'Invoice file');
+
+  // Check the PO against the sheet itself: every line of it must belong to a unit this person may work on.
+  const sh = fms_();
+  const n = sh.getLastRow() - CFG.FIRST_ROW + 1;
+  const units = n > 0 ? sh.getRange(CFG.FIRST_ROW, COL.UNIT, n, 1).getValues() : [];
+  const pos = n > 0 ? sh.getRange(CFG.FIRST_ROW, SCOL.PO, n, 1).getValues() : [];
+  const rcv = n > 0 ? sh.getRange(CFG.FIRST_ROW, SCOL.RECEIVED, n, 1).getValues() : [];
+  const key = po.toUpperCase();
+  let lines = 0, received = 0, unit = '';
+  pos.forEach((p, i) => {
+    if (String(p[0]).trim().toUpperCase() !== key) return;
+    unit = checkUnit_(user, units[i][0]);
+    lines++;
+    if (rcv[i][0] !== '') received++;
+  });
+  if (!lines) throw appError_('BAD_REQUEST', 'PO ' + po + ' was not found in FMS.');
+  if (!received) throw appError_('BAD_REQUEST', 'Mark the material of PO ' + po + ' as received first.');
+  const inv = book_().getSheetByName(STORE_CFG.INVOICES);
+  if (!inv) throw appError_('SETUP', 'Tab ' + STORE_CFG.INVOICES + ' not found.');
+  const invLast = lastFilled_(inv, 1);
+  if (invLast >= 2 && inv.getRange(2, 1, invLast - 1, 1).getValues().some(r => String(r[0]).trim().toUpperCase() === key)) {
+    throw appError_('BAD_REQUEST', 'An invoice for PO ' + po + ' is already uploaded.');
+  }
+
+  const link = saveUpload_(req.file, 'Invoices', po + ' ' + invNo);
+  withLock_(() => {
+    const at = lastFilled_(inv, 1) + 1;
+    inv.getRange(at, 1, 1, 6).setValues([[po, link, new Date(), amount, invNo, invDate]]);
+    log_(user, 'INVOICE', po, unit + ': invoice ' + invNo + ', ₹' + amount + ' (' + received + ' of ' + lines + ' lines received)');
+  });
+  afterStoreChange_(false);
+  return { uploaded: true, po: po, link: link };
+}
+
+// ---- storekeeper helpers ----
+
+/** Order number as FMS column A makes it: first 2 letters of unit + item, then -DDMM-HHMM-<hundredths>. */
+function orderNo_(unit, item, t, cs) {
+  return (String(unit).slice(0, 2) + String(item).slice(0, 2)).toUpperCase() + Utilities.formatDate(t, CFG.TZ, '-ddMM-HHmm-') + (cs < 10 ? '0' : '') + cs;
+}
+
+/** Last row with something in the given column (ignores formulas/blank rows further down other columns). */
+function lastFilled_(sh, col) {
+  const last = sh.getLastRow();
+  if (last < 1) return 0;
+  const from = Math.max(1, last - 3000 + 1);
+  const v = sh.getRange(from, col, last - from + 1, 1).getValues();
+  for (let i = v.length - 1; i >= 0; i--) if (String(v[i][0]).trim() !== '') return from + i;
+  return from - 1;
+}
+
+function checkFile_(f, types, max, what) {
+  if (!f || typeof f.data !== 'string' || !f.data) throw appError_('BAD_REQUEST', what + ' is missing.');
+  if (types.indexOf(String(f.type)) === -1) throw appError_('BAD_REQUEST', what + ' must be a photo (JPG/PNG)' + (types.indexOf('application/pdf') !== -1 ? ' or a PDF.' : '.'));
+  if (f.data.length * 3 / 4 > max) throw appError_('BAD_REQUEST', what + ' is too big (max ' + Math.round(max / 1048576) + ' MB).');
+}
+
+/** Saves a file in Drive: <My Drive>/Summit Purchase App uploads/<sub>/ and returns a link anyone at the company can open. */
+function saveUpload_(f, sub, name) {
+  const ext = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'application/pdf': '.pdf' }[f.type] || '';
+  const blob = Utilities.newBlob(Utilities.base64Decode(f.data), f.type, (String(name).replace(/[\\/:*?"<>|]/g, ' ').slice(0, 120)) + ext);
+  const file = uploadFolder_(sub).createFile(blob);
+  try { file.setSharing(DriveApp.Access.DOMAIN_WITH_LINK, DriveApp.Permission.VIEW); } catch (e) { console.warn('Sharing not changed: ' + e); }
+  return 'https://drive.google.com/open?id=' + file.getId();
+}
+
+function uploadFolder_(sub) {
+  const props = PropertiesService.getScriptProperties();
+  const key = 'FOLDER_' + MODE + '_' + sub.replace(/\W/g, '');
+  const id = props.getProperty(key);
+  if (id) { try { return DriveApp.getFolderById(id); } catch (e) { /* deleted: make it again */ } }
+  const rootName = STORE_CFG.FOLDER + (MODE === 'LIVE' ? '' : ' (TRIAL)');
+  const it = DriveApp.getFoldersByName(rootName);
+  const root = it.hasNext() ? it.next() : DriveApp.createFolder(rootName);
+  const subs = root.getFoldersByName(sub);
+  const folder = subs.hasNext() ? subs.next() : root.createFolder(sub);
+  props.setProperty(key, folder.getId());
+  return folder;
+}
+
+/** After a storekeeper change: re-read the store lines; drop the ready report copies so they re-read too. */
+function afterStoreChange_(newLines) {
+  try { storeLines_(true); } catch (e) { console.warn('Store re-read failed: ' + e); }
+  CacheService.getScriptCache().removeAll(['reports_' + MODE, DEC_CACHE]);
+  if (newLines) {
+    try { const open = openLines_(true); alertNewLines_(open); } catch (e) { console.warn('Open lines re-read failed: ' + e); }
+  }
+}
+
+/** A storekeeper (who is not HO, approver or admin) sees the reports of their own unit(s) only. */
+function scopeReports_(user, res) {
+  if (!user.isStore || user.isHO || user.isApprover || (!user.previewBy && isAdmin_(user))) return res;
+  const label = raw => { const u = normU_(raw); const m = UNIT_MAP.find(x => x[2].some(k => u.indexOf(k) !== -1)); return m ? m[1] : String(raw).trim(); };
+  const mine = user.units.map(label);
+  const keep = u => mine.indexOf(u) !== -1;
+  const out = Object.assign({}, res);
+  if (res.reports) out.reports = Object.assign({}, res.reports, {
+    notReceived: res.reports.notReceived.filter(p => keep(p.unit)),
+    invoicePending: res.reports.invoicePending.filter(p => keep(p.unit)),
+    unitMap: res.reports.unitMap.filter(x => keep(x[1])),
+  });
+  if (res.decisions) out.decisions = Object.assign({}, res.decisions, {
+    lines: res.decisions.lines.filter(l => keep(l.u)),
+    unitMap: res.decisions.unitMap.filter(x => keep(x[1])),
+  });
+  delete out.decisionsData;
+  return out;
+}
+
+/** Run once from the editor (setup() also runs it): adds column E "Unit(s)" to APP USERS and asks for Drive access. */
+function setupStore() {
+  const sh = book_().getSheetByName(CFG.USERS);
+  if (sh && !String(sh.getRange(1, 5).getValue()).trim()) {
+    sh.getRange(1, 3).setValue('Role (HO / APPROVER / HO+APPROVER / STOREKEEPER)');
+    sh.getRange(1, 5).setValue('Unit(s) - storekeepers only').setFontWeight('bold');
+  }
+  uploadFolder_('Item photos'); uploadFolder_('Invoices');
+  storeMetaData_(true);
+  storeLines_(true);
+  console.log('Storekeeper setup done. Units found: ' + storeMetaData_().units.join(', '));
 }
