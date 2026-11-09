@@ -1266,24 +1266,20 @@ function renderPO(force) {
   const f = state.poForm, ro = readOnly();
   const vendorOpts = (state.vendors || []).map((v) => `<option value="${esc(v[0])}">`).join('');
   const terms = (state.po.terms || []).map((t) => `<option ${t === f.terms ? 'selected' : ''}>${esc(t)}</option>`).join('');
-  body.innerHTML = done + `<p class="sub">Tick the approved lines to put in one PO, then give the price and tax % of each.</p>
-    <article class="card">
-      <label class="ghead" style="margin:-12px -12px 0;border-radius:12px 12px 0 0"><input type="checkbox" id="poAll" ${sel.length === lines.length ? 'checked' : ''}>
-        <span><b>${esc(state.poUnit)}</b> <span class="sub">${lines.length} approved line${lines.length > 1 ? 's' : ''} without PO</span></span></label>
-      ${lines.map((l) => {
-        const k = poKey(l), on = state.poSel.has(k), pr = state.poPrice[k] || {};
-        return `<div class="poline">
-          <input type="checkbox" data-pok="${esc(k)}" ${on ? 'checked' : ''} aria-label="Put ${esc(l.it)} in the PO">
-          <div class="lmain"><span class="item">${esc(l.it)}</span>
-            <span class="sub">${esc(l.q)} ${esc(l.uom)} · ${esc(l.cat)} · approved by ${esc(l.ap)} · ${esc(l.at)} · ${esc(l.o)}${l.pt ? ' · ' + esc(l.pt) : ''}</span></div>
-          ${on ? `<div class="price"><label>Price ₹ <input type="number" inputmode="decimal" min="0" step="any" data-pp="${esc(k)}" value="${esc(pr.price ?? '')}" aria-label="Price of ${esc(l.it)}"></label>
-            <label>Tax % <input class="tax" type="number" inputmode="decimal" min="0" max="100" step="any" data-pt="${esc(k)}" value="${esc(pr.tax ?? '')}" aria-label="Tax % of ${esc(l.it)}"></label>
-            <span>Total <b data-ptot="${esc(k)}">${money(lineTotal(l, pr))}</b></span></div>` : ''}
-        </div>`;
-      }).join('')}
-    </article>
-    ${sel.length ? `<article class="card">
-      <h3>PO details</h3>
+  const priceRow = (l) => {
+    const k = poKey(l), pr = state.poPrice[k] || {};
+    return `<div class="poline">
+      <button type="button" class="linkbtn" data-pounsel="${esc(k)}" title="Take out of this PO" aria-label="Take ${esc(l.it)} out of this PO">✕</button>
+      <div class="lmain"><span class="item">${esc(l.it)}</span><span class="sub">${esc(l.q)} ${esc(l.uom)} · ${esc(l.o)}</span></div>
+      <div class="price"><label>Price ₹ <input type="number" inputmode="decimal" min="0" step="any" data-pp="${esc(k)}" value="${esc(pr.price ?? '')}" aria-label="Price of ${esc(l.it)}"></label>
+        <label>Tax % <input class="tax" type="number" inputmode="decimal" min="0" max="100" step="any" data-pt="${esc(k)}" value="${esc(pr.tax ?? '')}" aria-label="Tax % of ${esc(l.it)}"></label>
+        <span>Total <b data-ptot="${esc(k)}">${money(lineTotal(l, pr))}</b></span></div>
+    </div>`;
+  };
+  // The PO being made comes FIRST (prices, vendor, Make PO); the hotel's other waiting lines are below to tick.
+  const details = sel.length ? `<article class="card">
+      <h3>New PO · ${esc(state.poUnit)}</h3>
+      ${sel.map(priceRow).join('')}
       <div class="grid2">
         ${f.newVendor ? `<label class="field full">New vendor name<input data-pf="nvName" maxlength="80" value="${esc(f.newVendor.name || '')}"></label>
           <label class="field full">Vendor address<input data-pf="nvAddress" maxlength="200" value="${esc(f.newVendor.address || '')}"></label>
@@ -1297,7 +1293,20 @@ function renderPO(force) {
       </div>
       <div class="pototal"><span>${sel.length} line${sel.length > 1 ? 's' : ''} · PO total</span><b id="poTotal">${money(total)}</b></div>
       ${ro ? '' : `<button class="btn primary" id="poMake" style="width:100%">Make PO</button>`}
-    </article>` : ''}`;
+    </article>` : '';
+  body.innerHTML = done + details + `<p class="sub">${sel.length ? 'Tick more lines of this hotel to add them to the PO.' : 'Tick the approved lines to put in one PO. Price, vendor and the Make PO button then show here at the top.'}</p>
+    <article class="card">
+      <label class="ghead" style="margin:-12px -12px 0;border-radius:12px 12px 0 0"><input type="checkbox" id="poAll" ${sel.length === lines.length ? 'checked' : ''}>
+        <span><b>${esc(state.poUnit)}</b> <span class="sub">${lines.length} approved line${lines.length > 1 ? 's' : ''} without PO${sel.length ? ' · ' + sel.length + ' ticked' : ''}</span></span></label>
+      ${lines.map((l) => {
+        const k = poKey(l), on = state.poSel.has(k);
+        return `<label class="poline" style="cursor:pointer">
+          <input type="checkbox" data-pok="${esc(k)}" ${on ? 'checked' : ''}>
+          <span class="lmain"><span class="item">${esc(l.it)}</span>
+            <span class="sub">${esc(l.q)} ${esc(l.uom)} · ${esc(l.cat)} · approved by ${esc(l.ap)} · ${esc(l.at)} · ${esc(l.o)}${l.pt ? ' · ' + esc(l.pt) : ''}</span></span>
+        </label>`;
+      }).join('')}
+    </article>`;
 }
 
 function updatePOTotals() {
@@ -1370,6 +1379,7 @@ $('poBody').addEventListener('click', (e) => {
   if (t.id === 'poMake') return makePO();
   if (t.id === 'poNewVendor') { state.poForm.newVendor = { name: state.poForm.vendor || '', address: '', phone: '' }; return renderPO(true); }
   if (t.id === 'poPickVendor') { state.poForm.newVendor = null; return renderPO(true); }
+  if (t.dataset.pounsel) { state.poSel.delete(t.dataset.pounsel); return renderPO(true); }
 });
 
 // ---------- wiring ----------
