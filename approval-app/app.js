@@ -85,6 +85,7 @@ function onCredential(token) {
   boot();
 }
 function signOut() {
+  clearLocal();
   store.del(TOKEN_KEY); state.idToken = null; state.me = null; state.viewAs = null; state.ho = state.mine = state.reports = null;
   $('viewAsBar').hidden = true; document.body.classList.remove('preview');
   try { google.accounts.id.disableAutoSelect(); } catch { /* not loaded */ }
@@ -92,17 +93,55 @@ function signOut() {
   startSignIn();
 }
 
+// ---------- local copy: the app opens instantly with what it showed last time, then updates quietly ----------
+const LOCAL_KEY = 'nlp.cache.v1';
+function localKey() { const p = jwtPayload(state.idToken || ''); return p && p.email ? LOCAL_KEY + '.' + String(p.email).toLowerCase() : null; }
+function saveLocal() {
+  if (state.viewAs || !state.me) return;   // never keep someone else's screens (admin preview)
+  const k = localKey(); if (!k) return;
+  const sv = state.store;
+  const snap = { at: Date.now(), me: state.me, tab: state.tab, ho: state.ho, mine: state.mine, reports: state.reports,
+    store: sv.data ? { unit: sv.unit, data: sv.data, meta: sv.meta[sv.unit] || null } : null };
+  try { localStorage.setItem(k, JSON.stringify(snap)); } catch { /* no room: fine */ }
+  try { if (state.dec) localStorage.setItem(k + '.dec', JSON.stringify(state.dec)); } catch { try { localStorage.removeItem(k + '.dec'); } catch { /* ignore */ } }
+}
+function loadLocal() {
+  const k = localKey(); if (!k) return null;
+  try {
+    const s = JSON.parse(localStorage.getItem(k) || 'null');
+    if (!s || !s.me || Date.now() - s.at > 7 * 86400000) return null;
+    try { s.dec = JSON.parse(localStorage.getItem(k + '.dec') || 'null'); } catch { s.dec = null; }
+    return s;
+  } catch { return null; }
+}
+function clearLocal() { const k = localKey(); if (!k) return; try { localStorage.removeItem(k); localStorage.removeItem(k + '.dec'); } catch { /* ignore */ } }
+/** packed list from the server ({k:[names], r:[[values]]}) -> list of objects */
+const unpack = (p) => (p && p.k ? p.r.map((row) => { const o = {}; p.k.forEach((k, i) => { if (row[i] !== null) o[k] = row[i]; }); return o; }) : (p || []));
+
 // ---------- start ----------
 async function boot(prefetched) {
   if (!configured()) { show('signin'); $('signinMsg').textContent = 'The app is not set up yet: fill in config.js (see SETUP.md).'; return; }
   const saved = state.idToken || store.get(TOKEN_KEY);
   if (!tokenValid(saved)) return startSignIn();
   state.idToken = saved;
-  show('loading');
-  if (prefetched) state.me = prefetched;
-  else {
-    try { state.me = await api('me'); } catch (e) { return handleError(e); }
+  if (prefetched) { state.me = prefetched; return startApp(); }
+  const local = loadLocal();
+  if (local) {   // show the last screens at once; the first sync also re-checks who I am
+    Object.assign(state, { me: local.me, ho: local.ho, mine: local.mine, reports: local.reports, dec: local.dec, tab: state.tab || local.tab });
+    if (local.store) { state.store.unit = local.store.unit; state.store.data = local.store.data; if (local.store.meta) state.store.meta[local.store.unit] = local.store.meta; }
+    return startApp(true);
   }
+  show('loading');
+  try {
+    const r = await api('sync', { want: { me: true, ho: true, mine: true } });
+    if (!r.me || r.me.error) throw new ApiError(r.me?.code || 'SERVER', r.me?.error || 'Could not load.');
+    state.me = r.me; applySync(r);
+  } catch (e) { return handleError(e); }
+  startApp();
+}
+
+const defaultTab = () => { const u = state.me.user; return u.isHO ? 'assign' : u.isApprover ? 'approve' : hasStore() ? 'store' : 'reports'; };
+function setupChrome() {
   const u = state.me.user;
   $('who').textContent = `${u.name} · ${roleLabel(u)}`;
   $('modeTag').hidden = state.me.mode === 'LIVE';
@@ -112,8 +151,12 @@ async function boot(prefetched) {
   setupStoreUnits();
   $('approverPick').innerHTML = '<option value="">Choose approver…</option>' + state.me.approvers.map((n) => `<option>${esc(n)}</option>`).join('');
   setupViewAs();
+}
+function startApp(withMe) {
+  setupChrome();
   show('app');
-  setTab(state.tab || (u.isHO ? 'assign' : u.isApprover ? 'approve' : hasStore() ? 'store' : 'reports'));
+  render();
+  setTab(state.tab || defaultTab(), withMe);
   if (state.me.preview) banner(''); else setupNotifications();
 }
 
@@ -139,7 +182,7 @@ function setupViewAs() {
 async function changeViewAs(email) {
   const gen = ++state.gen;
   state.viewAs = email || null;
-  state.ho = state.mine = null; state.sel.clear(); state.qty = {}; state.pick = {}; state.tab = null;
+  state.ho = state.mine = state.reports = state.dec = null; state.sel.clear(); state.qty = {}; state.pick = {}; state.tab = null;
   Object.assign(state.store, { unit: '', data: null, draft: null, rq: {}, inv: null, done: null, formUnit: '' });
   show('loading');
   let me;
@@ -157,7 +200,7 @@ function handleError(e) {
 }
 
 // ---------- tabs & loading ----------
-function setTab(tab) {
+function setTab(tab, withMe) {
   const u = state.me.user;
   if (tab === 'assign' && !u.isHO) tab = u.isApprover ? 'approve' : 'reports';
   if (tab === 'approve' && !u.isApprover) tab = u.isHO ? 'assign' : 'reports';
@@ -168,35 +211,62 @@ function setTab(tab) {
   $('viewStore').hidden = tab !== 'store';
   if (tab === 'reports') renderReports();
   if (tab === 'store') renderStore(true);
-  refresh();
+  refresh(false, withMe);
 }
 
-async function refresh(fresh) {
+async function refresh(fresh, withMe) {
   fresh = fresh === true;   // only the ↻ button re-reads the sheet; otherwise the server's ready copy is used
   if (!state.me) return;
-  const u = state.me.user, gen = state.gen;
+  if (state.inflight && !fresh && !withMe) return;   // a decision is on its way: don't bring its lines back yet
+  const u = state.me.user, gen = state.gen, st = state.store;
   const wait = '<p class="empty">Loading… this can take a few seconds.</p>';
   if (u.isHO && !state.ho) $('listUnassigned').innerHTML = wait;
   if (u.isApprover && !state.mine) $('listPending').innerHTML = wait;
-  try {
-    const jobs = [];
-    if (u.isHO) jobs.push(api('hoList', { fresh }).then((r) => { if (gen === state.gen) state.ho = r; }));
-    if (u.isApprover) jobs.push(api('myList', { fresh }).then((r) => { if (gen === state.gen) state.mine = r; }));
-    if (hasStore() && state.store.unit && (state.tab === 'store' || state.store.data)) jobs.push(loadStore(fresh, gen));
-    let repJob = null;
-    const wantDec = (state.tab === 'reports' && state.rep.type === 'dec') || state.dec;
-    // v = version we already have: the server answers "same" instead of sending the whole report again
-    if (state.tab === 'reports' || state.reports) jobs.push(repJob = api('reports', { fresh, v: state.reports?.v }).then((r) => { if (!r.same) state.reports = r.reports; state.repAt = Date.now(); }));
-    // Both reports come from one read of the sheet: on ↻ the decisions are fetched after the reports re-read.
-    if (wantDec) jobs.push((fresh && repJob ? repJob : Promise.resolve())
-      .then(() => api('decisions', { fresh: fresh && !repJob, v: fresh ? undefined : state.dec?.v })).then((r) => { if (!r.same) state.dec = r.decisions; state.decAt = Date.now(); }));
-    await Promise.all(jobs);
-  } catch (e) { if (gen !== state.gen) return; return handleError(e); }
+  // Everything in one request; v = the version already here, so unchanged reports are not sent again.
+  const want = { ho: u.isHO, mine: u.isApprover };
+  if (withMe) want.me = true;
+  if (state.tab === 'reports' || state.reports) want.reports = { v: state.reports?.v || '' };
+  if ((state.tab === 'reports' && state.rep.type === 'dec') || state.dec) want.dec = { v: state.dec?.v || '' };
+  if (hasStore() && st.unit && (state.tab === 'store' || st.data)) {
+    want.store = { unit: st.unit, v: st.data && st.data.unit === st.unit ? st.data.v : '' };
+    if (!st.meta[st.unit]) want.meta = st.unit;
+  }
+  let r;
+  try { r = await api('sync', { want, fresh }); } catch (e) { if (gen !== state.gen) return; return handleError(e); }
   if (gen !== state.gen) return;
+  applySync(r, want.store && want.store.unit);
   // Drop selections for lines that are gone.
   const visible = new Set([...(state.ho ? [...state.ho.unassigned, ...state.ho.waiting] : []), ...(state.mine ? [...state.mine.pending, ...state.mine.onHold] : [])].map(key));
   [...state.sel].forEach((k) => { if (!visible.has(k)) state.sel.delete(k); });
   render();
+  saveLocal();
+}
+
+/** Puts the parts of a sync reply into the app. */
+function applySync(r, unit) {
+  const errs = [];
+  const take = (k, fn) => { const p = r[k]; if (!p) return; if (p.error) return errs.push(p); fn(p); };
+  take('me', (me) => {
+    const changed = JSON.stringify(me) !== JSON.stringify(state.me);
+    state.me = me;
+    if (changed && !$('app').hidden) {   // roles or units changed since last time
+      setupChrome();
+      const t = state.tab;
+      if ((t === 'assign' && !me.user.isHO) || (t === 'approve' && !me.user.isApprover) || (t === 'store' && !hasStore())) state.tab = null;
+    }
+  });
+  take('ho', (p) => (state.ho = p));
+  take('mine', (p) => (state.mine = p));
+  take('reports', (p) => { if (!p.same) state.reports = p.reports; state.repAt = Date.now(); });
+  take('dec', (p) => { if (!p.same) state.dec = Object.assign({}, p.decisions, { lines: unpack(p.decisions.lines) }); state.decAt = Date.now(); });
+  take('store', (p) => { if (unit === state.store.unit && !p.same) state.store.data = Object.assign({}, p, { lines: unpack(p.lines) }); });
+  take('meta', (p) => { if (unit) state.store.meta[unit] = p; else state.store.meta[p.unit] = p; });
+  if (state.me && !state.tab && !$('app').hidden) setTab(defaultTab());
+  if (errs.length) {
+    const e = errs[0];
+    if (e.code === 'AUTH') return handleError(new ApiError('AUTH', e.error));
+    toast(e.error, true);
+  }
 }
 
 const key = (l) => l.row + '|' + l.orderNo;
@@ -552,17 +622,24 @@ function sendGroup(keys) {
   if (!lines.length) return toast('Choose an approver first.', true);
   const byApprover = {};
   lines.forEach((l) => (byApprover[state.pick[key(l)]] = byApprover[state.pick[key(l)]] || []).push(l));
-  run('assign', async () => {
+  const picked = {};
+  lines.forEach((l) => (picked[key(l)] = state.pick[key(l)]));
+  optimistic(() => {   // move them to "waiting for approver" at once
+    const ho = state.ho; if (!ho) return;
+    const sent = new Set(lines.map(key));
+    const moved = [...ho.unassigned, ...ho.waiting].filter((l) => sent.has(key(l))).map((l) => ({ ...l, approver: picked[key(l)] }));
+    ho.unassigned = ho.unassigned.filter((l) => !sent.has(key(l)));
+    ho.waiting = moved.concat(ho.waiting.filter((l) => !sent.has(key(l))));
+    lines.forEach((l) => delete state.pick[key(l)]);
+  }, async () => {
     const msgs = [], skipped = [];
     for (const [approver, ls] of Object.entries(byApprover)) {
       const r = await api('assign', { approver, items: ls.map((l) => ({ row: l.row, orderNo: l.orderNo })) });
-      ls.forEach((l) => delete state.pick[key(l)]);
       const how = r.notified.push ? 'notified on phone' : r.notified.email ? 'notified by email' : 'not notified';
       msgs.push(`${r.assigned} to ${r.approver} (${how})`);
       skipped.push(...r.skipped);
     }
     toast('Sent: ' + msgs.join('; ') + '.' + skippedText(skipped), skipped.length > 0);
-    await refresh();
   });
 }
 
@@ -621,7 +698,7 @@ function assignSelected() {
     state.sel.clear();
     const how = r.notified.push ? 'notified on their phone' : r.notified.email ? 'notified by email (no phone set up yet)' : 'not notified';
     toast(`${r.assigned} line${r.assigned === 1 ? '' : 's'} sent to ${r.approver}, ${how}.` + skippedText(r.skipped), r.skipped.length > 0);
-    await refresh();
+    refresh();
   });
 }
 
@@ -639,12 +716,27 @@ async function decide(decision, lines) {
     const bad = items.find((i) => !(i.qty > 0));
     if (bad) return toast(`Enter a quantity above 0 for ${bad.orderNo}.`, true);
   }
-  run('decide', async () => {
-    const r = await api('decide', { decision, items, remark });
+  const gone = new Set(lines.map(key));
+  optimistic(() => {   // the lines leave the list at once; the server is told in the background
     lines.forEach((l) => { state.sel.delete(key(l)); delete state.qty[key(l)]; });
+    const m = state.mine; if (!m) return;
+    const moved = [...m.pending, ...m.onHold].filter((l) => gone.has(key(l)));
+    m.pending = m.pending.filter((l) => !gone.has(key(l))); m.onHold = m.onHold.filter((l) => !gone.has(key(l)));
+    if (decision === 'On Hold') m.onHold = moved.map((l) => ({ ...l, approval: 'On Hold' })).concat(m.onHold);
+  }, async () => {
+    const r = await api('decide', { decision, items, remark });
     toast(`${r.decided} line${r.decided === 1 ? '' : 's'} marked ${r.decision}.` + skippedText(r.skipped), r.skipped.length > 0);
-    await refresh();
   });
+}
+
+/** Shows the result of an action straight away, sends it to the server, and puts things back if it fails.
+ * When the last action has gone through, one quiet sync brings the lists up to date. */
+function optimistic(apply, call) {
+  const before = { ho: state.ho && structuredClone(state.ho), mine: state.mine && structuredClone(state.mine) };
+  apply(); render();
+  state.inflight = (state.inflight || 0) + 1;
+  call().catch((e) => { state.ho = before.ho; state.mine = before.mine; render(); handleError(e); })
+    .finally(() => { state.inflight--; if (!state.inflight) refresh(); });
 }
 const skippedText = (s) => (s && s.length ? ` ${s.length} skipped: ${s.map((x) => x.orderNo + ' (' + x.why + ')').join('; ')}` : '');
 
@@ -749,13 +841,12 @@ async function changeStoreUnit(u) {
 
 async function loadStore(fresh, gen) {
   const unit = sv.unit;
-  const [list, meta] = await Promise.all([
-    api('storeList', { unit, fresh: !!fresh, v: sv.data && sv.data.unit === unit ? sv.data.v : undefined }),
-    sv.meta[unit] ? Promise.resolve(null) : api('storeMeta', { unit }),
-  ]);
+  const want = { store: { unit, v: !fresh && sv.data && sv.data.unit === unit ? sv.data.v : '' } };
+  if (!sv.meta[unit]) want.meta = unit;
+  const r = await api('sync', { want, fresh: !!fresh });
   if (gen !== state.gen || unit !== sv.unit) return;
-  if (!list.same) sv.data = list;
-  if (meta) sv.meta[unit] = meta;
+  applySync(r, unit);
+  saveLocal();
 }
 
 // ---- what each screen shows ----
