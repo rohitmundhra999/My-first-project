@@ -1323,7 +1323,7 @@ function renderPO(force) {
     const k = poKey(l), pr = state.poPrice[k] || {};
     return `<div class="poline">
       <button type="button" class="linkbtn" data-pounsel="${esc(k)}" title="Take out of this PO" aria-label="Take ${esc(l.it)} out of this PO">✕</button>
-      <div class="lmain"><span class="item">${esc(l.it)}</span><span class="sub">${esc(l.q)} ${esc(l.uom)} · ${esc(l.o)}</span></div>
+      <div class="lmain"><input class="item" data-pn="${esc(k)}" value="${esc(pr.name ?? l.it)}" maxlength="200" aria-label="Item name" title="Item name on the PO - you can change it" style="width:100%;font-weight:600;border:1px solid #ccc;border-radius:6px;padding:4px 6px"><span class="sub">${esc(l.q)} ${esc(l.uom)} · ${esc(l.o)}</span></div>
       <div class="price"><label>Price ₹ <input type="number" inputmode="decimal" min="0" step="any" data-pp="${esc(k)}" value="${esc(pr.price ?? '')}" aria-label="Price of ${esc(l.it)}"></label>
         <label>Tax % <input class="tax" type="number" inputmode="decimal" min="0" max="100" step="any" data-pt="${esc(k)}" value="${esc(pr.tax ?? '')}" aria-label="Tax % of ${esc(l.it)}"></label>
         <span>Total <b data-ptot="${esc(k)}">${money(lineTotal(l, pr))}</b></span></div>
@@ -1399,7 +1399,7 @@ function makePO() {
   const total = lines.reduce((a, l) => a + lineTotal(l, state.poPrice[poKey(l)]), 0);
   if (!confirm(`Make PO for ${state.poUnit}: ${lines.length} line${lines.length > 1 ? 's' : ''}, ${vendor || newVendor.name}, total ${money(total)}?`)) return;
   const payload = {
-    items: lines.map((l) => ({ row: l.row, orderNo: l.o, price: Number(state.poPrice[poKey(l)].price), tax: state.poPrice[poKey(l)].tax === '' || state.poPrice[poKey(l)].tax == null ? 0 : Number(state.poPrice[poKey(l)].tax) })),
+    items: lines.map((l) => ({ row: l.row, orderNo: l.o, name: ((state.poPrice[poKey(l)] || {}).name || '').trim() || l.it, price: Number(state.poPrice[poKey(l)].price), tax: state.poPrice[poKey(l)].tax === '' || state.poPrice[poKey(l)].tax == null ? 0 : Number(state.poPrice[poKey(l)].tax) })),
     vendor, newVendor, days: Number(f.days), terms: f.terms, note: f.note, discountAmt: Number(f.discountAmt) || 0, billTo: f.billTo || state.poUnit, shipTo: f.shipTo || state.poUnit,
   };
   // at once: the lines leave the list and the form clears, so the next PO can be started; the PO number and
@@ -1433,6 +1433,7 @@ $('poBody').addEventListener('change', (e) => {
 });
 $('poBody').addEventListener('input', (e) => {
   const t = e.target, f = state.poForm;
+  if (t.dataset.pn) { (state.poPrice[t.dataset.pn] = state.poPrice[t.dataset.pn] || {}).name = t.value; return; }
   if (t.dataset.pp) { (state.poPrice[t.dataset.pp] = state.poPrice[t.dataset.pp] || {}).price = t.value; return updatePOTotals(); }
   if (t.dataset.pt) { (state.poPrice[t.dataset.pt] = state.poPrice[t.dataset.pt] || {}).tax = t.value; return updatePOTotals(); }
   const k = t.dataset.pf;
