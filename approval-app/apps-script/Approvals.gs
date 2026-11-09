@@ -222,6 +222,7 @@ function assign_(user, req) {
     if (done.length) log_(user, 'ASSIGN', done.map(d => d.orderNo).join(', '), 'to ' + approver.name);
   });
   patchOpenLines_(done.map(d => d.row), l => { l.approver = approver.name; return l; });
+  try { done.forEach(d => patchStore_(d.unit, ls => ls.forEach(l => { if (l.row === d.row) l.ap = approver.name; }))); } catch (e) { console.warn(e); }
 
   let notified = { push: 0, email: false };
   if (done.length) {
@@ -284,7 +285,7 @@ function decide_(user, req) {
     }
   });
   try { patchDecisions_(done, decision, user, remark); } catch (e) { console.warn('Decision report patch failed: ' + e); }
-  if (done.length && decision === 'Approved') CacheService.getScriptCache().remove(PO_CFG.CACHE);   // new lines for "Make PO"
+  try { patchAfterDecide_(done, decision, user, remark); } catch (e) { console.warn('Quick update failed: ' + e); scheduleRefresh_(); }
   const qtyByRow = {};
   done.forEach(d => (qtyByRow[d.row] = d.qty));
   patchOpenLines_(done.map(d => d.row), l => {
@@ -511,7 +512,7 @@ function findStock_(index, r, orderNo, day, mon, hh, mm) {
 // On Hold) are kept ready in the script cache. A timer rebuilds them every 5 minutes (installTriggers),
 // and the app's own assign/decide actions update the copy straight away. The app's ↻ button forces a re-read.
 const OPEN_CACHE = 'open_lines_' + MODE;
-const OPEN_CACHE_SECONDS = 900;
+const OPEN_CACHE_SECONDS = 21600;   // 6 h: kept current by warmCache / bgRefresh, never rebuilt while someone waits
 
 const CACHE_INFO_ = {};
 function openLines_(fresh) {
@@ -688,7 +689,7 @@ function fcmAccessToken_(sa) {
 // Everyone in APP USERS can see the reports. Filters are applied in the app.
 
 const REPORT_FROM = { y: 2026, m: 4, d: 1 };   // 1 April 2026
-const REPORT_CACHE_SECONDS = 900;              // kept ready by warmCache every 5 minutes; ↻ in the app re-reads
+const REPORT_CACHE_SECONDS = 21600;            // kept ready by warmCache every 5 minutes; ↻ in the app re-reads
 
 // Cluster, unit name shown in reports, and words used to recognise the unit in FMS (same as the emails)
 const UNIT_MAP = [
@@ -1130,7 +1131,7 @@ function storeLines_() {
   const units = unique_(storeMetaData_().units.map(normU_).concat(Object.keys(byUnit)));
   units.forEach(u => {
     const lines = (byUnit[u] || []).reverse(), pol = polByUnit[u] || {};
-    cachePutBig_(storeKey_(u), { lines: lines, pol: pol, asOf: asOf, v: ver_([lines, pol]) }, OPEN_CACHE_SECONDS + 300);
+    cachePutBig_(storeKey_(u), { lines: lines, pol: pol, asOf: asOf, v: ver_([lines, pol]) }, OPEN_CACHE_SECONDS);
   });
   STORE_BUILT_ = true;
   return byUnit;
@@ -1198,22 +1199,24 @@ function storeRaise_(user, req) {
     const base = Math.floor(Date.now() / 1000) * 1000;
     const values = clean.map((l, i) => {
       const cs = Math.floor(Math.random() * 100);
-      const t = new Date(base + i * 1000 + cs * 10 + 5);
+      const t = new Date(base + i * 1000 + cs * 10);
       made.push({ orderNo: orderNo_(unit, l.item, t, cs), item: l.item, qty: l.qty, uom: l.uom });
       return [t, unit, l.cat, l.item, l.pic, l.qty, l.uom, l.stock, l.uom];
     });
     sh.getRange(at, 1, values.length, values[0].length).setValues(values);
     SpreadsheetApp.flush();
+    // FMS picks the new FORMDATA rows up by itself: find them there to learn their FMS row and real order number
+    try { patchAfterRaise_(unit, clean, made); } catch (e) { console.warn('Quick update failed: ' + e); }
     log_(user, 'REQUEST', made.map(m => m.orderNo).join(', '), unit + ': ' + made.map(m => m.item + ' x' + m.qty + ' ' + m.uom).join('; '));
   });
-  afterStoreChange_(true);
+  scheduleRefresh_();   // full re-read + "new requirement" alert to HO, in the background
   return { raised: made.length, unit: unit, lines: made };
 }
 
 /** Storekeeper: received quantity for approved lines that have a PO (FMS AB). */
 function storeReceive_(user, req) {
   const items = cleanItems_(req.items);
-  const done = [], skipped = [];
+  const done = [], skipped = [], got = [];
   withLock_(() => {
     const sh = fms_();
     items.forEach(it => {
@@ -1226,10 +1229,14 @@ function storeReceive_(user, req) {
       if (!(it.qty > 0) || it.qty > 99999) return skipped.push({ orderNo: it.orderNo, why: 'Enter the quantity received (1 to 99999).' });
       sh.getRange(it.row, SCOL.RECEIVED).setValue(it.qty);
       done.push(it.orderNo + ' x' + it.qty);
+      got.push({ row: it.row, qty: it.qty, unit: String(r[COL.UNIT - 1]).trim() });
     });
     if (done.length) log_(user, 'RECEIVED', done.join(', '), '');
   });
-  if (done.length) afterStoreChange_(false);
+  if (got.length) {
+    try { got.forEach(g => patchStore_(g.unit, ls => ls.forEach(l => { if (l.row === g.row) l.rcv = g.qty; }))); } catch (e) { console.warn(e); }
+    scheduleRefresh_();
+  }
   return { received: done.length, skipped: skipped };
 }
 
@@ -1276,7 +1283,8 @@ function storeInvoice_(user, req) {
     inv.getRange(at, 1, 1, 6).setValues([[po, link, new Date(), amount, invNo, invDate]]);
     log_(user, 'INVOICE', po, unit + ': invoice ' + invNo + ', ₹' + amount + ' (' + received + ' of ' + lines + ' lines received)');
   });
-  afterStoreChange_(false);
+  try { patchStore_(unit, ls => ls.forEach(l => { if (l.po && l.po.toUpperCase() === key && l.rcv !== '') l.inv = 'done'; })); } catch (e) { console.warn(e); }
+  scheduleRefresh_();
   return { uploaded: true, po: po, link: link };
 }
 
@@ -1324,17 +1332,6 @@ function uploadFolder_(sub) {
   const folder = subs.hasNext() ? subs.next() : root.createFolder(sub);
   props.setProperty(key, folder.getId());
   return folder;
-}
-
-/** After a storekeeper change: re-read the store lines; drop the ready report copies so they re-read too. */
-function afterStoreChange_(newLines) {
-  FMS_SNAP_ = null;   // the sheet just changed
-  try { storeLines_(); } catch (e) { console.warn('Store re-read failed: ' + e); }
-  CacheService.getScriptCache().removeAll(['reports_' + MODE, DEC_CACHE]);
-  if (newLines) {
-    try { storeMetaData_(true); } catch (e) { console.warn('Meta re-read failed: ' + e); }
-    try { const open = openLines_(true); alertNewLines_(open); } catch (e) { console.warn('Open lines re-read failed: ' + e); }
-  }
 }
 
 /** A storekeeper (who is not HO, approver or admin) sees the reports of their own unit(s) only. */
@@ -1419,7 +1416,7 @@ function poPendingBuild_() {
   lines.reverse();   // newest first
   const out = { lines: lines, asOf: Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm'), terms: PO_CFG.TERMS };
   out.v = ver_(lines);
-  cachePutBig_(PO_CFG.CACHE, out, OPEN_CACHE_SECONDS + 300);
+  cachePutBig_(PO_CFG.CACHE, out, OPEN_CACHE_SECONDS);
   return out;
 }
 
@@ -1472,7 +1469,7 @@ function makePO_(user, req) {
     if (!vendor) throw appError_('BAD_REQUEST', 'Choose the vendor.');
   }
 
-  let result;
+  let result, rows = [];
   withLock_(() => {
     const sh = fms_();
     const lines = items.map(it => {
@@ -1512,13 +1509,15 @@ function makePO_(user, req) {
     SpreadsheetApp.flush();
     log_(user, 'PO', lines.map(l => l.orderNo).join(', '), poNo + ' | ' + vendor[0] + ' | ₹' + grand + ' | ' + link);
     result = { poNo: poNo, link: link, total: grand, unit: unit, vendor: vendor[0], lines: lines.length };
+    rows = lines.map(l => l.row);
   });
-
-  // the sheet changed: rebuild the ready copies (PO list, store lines so the PO shows in "Receive", reports)
-  FMS_SNAP_ = null;
-  try { poPendingBuild_(); } catch (e) { console.warn('PO list rebuild failed: ' + e); }
-  try { storeLines_(); } catch (e) { console.warn('Store rebuild failed: ' + e); }
-  CacheService.getScriptCache().removeAll(['reports_' + MODE, DEC_CACHE]);
+  // quick: take the lines out of "Make PO" and show the PO on the hotel's store lines; full re-read in the background
+  try {
+    const set = {}; rows.forEach(r => (set[r] = true));
+    patchCache_(PO_CFG.CACHE, d => { d.lines = d.lines.filter(l => !set[l.row]); d.v = ver_(d.lines); return d; });
+    patchStore_(result.unit, (ls, d) => { ls.forEach(l => { if (set[l.row]) { l.po = result.poNo; l.amt = result.total; l.ven = result.vendor; } }); (d.pol = d.pol || {})[result.poNo] = result.link; });
+  } catch (e) { console.warn('Quick update failed: ' + e); }
+  scheduleRefresh_();
   return result;
 }
 
@@ -1561,4 +1560,104 @@ function poPdf_(p) {
   const file = uploadFolder_('Purchase orders').createFile(blob);
   try { file.setSharing(DriveApp.Access.DOMAIN_WITH_LINK, DriveApp.Permission.VIEW); } catch (err) { console.warn('Sharing not changed: ' + err); }
   return 'https://drive.google.com/file/d/' + file.getId() + '/view?usp=drivesdk';
+}
+
+
+// ======================= quick updates + background refresh =======================
+// Re-reading the whole FMS sheet takes 10-30 seconds, so nobody should wait for it. A save now changes only its own
+// lines in the ready copies (so every screen shows the change at once) and asks for ONE full re-read a few seconds
+// later in the background (bgRefresh), which also sends the "new requirement" alerts to HO.
+
+function patchCache_(key, fn) {
+  const o = cacheGetBig_(key);
+  if (!o) return false;   // no ready copy: the background refresh builds it
+  const n = fn(o);
+  cachePutBig_(key, n || o, OPEN_CACHE_SECONDS);
+  return true;
+}
+
+/** fn(lines, data) changes one unit's store lines in place; the version is recomputed so phones pick it up. */
+function patchStore_(unit, fn) {
+  return patchCache_(storeKey_(unit), d => { fn(d.lines, d); d.v = ver_([d.lines, d.pol || {}]); return d; });
+}
+
+function scheduleRefresh_() {
+  const c = CacheService.getScriptCache();
+  if (c.get('bg_refresh_' + MODE)) return;   // one is already on its way
+  c.put('bg_refresh_' + MODE, '1', 180);
+  try { ScriptApp.newTrigger('bgRefresh').timeBased().after(5 * 1000).create(); }
+  catch (e) { console.warn('Could not schedule the background refresh: ' + e); c.remove('bg_refresh_' + MODE); }
+}
+
+/** Runs a few seconds after a save (see scheduleRefresh_): re-reads everything once, then removes its own trigger. */
+function bgRefresh() {
+  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'bgRefresh').forEach(t => { try { ScriptApp.deleteTrigger(t); } catch (e) { /* gone */ } });
+  CacheService.getScriptCache().remove('bg_refresh_' + MODE);   // a save during this run schedules the next one
+  warmCache();
+  try { storeMetaData_(true); } catch (e) { console.warn('Meta re-read failed: ' + e); }
+}
+
+/** New request: put its lines into HO's "Assign approver" list and the unit's store lines straight away. */
+function patchAfterRaise_(unit, clean, made) {
+  const sh = fms_();
+  // FMS has formulas far below the data, so look for the last row that really has an item (one column: quick)
+  const col = sh.getRange(CFG.FIRST_ROW, COL.ITEM, Math.max(1, sh.getLastRow() - CFG.FIRST_ROW + 1), 1).getValues();
+  let last = col.length;
+  while (last > 0 && String(col[last - 1][0]).trim() === '') last--;
+  last = CFG.FIRST_ROW + last - 1;
+  if (last < CFG.FIRST_ROW) return;
+  const from = Math.max(CFG.FIRST_ROW, last - clean.length - 40);
+  const rows = sh.getRange(from, 1, last - from + 1, COL.UOM).getValues();
+  const used = {};
+  const pad = v => (v < 10 ? '0' : '') + v;
+  const now = new Date(), IST = Utilities.formatDate(now, CFG.TZ, 'yyyy-MM-dd|dd-MM HH:mm|dd MMM, HH:mm').split('|');
+  const open = [], store = [];
+  for (let i = clean.length - 1; i >= 0; i--) {
+    const l = clean[i];
+    let j = rows.length - 1;
+    for (; j >= 0; j--) {
+      const r = rows[j];
+      if (used[j] || normU_(r[COL.UNIT - 1]) !== normU_(unit) || String(r[COL.ITEM - 1]).replace(/\s+/g, ' ').trim() !== l.item || Number(r[COL.QTY - 1]) !== l.qty) continue;
+      break;
+    }
+    if (j < 0) continue;   // not visible in FMS yet: the background refresh will add it
+    used[j] = true;
+    const r = rows[j], row = from + j, orderNo = String(r[COL.ORDER - 1]).trim() || made[i].orderNo;
+    made[i].orderNo = orderNo;
+    open.unshift({ row: row, orderNo: orderNo, ts: now.getTime(), when: IST[2], unit: unit, category: l.cat, item: l.item, pic: l.pic || '',
+                   qty: l.qty, uom: l.uom, approval: '', approver: '', approvedQty: '', stock: { qty: String(l.stock), uom: l.uom } });
+    const sl = { row: row, o: orderNo, d: IST[0], at: IST[1], cat: l.cat, it: l.item, q: l.qty, uom: l.uom, s: '', ap: '', aq: '', rcv: '', inv: '' };
+    if (l.pic) sl.pic = l.pic;
+    store.unshift(sl);
+  }
+  if (open.length) patchCache_(OPEN_CACHE, lines => open.concat(lines));
+  if (store.length) patchStore_(unit, (ls, d) => { d.lines = store.concat(ls); });
+  patchCache_(STORE_CFG.META + '_items_' + normU_(unit), items => {
+    clean.forEach(l => { if (!items.some(x => x[0].toLowerCase() === l.item.toLowerCase())) items.unshift([l.item, l.cat, l.uom]); });
+    return items;
+  });
+}
+
+/** Decision: approved lines appear in "Make PO" at once; the unit's store lines show the new status. */
+function patchAfterDecide_(done, decision, user, remark) {
+  if (!done.length) return;
+  if (decision === 'Approved') {
+    const add = done.map(d => {
+      const r = d.r, ts = r[COL.TS - 1] instanceof Date ? r[COL.TS - 1] : new Date();
+      const p = Utilities.formatDate(ts, CFG.TZ, 'yyyy-MM-dd|dd-MM HH:mm').split('|');
+      return { row: d.row, o: d.orderNo, d: p[0], at: p[1], u: String(r[COL.UNIT - 1]).trim(), cat: String(r[COL.CAT - 1]).trim(),
+               it: String(r[COL.ITEM - 1]).trim(), q: d.qty === null ? Number(r[COL.QTY - 1]) || 0 : d.qty, uom: String(r[COL.UOM - 1]).trim(), ap: user.name, pt: '' };
+    });
+    patchCache_(PO_CFG.CACHE, data => {
+      const have = {}; data.lines.forEach(l => (have[l.row] = true));
+      data.lines = add.filter(l => !have[l.row]).concat(data.lines);
+      data.v = ver_(data.lines);
+      return data;
+    });
+  }
+  done.forEach(d => patchStore_(String(d.r[COL.UNIT - 1]).trim(), ls => ls.forEach(l => {
+    if (l.row !== d.row) return;
+    l.s = decision; l.ap = user.name; l.aq = d.qty === null ? '' : d.qty;
+    if (decision === 'Rejected' && remark) l.rm = remark;
+  })));
 }
