@@ -66,8 +66,7 @@ function doPost(e) {
     const realUser = auth_(req.idToken);
     const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_,
       reports: (u, r) => scopeReports_(u, reports_(u, r)), decisions: (u, r) => scopeReports_(u, decisions_(u, r)), testPush: testPush_,
-      storeMeta: storeMeta_, storeList: storeList_, storeRaise: storeRaise_, storeReceive: storeReceive_, storeInvoice: storeInvoice_,
-      sync: sync_ };
+      storeMeta: storeMeta_, storeList: storeList_, storeRaise: storeRaise_, storeReceive: storeReceive_, storeInvoice: storeInvoice_ };
     const fn = handlers[req.action];
     if (!fn) throw appError_('BAD_REQUEST', 'Unknown action.');
     const user = previewUser_(realUser, req);
@@ -95,50 +94,6 @@ function me_(user, req, realUser) {
     users: admin ? activeUsers_().map(u => ({ name: u.name, email: u.email, isHO: u.isHO, isApprover: u.isApprover, isStore: u.isStore, units: u.units })) : [],
     preview: user.previewBy ? true : false,
   };
-}
-
-// ======================= sync: everything a screen needs in ONE request =======================
-// Every request to Apps Script costs ~1-2 seconds just to start, and only a limited number can run at the same
-// time for everybody together. So the app asks for all it needs in one "sync" call, and gets back only what changed:
-//   want.me      -> who am I (first open)
-//   want.ho      -> HO lists           want.mine  -> approver lists
-//   want.reports -> { v }  (v = version the app already has: "same" comes back when nothing changed)
-//   want.dec     -> { v }  approval report
-//   want.store   -> { unit, v }        want.meta -> unit (lists for the request form)
-// Big lists are sent "packed" (field names once, then rows of values), which roughly halves the download.
-// A part that fails comes back as { error } without spoiling the other parts.
-function sync_(user, req, realUser) {
-  const w = req.want || {}, fresh = !!req.fresh, out = {};
-  const part = (k, fn) => {
-    try { out[k] = fn(); } catch (e) {
-      if (!e.appCode) console.error(e && e.stack ? e.stack : e);
-      out[k] = { error: e.appCode ? e.message : 'Something went wrong: ' + (e && e.message), code: e.appCode || 'SERVER' };
-    }
-  };
-  if (w.me) part('me', () => me_(user, req, realUser));
-  if (w.ho && user.isHO) part('ho', () => hoList_(user, { fresh: fresh }));
-  if (w.mine && user.isApprover) part('mine', () => myList_(user, { fresh: fresh }));
-  if (w.reports) part('reports', () => scopeReports_(user, reports_(user, { fresh: fresh, v: w.reports.v })));
-  if (w.dec) part('dec', () => {
-    // after a fresh reports read in this same request the decisions are already rebuilt: just pick them up
-    const r = scopeReports_(user, decisions_(user, { fresh: fresh && !w.reports, v: fresh ? '' : w.dec.v }));
-    if (r.decisions) r.decisions = Object.assign({}, r.decisions, { lines: pack_(r.decisions.lines) });
-    return r;
-  });
-  if (w.store && w.store.unit) part('store', () => {
-    const r = storeList_(user, { unit: w.store.unit, fresh: fresh, v: fresh ? '' : w.store.v });
-    if (r.lines) r.lines = pack_(r.lines);
-    return r;
-  });
-  if (w.meta) part('meta', () => storeMeta_(user, { unit: w.meta }));
-  return out;
-}
-
-/** [{a:1,b:2},{a:3}] -> { k:['a','b'], r:[[1,2],[3,null]] } */
-function pack_(list) {
-  const keys = [], at = {};
-  list.forEach(o => Object.keys(o).forEach(k => { if (!(k in at)) { at[k] = keys.length; keys.push(k); } }));
-  return { k: keys, r: list.map(o => keys.map(k => (o[k] === undefined ? null : o[k]))) };
 }
 
 // ======================= admin preview ("view as") =======================
