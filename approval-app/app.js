@@ -193,16 +193,34 @@ function setupViewAs() {
     others.map((x) => `<option value="${esc(x.email)}">${esc(x.name)} · ${esc(roleLabel(x))} · ${esc(x.email)}</option>`).join('');
   $('viewAsPick').value = state.viewAs || '';
 }
+// Switching person: the screens of everyone already looked at are kept in memory, so switching back is instant;
+// a new person needs ONE request (who + their lists together) instead of two.
+const viewCache = {};
+const VIEW_KEYS = ['me', 'tab', 'ho', 'mine', 'reports', 'dec', 'po', 'vendors'];
 async function changeViewAs(email) {
   const gen = ++state.gen;
+  const st = state.store;
+  viewCache[state.viewAs || ''] = { ...Object.fromEntries(VIEW_KEYS.map((k) => [k, state[k]])), store: { unit: st.unit, byUnit: st.byUnit, raw: st.raw, base: st.base, meta: st.meta, prefetchedAt: st.prefetchedAt } };
   state.viewAs = email || null;
-  state.ho = state.mine = state.reports = state.dec = state.po = state.vendors = state.poDone = null; state.poSel.clear(); state.poPrice = {}; state.sel.clear(); state.qty = {}; state.pick = {}; state.tab = null;
-  Object.assign(state.store, { unit: '', data: null, draft: null, rq: {}, inv: null, done: null, formUnit: '', byUnit: {}, raw: {}, prefetchedAt: 0 });
+  state.poDone = null; state.poSel.clear(); state.poPrice = {}; state.sel.clear(); state.qty = {}; state.pick = {};
+  Object.assign(st, { data: null, draft: null, rq: {}, inv: null, done: null, formUnit: '' });
+  const c = viewCache[state.viewAs || ''];
+  if (c && c.me) {   // seen before: show at once, then a quiet check
+    VIEW_KEYS.forEach((k) => (state[k] = c[k]));
+    Object.assign(st, c.store); st.data = st.byUnit[st.unit] || null;
+    return startApp(true);
+  }
+  VIEW_KEYS.forEach((k) => (state[k] = null));
+  Object.assign(st, { unit: '', byUnit: {}, raw: {}, prefetchedAt: 0 });
   show('loading');
-  let me;
-  try { me = await api('me'); } catch (e) { if (gen !== state.gen) return; state.viewAs = null; $('viewAsPick').value = ''; show('app'); return handleError(e); }
+  let r;
+  try {
+    r = await api('sync', { want: { me: true, ho: true, mine: true } });
+    if (!r.me || r.me.error) throw new ApiError(r.me?.code || 'SERVER', r.me?.error || 'Could not switch.');
+  } catch (e) { if (gen !== state.gen) return; state.viewAs = null; $('viewAsPick').value = ''; show('app'); return handleError(e); }
   if (gen !== state.gen) return;   // switched again while loading
-  boot(me);
+  state.me = r.me; applySync(r);
+  startApp();
 }
 
 function handleError(e) {
@@ -994,8 +1012,8 @@ function loadMeta(unit) {
 function raiseHtml() {
   const meta = { categories: sv.base.categories, uoms: sv.base.uoms, items: sv.meta[sv.unit]?.items || [] };
   if (!sv.draft) sv.draft = [blankLine()];
-  const done = sv.done ? `<div class="done-msg">Request sent: ${sv.done.lines.length} item${sv.done.lines.length > 1 ? 's' : ''} for ${esc(sv.done.unit)}.
-    HO will choose the approver. Order no: ${sv.done.lines.map((l) => `<code>${esc(l.orderNo)}</code>`).join(', ')}</div>` : '';
+  const done = sv.done ? `<div class="done-msg">${sv.done.sending ? 'Sending' : 'Request sent'}: ${sv.done.lines.length} item${sv.done.lines.length > 1 ? 's' : ''} for ${esc(sv.done.unit)}.
+    HO will choose the approver.${sv.done.sending ? ' You can carry on.' : ` Order no: ${sv.done.lines.map((l) => `<code>${esc(l.orderNo)}</code>`).join(', ')}`}</div>` : '';
   const cats = (sel) => '<option value="">Choose…</option>' + meta.categories.map((c) => `<option ${c === sel ? 'selected' : ''}>${esc(c)}</option>`).join('');
   const uoms = (sel) => '<option value="">Unit…</option>' + meta.uoms.map((u) => `<option ${u === sel ? 'selected' : ''}>${esc(u)}</option>`).join('');
   return `${done}<form id="raiseForm" autocomplete="off">
@@ -1125,18 +1143,16 @@ function submitRequest() {
     if (!l.uom) return toast(n + 'choose the unit (Pcs, Kg…).', true);
     if (l.stock === '' || Number(l.stock) < 0) return toast(n + 'enter the stock in hand (0 if none).', true);
   }
-  const unit = sv.unit;
-  run('storeRaise', async () => {
-    const r = await api('storeRaise', {
-      unit,
-      lines: sv.draft.map((l) => ({ item: l.item.trim(), category: l.cat, qty: Number(l.qty), uom: l.uom, stock: l.stock, photo: l.photo ? { type: l.photo.type, data: l.photo.data } : null })),
-    });
-    sv.done = r; sv.draft = [blankLine()]; sv.formUnit = ''; delete sv.meta[unit];   // re-read so new items appear as suggestions
-    toast(`Request sent: ${r.raised} item${r.raised > 1 ? 's' : ''}.`);
-    window.scrollTo(0, 0);
-    await loadStore(false, state.gen);
-    renderStore(true);
-  });
+  const unit = sv.unit, draft = sv.draft;
+  const lines = draft.map((l) => ({ item: l.item.trim(), category: l.cat, qty: Number(l.qty), uom: l.uom, stock: l.stock, photo: l.photo ? { type: l.photo.type, data: l.photo.data } : null }));
+  // at once: clear the form and say it is on its way; the order numbers fill in when the server answers
+  sv.done = { unit, lines: draft.map(() => ({ orderNo: '…' })), sending: true }; sv.draft = [blankLine()]; sv.formUnit = '';
+  renderStore(true); window.scrollTo(0, 0);
+  state.inflight = (state.inflight || 0) + 1;
+  api('storeRaise', { unit, lines })
+    .then((r) => { sv.done = r; toast(`Request sent: ${r.raised} item${r.raised > 1 ? 's' : ''}.`); return loadStore(false, state.gen); })
+    .catch((e) => { sv.done = null; sv.draft = draft; sv.formUnit = ''; handleError(e); })
+    .finally(() => { state.inflight--; if (sv.view === 'raise' && sv.unit === unit) { sv.formUnit = ''; renderStore(true); } else renderStore(); });
 }
 
 function saveReceived(po) {
@@ -1156,13 +1172,16 @@ function saveReceived(po) {
   if (!items.length) return toast('Enter the received quantity for at least one item.', true);
   const over = items.filter((i) => i.qty > i.ordered);
   if (over.length && !confirm(`More than ordered for: ${over.map((i) => i.it).join(', ')}. Save anyway?`)) return;
-  run('storeReceive', async () => {
-    const r = await api('storeReceive', { items: items.map(({ row, orderNo, qty }) => ({ row, orderNo, qty })) });
-    items.forEach((i) => delete sv.rq[i.row + '|' + i.orderNo]);
-    toast(`${r.received} item${r.received === 1 ? '' : 's'} marked received for PO ${po}.` + skippedText(r.skipped), r.skipped.length > 0);
-    await loadStore(false, state.gen);
-    renderStore(true);
-  });
+  // at once: those lines move from "Receive" to "Invoice"; put back if the server says no
+  const byRow = {}; items.forEach((i) => (byRow[i.row] = i.qty));
+  const lines = (sv.data?.lines || []).filter((l) => l.row in byRow);
+  lines.forEach((l) => { l.rcv = byRow[l.row]; if (l.inv === '') l.inv = 'pending'; delete sv.rq[l.row + '|' + l.o]; });
+  renderStore(true);
+  state.inflight = (state.inflight || 0) + 1;
+  api('storeReceive', { items: items.map(({ row, orderNo, qty }) => ({ row, orderNo, qty })) })
+    .then((r) => { toast(`${r.received} item${r.received === 1 ? '' : 's'} marked received for PO ${po}.` + skippedText(r.skipped), r.skipped.length > 0); return loadStore(false, state.gen); })
+    .catch((e) => { lines.forEach((l) => { l.rcv = ''; l.inv = ''; }); handleError(e); })
+    .finally(() => { state.inflight--; renderStore(true); });
 }
 
 async function uploadInvoice(form) {
@@ -1255,7 +1274,8 @@ function renderPO(force) {
   $('poUnit').innerHTML = units.map(([u, n]) => `<option value="${esc(u)}">${esc(u)} (${n})</option>`).join('') || '<option value="">No hotel waiting</option>';
   $('poUnit').value = state.poUnit;
   $('poAsOf').textContent = 'as of ' + state.po.asOf;
-  const done = state.poDone ? `<div class="done-msg">PO <b>${esc(state.poDone.poNo)}</b> made for ${esc(state.poDone.unit)} · ${esc(state.poDone.vendor)} ·
+  const done = state.poDone?.making ? `<div class="done-msg">Making PO for ${esc(state.poDone.unit)} · ${esc(state.poDone.vendor)} · ${state.poDone.lines} line${state.poDone.lines > 1 ? 's' : ''} · ${money(state.poDone.total)}… You can start the next PO.</div>`
+    : state.poDone ? `<div class="done-msg">PO <b>${esc(state.poDone.poNo)}</b> made for ${esc(state.poDone.unit)} · ${esc(state.poDone.vendor)} ·
     ${state.poDone.lines} line${state.poDone.lines > 1 ? 's' : ''} · ${money(state.poDone.total)}.
     <a href="${esc(state.poDone.link)}" target="_blank" rel="noopener">Open the PO (PDF)</a>. It is in FMS (PO no, amount, vendor) and in the hotel's “Receive” list.</div>` : '';
   const lines = (state.po.lines || []).filter((l) => l.u === state.poUnit);
@@ -1337,21 +1357,27 @@ function makePO() {
   if (!(Number(f.days) >= 0)) return toast('Enter the delivery days.', true);
   const total = lines.reduce((a, l) => a + lineTotal(l, state.poPrice[poKey(l)]), 0);
   if (!confirm(`Make PO for ${state.poUnit}: ${lines.length} line${lines.length > 1 ? 's' : ''}, ${vendor || newVendor.name}, total ${money(total)}?`)) return;
-  run('makePO', async () => {
-    toast('Making the PO…');
-    const r = await api('makePO', {
-      items: lines.map((l) => ({ row: l.row, orderNo: l.o, price: Number(state.poPrice[poKey(l)].price), tax: state.poPrice[poKey(l)].tax === '' || state.poPrice[poKey(l)].tax == null ? 0 : Number(state.poPrice[poKey(l)].tax) })),
-      vendor, newVendor, days: Number(f.days), terms: f.terms, note: f.note,
-    });
-    state.poDone = r;
-    lines.forEach((l) => { state.poSel.delete(poKey(l)); delete state.poPrice[poKey(l)]; });
-    state.po.lines = state.po.lines.filter((l) => !lines.includes(l));   // gone at once; the sync below confirms
-    if (newVendor) state.vendors = null;   // re-read so the new vendor is in the list
-    state.poForm = { vendor: '', days: 25, terms: '', note: '', newVendor: null };
-    toast(`PO ${r.poNo} made.`);
-    renderPO(true); window.scrollTo(0, 0);
-    refresh();
-  });
+  const payload = {
+    items: lines.map((l) => ({ row: l.row, orderNo: l.o, price: Number(state.poPrice[poKey(l)].price), tax: state.poPrice[poKey(l)].tax === '' || state.poPrice[poKey(l)].tax == null ? 0 : Number(state.poPrice[poKey(l)].tax) })),
+    vendor, newVendor, days: Number(f.days), terms: f.terms, note: f.note,
+  };
+  // at once: the lines leave the list and the form clears, so the next PO can be started; the PO number and
+  // PDF link show when the server has made it (a few seconds). Everything is put back if it fails.
+  const keep = { prices: { ...state.poPrice }, form: { ...f }, sel: new Set(state.poSel) };
+  const unit = state.poUnit;
+  state.poDone = { poNo: '…', unit, vendor: vendor || newVendor.name, lines: lines.length, total, making: true };
+  lines.forEach((l) => { state.poSel.delete(poKey(l)); delete state.poPrice[poKey(l)]; });
+  state.po.lines = state.po.lines.filter((l) => !lines.includes(l));
+  state.poForm = { vendor: '', days: 25, terms: '', note: '', newVendor: null };
+  renderPO(true); window.scrollTo(0, 0);
+  state.inflight = (state.inflight || 0) + 1;
+  api('makePO', payload)
+    .then((r) => { state.poDone = r; if (newVendor) state.vendors = null; toast(`PO ${r.poNo} made.`); })
+    .catch((e) => {
+      state.po.lines = lines.concat(state.po.lines); state.poPrice = keep.prices; state.poForm = keep.form; state.poSel = keep.sel; state.poDone = null; state.poUnit = unit;
+      handleError(e);
+    })
+    .finally(() => { state.inflight--; renderPO(true); if (!state.inflight) refresh(); });
 }
 
 $('poUnit').onchange = (e) => { state.poUnit = e.target.value; state.poDone = null; renderPO(true); };
