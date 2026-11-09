@@ -257,9 +257,14 @@ function applySync(r, unit) {
   });
   take('ho', (p) => (state.ho = p));
   take('mine', (p) => (state.mine = p));
-  take('reports', (p) => { if (!p.same) state.reports = p.reports; state.repAt = Date.now(); });
-  take('dec', (p) => { if (!p.same) state.dec = Object.assign({}, p.decisions, { lines: unpack(p.decisions.lines) }); state.decAt = Date.now(); });
-  take('store', (p) => { if (unit === state.store.unit && !p.same) state.store.data = Object.assign({}, p, { lines: unpack(p.lines) }); });
+  // "same" = nothing changed since the copy here: keep it, just update its "as of" time
+  take('reports', (p) => { if (!p.same) state.reports = p.reports; else if (state.reports && p.asOf) state.reports.asOf = p.asOf; state.repAt = Date.now(); });
+  take('dec', (p) => { if (!p.same) state.dec = Object.assign({}, p.decisions, { lines: unpack(p.decisions.lines) }); else if (state.dec && p.asOf) state.dec.asOf = p.asOf; state.decAt = Date.now(); });
+  take('store', (p) => {
+    if (unit !== state.store.unit) return;
+    if (!p.same) state.store.data = Object.assign({}, p, { lines: unpack(p.lines) });
+    else if (state.store.data && p.asOf) state.store.data.asOf = p.asOf;
+  });
   take('meta', (p) => { if (unit) state.store.meta[unit] = p; else state.store.meta[p.unit] = p; });
   if (state.me && !state.tab && !$('app').hidden) setTab(defaultTab());
   if (errs.length) {
