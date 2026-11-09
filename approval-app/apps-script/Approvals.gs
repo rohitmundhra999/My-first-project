@@ -67,7 +67,7 @@ function doPost(e) {
     const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_,
       reports: (u, r) => scopeReports_(u, reports_(u, r)), decisions: (u, r) => scopeReports_(u, decisions_(u, r)), testPush: testPush_,
       storeMeta: storeMeta_, storeList: storeList_, storeRaise: storeRaise_, storeReceive: storeReceive_, storeInvoice: storeInvoice_,
-      sync: sync_ };
+      sync: sync_, makePO: makePO_ };
     const fn = handlers[req.action];
     if (!fn) throw appError_('BAD_REQUEST', 'Unknown action.');
     const user = previewUser_(realUser, req);
@@ -94,6 +94,7 @@ function me_(user, req, realUser) {
     admin: admin ? { name: realUser.name, email: realUser.email } : null,
     users: admin ? activeUsers_().map(u => ({ name: u.name, email: u.email, isHO: u.isHO, isApprover: u.isApprover, isStore: u.isStore, units: u.units })) : [],
     preview: user.previewBy ? true : false,
+    actAs: user.previewBy && MODE === 'TRIAL' ? true : false,   // trial: the admin can act as this person
   };
 }
 
@@ -142,6 +143,8 @@ function sync_(user, req, realUser) {
     });
     return res;
   });
+  if (w.po && user.isHO) part('po', () => poPending_(w.po.v));
+  if (w.vendors && user.isHO) part('vendors', () => vendors_());
   if (w.base) part('base', () => { const m = storeMetaData_(); return { categories: m.categories, uoms: m.uoms }; });
   if (w.meta) part('meta', () => storeMeta_(user, { unit: w.meta }));
   return out;
@@ -164,7 +167,7 @@ function pack_(list) {
 // another user sees it. Preview is READ-ONLY: nothing can be assigned, decided or registered while
 // previewing, so the sheet and the APP LOG always show the real person who acted.
 
-const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice'];
+const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO'];
 
 function isAdmin_(u) {
   if (u.isAdmin) return true;
@@ -177,7 +180,12 @@ function previewUser_(realUser, req) {
   const email = String(req.viewAs || '').trim().toLowerCase();
   if (!email || email === realUser.email) return realUser;
   if (!isAdmin_(realUser)) throw appError_('FORBIDDEN', 'Only the admin can preview the app as someone else.');
-  if (WRITE_ACTIONS.indexOf(req.action) !== -1) throw appError_('PREVIEW', 'This is a preview, so nothing can be changed. Switch back to yourself to make changes.');
+  // TRIAL: the admin may also ACT as that person (assign, approve, raise, receive, make PO...) to test the whole flow.
+  // Everything is written exactly as that person would write it; the APP LOG also records the admin who did it.
+  // LIVE: view only. Registering a phone for notifications always stays with the real person.
+  if (req.action === 'register' || (MODE !== 'TRIAL' && WRITE_ACTIONS.indexOf(req.action) !== -1)) {
+    throw appError_('PREVIEW', 'This is a preview, so nothing can be changed. Switch back to yourself to make changes.');
+  }
   const target = activeUsers_().find(u => u.email === email);
   if (!target) throw appError_('BAD_REQUEST', email + ' is not an active user in ' + CFG.USERS + '.');
   return Object.assign({}, target, { previewBy: realUser.email });
@@ -276,6 +284,7 @@ function decide_(user, req) {
     }
   });
   try { patchDecisions_(done, decision, user, remark); } catch (e) { console.warn('Decision report patch failed: ' + e); }
+  if (done.length && decision === 'Approved') CacheService.getScriptCache().remove(PO_CFG.CACHE);   // new lines for "Make PO"
   const qtyByRow = {};
   done.forEach(d => (qtyByRow[d.row] = d.qty));
   patchOpenLines_(done.map(d => d.row), l => {
@@ -553,6 +562,7 @@ function warmCache() {
   try { alertNewLines_(lines); } catch (e) { console.error('New-line alert failed: ' + e); }
   reports_(null, { fresh: true });
   try { storeLines_(); } catch (e) { console.error('Store cache failed: ' + e); }
+  try { poPendingBuild_(); } catch (e) { console.error('PO list failed: ' + e); }
 }
 
 function cleanItems_(items) {
@@ -584,6 +594,7 @@ function tab_(name, header) {
   return sh;
 }
 function log_(user, action, lines, note) {
+  if (user.previewBy) note = (note ? note + ' | ' : '') + 'done by ' + user.previewBy + ' acting as this user (trial)';
   tab_(CFG.LOG, ['Time', 'Email', 'Name', 'Action', 'Lines', 'Note']).appendRow([new Date(), user.email, user.name, action, lines, note]);
 }
 function withLock_(fn) {
@@ -1358,4 +1369,196 @@ function setupStore() {
   storeMetaData_(true);
   storeLines_();
   console.log('Storekeeper setup done. Units found: ' + storeMetaData_().units.join(', '));
+}
+
+
+// ======================= HO: make PO =======================
+// Same as the P.O tab of the sheet: approved lines (FMS K = Approved) that have no PO yet (FMS T empty) are picked per
+// hotel, a vendor (VENDORS tab) and delivery days are chosen, a price and tax % are given per line, and the PO is made:
+//   - PO number like the sheet's:  first 2 letters of hotel + first 2 of vendor + number of lines (2 digits) + ddMM-Hmm
+//   - the PO is saved as a PDF in Drive (Summit Purchase App uploads/Purchase orders)
+//   - one row per line in P.Os: A order no, B PO no, C PDF link, D time, E vendor, F delivery days, G PO total, H hotel
+//     -> FMS fills T (PO no), U (amount), Q (PO time), S (delivery days), V (PO link) and AG (vendor) by itself
+//   - optional: payment terms written in FMS O for those lines
+const PO_CFG = {
+  CACHE: 'po_pending_' + MODE,
+  POS: 'P.Os', VENDORS: 'VENDORS', TEMPLATE: 'P.O',
+  HOTELS: 'AH4:AL80',            // in the P.O tab: key, hotel name, address, phone, GST
+  MAX_LINES: 31,                 // the sheet's PO has room for 31 lines
+  TERMS: ['Advance (20%)', 'Advance (50%)', 'Advance (100%)', 'Normal Credit', 'Within 15 days'],
+  COMPANY: 'SUMMIT HOTELS & RESORTS PVT. LTD.',
+  COMPANY_ADDR: 'G0402, G Block, City Centre Office Block, Matigara, Siliguri - 734010',
+};
+
+/** Approved lines with no PO, grouped by nothing (the app groups by hotel). Kept in the cache; v = content version. */
+function poPendingBuild_() {
+  const snap = fmsSnap_();
+  const fromKey = REPORT_FROM.y * 10000 + REPORT_FROM.m * 100 + REPORT_FROM.d;
+  const pad = v => (v < 10 ? '0' : '') + v;
+  const lines = [];
+  let year = CFG.START_YEAR, prevMonth = 1;
+  snap.rows.forEach((r, i) => {
+    const m = String(snap.stamps[i][0]).match(/^(\d{1,2})-(\d{1,2})(?:\((\d{1,2}):(\d{2})\))?/);
+    if (!m) return;
+    const day = +m[1], mon = +m[2];
+    if (prevMonth - mon >= 6) year++;
+    prevMonth = mon;
+    if (year * 10000 + mon * 100 + day < fromKey) return;
+    const orderNo = String(r[COL.ORDER - 1]).trim();
+    if (!orderNo || String(r[COL.APPROVAL - 1]).trim() !== 'Approved' || String(r[SCOL.PO - 1]).trim()) return;
+    const aq = r[COL.APPR_QTY - 1];
+    lines.push({
+      row: CFG.FIRST_ROW + i, o: orderNo, d: year + '-' + pad(mon) + '-' + pad(day),
+      at: pad(day) + '-' + pad(mon) + ' ' + pad(+(m[3] || 0)) + ':' + pad(+(m[4] || 0)),
+      u: String(r[COL.UNIT - 1]).trim(), cat: String(r[COL.CAT - 1]).trim(), it: String(r[COL.ITEM - 1]).trim(),
+      q: aq === '' || aq === null ? (Number(r[COL.QTY - 1]) || 0) : Number(aq), uom: String(r[COL.UOM - 1]).trim(),
+      ap: String(r[COL.APPROVED_BY - 1]).trim() || String(r[COL.APPROVER - 1]).trim(),
+      pt: String(r[14]).trim(),   // O: payment terms, if already chosen in the sheet
+    });
+  });
+  lines.reverse();   // newest first
+  const out = { lines: lines, asOf: Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm'), terms: PO_CFG.TERMS };
+  out.v = ver_(lines);
+  cachePutBig_(PO_CFG.CACHE, out, OPEN_CACHE_SECONDS + 300);
+  return out;
+}
+
+function poPending_(v) {
+  let data = cacheGetBig_(PO_CFG.CACHE);
+  if (!data) data = poPendingBuild_();
+  if (v && v === data.v) return { same: true, asOf: data.asOf };
+  return Object.assign({}, data, { lines: pack_(data.lines) });
+}
+
+function vendors_() {
+  const sh = book_().getSheetByName(PO_CFG.VENDORS);
+  if (!sh || sh.getLastRow() < 2) return { list: [] };
+  const seen = {};
+  const list = sh.getRange(2, 2, sh.getLastRow() - 1, 3).getValues()
+    .map(r => [String(r[0]).trim(), String(r[1]).trim(), String(r[2]).trim()])
+    .filter(r => r[0] && !seen[r[0].toLowerCase()] && (seen[r[0].toLowerCase()] = true));
+  list.sort((a, b) => a[0].localeCompare(b[0]));
+  return { list: list };   // [name, address, phone]
+}
+
+/** HO: make one PO for some approved lines of one hotel. */
+function makePO_(user, req) {
+  requireHO_(user);
+  const items = cleanItems_(req.items).map((it, i) => {
+    const src = req.items[i] || {};
+    const price = Number(src.price), tax = src.tax === '' || src.tax == null ? 0 : Number(src.tax);
+    if (!(price >= 0) || price > 1e8) throw appError_('BAD_REQUEST', 'Enter the price for ' + it.orderNo + '.');
+    if (!(tax >= 0) || tax > 100) throw appError_('BAD_REQUEST', 'Tax % for ' + it.orderNo + ' must be 0 to 100.');
+    return Object.assign(it, { price: price, tax: tax });
+  });
+  if (items.length > PO_CFG.MAX_LINES) throw appError_('BAD_REQUEST', 'A PO can have at most ' + PO_CFG.MAX_LINES + ' lines.');
+  if (!items.some(it => it.price > 0)) throw appError_('BAD_REQUEST', 'Enter the prices.');
+  const days = Math.floor(Number(req.days));
+  if (!(days >= 0) || days > 365) throw appError_('BAD_REQUEST', 'Enter the delivery days (0 to 365).');
+  const terms = String(req.terms || '').trim();
+  if (terms && PO_CFG.TERMS.indexOf(terms) === -1) throw appError_('BAD_REQUEST', 'Choose payment terms from the list.');
+  const note = String(req.note || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+
+  // vendor: from VENDORS, or a new one added now
+  let vendor = null;
+  const vs = vendors_().list;
+  if (req.newVendor) {
+    const nv = req.newVendor, name = String(nv.name || '').replace(/\s+/g, ' ').trim();
+    if (!name || name.length > 80) throw appError_('BAD_REQUEST', 'Enter the new vendor name.');
+    vendor = vs.find(v => v[0].toLowerCase() === name.toLowerCase()) ||
+      [name, String(nv.address || '').trim().slice(0, 200), String(nv.phone || '').replace(/[^0-9+ ]/g, '').slice(0, 20), true];
+  } else {
+    vendor = vs.find(v => v[0] === String(req.vendor || '').trim());
+    if (!vendor) throw appError_('BAD_REQUEST', 'Choose the vendor.');
+  }
+
+  let result;
+  withLock_(() => {
+    const sh = fms_();
+    const lines = items.map(it => {
+      const r = sh.getRange(it.row, 1, 1, SCOL.LAST).getValues()[0];
+      if (String(r[COL.ORDER - 1]).trim() !== it.orderNo) throw appError_('BAD_REQUEST', it.orderNo + ' moved in the sheet. Refresh and try again.');
+      if (String(r[COL.APPROVAL - 1]).trim() !== 'Approved') throw appError_('BAD_REQUEST', it.orderNo + ' is not approved.');
+      if (String(r[SCOL.PO - 1]).trim()) throw appError_('BAD_REQUEST', it.orderNo + ' already has PO ' + r[SCOL.PO - 1] + '.');
+      const aq = r[COL.APPR_QTY - 1];
+      const qty = aq === '' || aq === null ? Number(r[COL.QTY - 1]) || 0 : Number(aq);
+      const total = Math.round(qty * it.price * (1 + it.tax / 100) * 10) / 10;   // as the sheet: ROUND(qty*price*(1+tax%),1)
+      return { row: it.row, orderNo: it.orderNo, unit: String(r[COL.UNIT - 1]).trim(), cat: String(r[COL.CAT - 1]).trim(),
+               item: String(r[COL.ITEM - 1]).trim(), qty: qty, uom: String(r[COL.UOM - 1]).trim(), price: it.price, tax: it.tax, total: total };
+    });
+    const unit = lines[0].unit;
+    if (lines.some(l => normU_(l.unit) !== normU_(unit))) throw appError_('BAD_REQUEST', 'All lines of a PO must be for the same hotel.');
+    const pos = book_().getSheetByName(PO_CFG.POS);
+    const posLast = lastFilled_(pos, 1);
+    const already = {};
+    if (posLast >= 2) pos.getRange(Math.max(2, posLast - 3000), 1, posLast - Math.max(2, posLast - 3000) + 1, 1).getValues().forEach(x => (already[String(x[0]).trim()] = true));
+    const dup = lines.find(l => already[l.orderNo]);
+    if (dup) throw appError_('BAD_REQUEST', dup.orderNo + ' is already in a PO.');
+
+    const now = new Date();
+    const poNo = (unit.slice(0, 2) + vendor[0].slice(0, 2)) + (lines.length < 10 ? '0' : '') + lines.length +
+                 Utilities.formatDate(now, CFG.TZ, 'ddMM-H') + Utilities.formatDate(now, CFG.TZ, 'mm');
+    const grand = Math.round(lines.reduce((a, l) => a + l.total, 0) * 100) / 100;
+    const hotel = hotelInfo_(unit);
+    const link = poPdf_({ poNo: poNo, date: now, unit: unit, hotel: hotel, vendor: vendor, days: days, lines: lines, total: grand, note: note, terms: terms, by: user.name });
+
+    if (vendor[3] === true) {   // new vendor: add it to VENDORS like the vendor form does
+      const vsh = book_().getSheetByName(PO_CFG.VENDORS);
+      vsh.getRange(lastFilled_(vsh, 2) + 1, 1, 1, 4).setValues([[now, vendor[0], vendor[1], vendor[2]]]);
+    }
+    const at = posLast + 1;
+    pos.getRange(at, 1, lines.length, 8).setValues(lines.map(l => [l.orderNo, poNo, link, now, vendor[0], days, grand, unit]));
+    if (terms) lines.forEach(l => sh.getRange(l.row, 15).setValue(terms));   // FMS O: payment terms
+    SpreadsheetApp.flush();
+    log_(user, 'PO', lines.map(l => l.orderNo).join(', '), poNo + ' | ' + vendor[0] + ' | ₹' + grand + ' | ' + link);
+    result = { poNo: poNo, link: link, total: grand, unit: unit, vendor: vendor[0], lines: lines.length };
+  });
+
+  // the sheet changed: rebuild the ready copies (PO list, store lines so the PO shows in "Receive", reports)
+  FMS_SNAP_ = null;
+  try { poPendingBuild_(); } catch (e) { console.warn('PO list rebuild failed: ' + e); }
+  try { storeLines_(); } catch (e) { console.warn('Store rebuild failed: ' + e); }
+  CacheService.getScriptCache().removeAll(['reports_' + MODE, DEC_CACHE]);
+  return result;
+}
+
+/** Hotel name, address, phone, GST from the P.O tab's hotel table (Head Office -> company "GOODS" row). */
+function hotelInfo_(unit) {
+  const sh = book_().getSheetByName(PO_CFG.TEMPLATE);
+  const rows = sh ? sh.getRange(PO_CFG.HOTELS).getValues() : [];
+  const key = normU_(unit) === 'headoffice' ? 'goods' : normU_(unit);
+  const r = rows.find(x => normU_(x[0]) === key) || rows.find(x => normU_(x[0]) && key.indexOf(normU_(x[0])) === 0);
+  return r ? { name: String(r[1]).trim(), address: String(r[2]).trim(), phone: String(r[3]).trim(), gst: String(r[4]).trim() }
+           : { name: unit, address: '', phone: '', gst: '' };
+}
+
+/** Makes the PO PDF (same content as the sheet's P.O layout) and returns a link anyone at the company can open. */
+function poPdf_(p) {
+  const e = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const money = n => Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const rows = p.lines.map(l => '<tr><td>' + e(l.orderNo) + '</td><td>' + e(l.item) + '</td><td class="n">' + e(l.qty) + '</td><td>' + e(l.uom) +
+    '</td><td class="n">' + money(l.price) + '</td><td class="n">' + e(l.tax) + '</td><td class="n">' + money(l.total) + '</td></tr>').join('');
+  const html = '<html><head><style>' +
+    'body{font-family:Arial,sans-serif;font-size:11px;color:#111;margin:24px}h1{font-size:20px;margin:0;color:#1b5e20}' +
+    '.top{display:flex;justify-content:space-between}.box{width:48%;vertical-align:top}table{border-collapse:collapse;width:100%}' +
+    '.t td,.t th{border:1px solid #999;padding:5px}.t th{background:#1b5e20;color:#fff}.n{text-align:right}.k{color:#555;font-size:10px}' +
+    '</style></head><body>' +
+    '<table><tr><td class="box"><b style="font-size:14px">' + e(PO_CFG.COMPANY) + '</b><br>' + e(PO_CFG.COMPANY_ADDR) + '</td>' +
+    '<td class="box" style="text-align:right"><h1>PURCHASE ORDER</h1>DATE: <b>' + Utilities.formatDate(p.date, CFG.TZ, 'dd-MMM-yy').toUpperCase() +
+    '</b><br>PURCHASE ORDER #: <b>' + e(p.poNo) + '</b></td></tr></table><br>' +
+    '<table><tr><td class="box"><span class="k">VENDOR</span><br><b>' + e(p.vendor[0]) + '</b><br>' + e(String(p.vendor[1]).toUpperCase()) +
+    (p.vendor[2] ? '<br>(M) ' + e(p.vendor[2]) : '') + '<br><br><span class="k">TENTATIVE DELIVERY DAY(s):</span> <b>' + e(p.days) + '</b>' +
+    (p.terms ? '<br><span class="k">PAYMENT TERMS:</span> <b>' + e(p.terms) + '</b>' : '') + '</td>' +
+    '<td class="box"><span class="k">SHIP TO</span><br><b>' + e(p.hotel.name) + '</b><br>' + e(p.hotel.address) +
+    '<br><br><span class="k">BILLING ADDRESS</span><br><b>' + e(p.hotel.name) + '</b><br>' + e(p.hotel.address) +
+    (p.hotel.phone ? '<br>PHONE: ' + e(p.hotel.phone) : '') + (p.hotel.gst ? '<br>GST - ' + e(p.hotel.gst) : '') + '</td></tr></table><br>' +
+    '<table class="t"><tr><th>ORDER #</th><th>DESCRIPTION</th><th>QTY</th><th>UNIT</th><th>PRICE</th><th>TAX%</th><th>TOTAL</th></tr>' + rows +
+    '<tr><td colspan="6" class="n"><b>TOTAL</b></td><td class="n"><b>₹ ' + money(p.total) + '</b></td></tr></table><br>' +
+    '<span class="k">Comments or Special Instructions</span><br>FREIGHT INCLUDING' + (p.note ? '<br>' + e(p.note) : '') +
+    '<br><br><span class="k">Made by ' + e(p.by) + ' in Summit Purchase app' + (MODE === 'TRIAL' ? ' (TRIAL)' : '') + '</span>' +
+    '</body></html>';
+  const blob = Utilities.newBlob(html, 'text/html', p.poNo + '.html').getAs('application/pdf').setName(p.poNo + '.pdf');
+  const file = uploadFolder_('Purchase orders').createFile(blob);
+  try { file.setSharing(DriveApp.Access.DOMAIN_WITH_LINK, DriveApp.Permission.VIEW); } catch (err) { console.warn('Sharing not changed: ' + err); }
+  return 'https://drive.google.com/file/d/' + file.getId() + '/view?usp=drivesdk';
 }
