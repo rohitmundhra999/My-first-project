@@ -774,7 +774,7 @@ function reports_(user, req) {
     if (year * 10000 + mon * 100 + day < fromKey) return;
 
     const status = DECISIONS.find(d => d.toLowerCase() === String(r[10]).trim().toLowerCase());
-    if (status) {
+    if (status && !(status === 'Approved' && String(r[19]).trim())) {   // Approved lines only while their PO is not raised (T empty)
       const orderNo = String(r[COL.ORDER - 1]).trim();
       const u = norm(r[2]);
       const mapped = UNIT_MAP.find(x => x[2].some(k => u.indexOf(k) !== -1));
@@ -1558,6 +1558,7 @@ function makePO_(user, req) {
   try {
     const set = {}; rows.forEach(r => (set[r] = true));
     patchCache_(PO_CFG.CACHE, d => { d.lines = d.lines.filter(l => !set[l.row]); d.v = ver_(d.lines); return d; });
+    patchCache_(DEC_CACHE, d => { d.lines = d.lines.filter(l => !set[l.row]); d.v = ver_([d.lines, d.approvers]); return d; });
     patchStore_(result.unit, (ls, d) => { ls.forEach(l => { if (set[l.row]) { l.po = result.poNo; l.amt = result.total; l.ven = result.vendor; } }); (d.pol = d.pol || {})[result.poNo] = result.link; });
   } catch (e) { console.warn('Quick update failed: ' + e); }
   scheduleRefresh_();
