@@ -231,3 +231,8 @@ body.preview .storeact { display: none !important; }
 .linkbtn { font: inherit; font-size: 13px; background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; text-decoration: underline; }
 body.actas .viewas { background: #e3f0e4; }
 .actnote { font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: var(--brand); color: #fff; }
+
+/* Locked top: header, main tabs, sub-tabs and filter chips stay visible while scrolling */
+.tabs { position: sticky; top: var(--top, 56px); z-index: 9; background: var(--page); margin-top: 0; padding-top: 12px; }
+#viewStore > .seg, #viewReports > .seg { position: sticky; top: calc(var(--top, 56px) + var(--tabsH, 48px)); z-index: 8; margin-top: 0; box-shadow: 0 6px 0 var(--page), 0 -14px 0 var(--page); }
+#storeBody .chips { position: sticky; top: calc(var(--top, 56px) + var(--tabsH, 48px) + var(--segH, 46px)); z-index: 7; background: var(--page); margin: 0; padding: 6px 0 10px; }
