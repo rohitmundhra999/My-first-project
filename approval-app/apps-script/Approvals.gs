@@ -1,5 +1,5 @@
 /**
- * Summit Purchase Reports and Approvals - backend for the purchase approval app.
+ * Summit Procurement - backend for the purchase approval app.
  *
  * Put this in its OWN Apps Script project (script.google.com > New project), not inside
  * the sheet's existing project, so its names can never clash with the report scripts.
@@ -57,7 +57,7 @@ const REMARK_HEADER = ['Time', 'Order No', 'FMS Row', 'Unit', 'Item', 'Remark', 
 // ======================= web entry points =======================
 
 function doGet() {
-  return json_({ ok: true, app: 'Summit Purchase Reports and Approvals', time: new Date().toISOString() });
+  return json_({ ok: true, app: 'Summit Procurement', time: new Date().toISOString() });
 }
 
 function doPost(e) {
@@ -1104,11 +1104,12 @@ function storeLines_() {
   const rows = snap.rows, disp = snap.stamps, invDisp = snap.inv;
   const remarks = remarksIndex_();
   const links = poLinks_();
+  const invs = invoiceIndex_();
   const fromKey = REPORT_FROM.y * 10000 + REPORT_FROM.m * 100 + REPORT_FROM.d;
   const cutoff = Date.now() - STORE_DAYS * 86400000;
   const pad = v => (v < 10 ? '0' : '') + v;
   const num = v => (v === '' || v === null ? '' : (isFinite(Number(v)) ? Number(v) : String(v)));
-  const byUnit = {}, polByUnit = {};
+  const byUnit = {}, polByUnit = {}, ivlByUnit = {};
   let year = CFG.START_YEAR, prevMonth = 1;
   rows.forEach((r, i) => {
     const m = String(disp[i][0]).match(/^(\d{1,2})-(\d{1,2})(?:\((\d{1,2}):(\d{2})\))?/);
@@ -1142,6 +1143,7 @@ function storeLines_() {
     if (po) {
       l.po = po;   // the PO file link goes once per PO in "pol", not on every line
       if (links[po.toUpperCase()]) (polByUnit[unit] = polByUnit[unit] || {})[po] = links[po.toUpperCase()];
+      if (inv === 'INVOICE' && invs[po.toUpperCase()]) (ivlByUnit[unit] = ivlByUnit[unit] || {})[po] = invs[po.toUpperCase()];
       l.amt = Number(String(r[SCOL.PO_AMT - 1]).replace(/[^0-9.]/g, '')) || 0; l.ven = String(r[SCOL.VENDOR - 1]).trim();
     }
     (byUnit[unit] = byUnit[unit] || []).push(l);
@@ -1149,11 +1151,28 @@ function storeLines_() {
   const asOf = Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm');
   const units = unique_(storeMetaData_().units.map(normU_).concat(Object.keys(byUnit)));
   units.forEach(u => {
-    const lines = (byUnit[u] || []).reverse(), pol = polByUnit[u] || {};
-    cachePutBig_(storeKey_(u), { lines: lines, pol: pol, asOf: asOf, v: ver_([lines, pol]) }, OPEN_CACHE_SECONDS);
+    const lines = (byUnit[u] || []).reverse(), pol = polByUnit[u] || {}, ivl = ivlByUnit[u] || {};
+    cachePutBig_(storeKey_(u), { lines: lines, pol: pol, ivl: ivl, asOf: asOf, v: ver_([lines, pol, ivl]) }, OPEN_CACHE_SECONDS);
   });
   STORE_BUILT_ = true;
   return byUnit;
+}
+
+/** PO number -> uploaded invoice {n: number, d: date, a: amount, l: link, t: uploaded on} from the INVOICES tab. */
+function invoiceIndex_() {
+  const out = {};
+  const sh = book_().getSheetByName(STORE_CFG.INVOICES);
+  if (!sh) return out;
+  const last = lastFilled_(sh, 1);
+  if (last < 2) return out;
+  const first = Math.max(2, last - 4000 + 1);
+  const fd = v => (v instanceof Date ? Utilities.formatDate(v, CFG.TZ, 'yyyy-MM-dd') : String(v || '').trim());
+  sh.getRange(first, 1, last - first + 1, 6).getValues().forEach(r => {
+    const k = String(r[0]).trim().toUpperCase();
+    if (!k) return;
+    out[k] = { n: String(r[4]).trim(), d: fd(r[5]), a: Number(String(r[3]).replace(/[^0-9.]/g, '')) || 0, l: /^https?:\/\//.test(String(r[1])) ? String(r[1]).trim() : '', t: fd(r[2]) };
+  });
+  return out;
 }
 
 /** PO number -> link of the PO file (P.Os tab B:C), last few thousand POs. */
@@ -1176,9 +1195,9 @@ function storeList_(user, req) {
   const unit = checkUnit_(user, req.unit);
   const fresh = req && req.fresh && !STORE_BUILT_;
   let data = fresh ? null : cacheGetBig_(storeKey_(unit));
-  if (!data) { storeLines_(); data = cacheGetBig_(storeKey_(unit)) || { lines: [], pol: {}, asOf: '', v: '' }; }
+  if (!data) { storeLines_(); data = cacheGetBig_(storeKey_(unit)) || { lines: [], pol: {}, ivl: {}, asOf: '', v: '' }; }
   if (!(req && req.fresh) && req && req.v && req.v === data.v) return { same: true, unit: unit, asOf: data.asOf };
-  return { unit: unit, lines: data.lines, pol: data.pol || {}, asOf: data.asOf, v: data.v };
+  return { unit: unit, lines: data.lines, pol: data.pol || {}, ivl: data.ivl || {}, asOf: data.asOf, v: data.v };
 }
 
 /** Storekeeper: raise a purchase request with one or more lines. */
@@ -1302,7 +1321,8 @@ function storeInvoice_(user, req) {
     inv.getRange(at, 1, 1, 6).setValues([[po, link, new Date(), amount, invNo, invDate]]);
     log_(user, 'INVOICE', po, unit + ': invoice ' + invNo + ', â¹' + amount + ' (' + received + ' of ' + lines + ' lines received)');
   });
-  try { patchStore_(unit, ls => ls.forEach(l => { if (l.po && l.po.toUpperCase() === key && l.rcv !== '') l.inv = 'done'; })); } catch (e) { console.warn(e); }
+  const today = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd');
+  try { patchStore_(unit, (ls, d) => { ls.forEach(l => { if (l.po && l.po.toUpperCase() === key && l.rcv !== '') l.inv = 'done'; }); (d.ivl = d.ivl || {})[po] = { n: invNo, d: dm[0], a: amount, l: link, t: today }; }); } catch (e) { console.warn(e); }
   scheduleRefresh_();
   return { uploaded: true, po: po, link: link };
 }
@@ -1643,7 +1663,7 @@ function patchCache_(key, fn) {
 
 /** fn(lines, data) changes one unit's store lines in place; the version is recomputed so phones pick it up. */
 function patchStore_(unit, fn) {
-  return patchCache_(storeKey_(unit), d => { fn(d.lines, d); d.v = ver_([d.lines, d.pol || {}]); return d; });
+  return patchCache_(storeKey_(unit), d => { fn(d.lines, d); d.v = ver_([d.lines, d.pol || {}, d.ivl || {}]); return d; });
 }
 
 function scheduleRefresh_() {
