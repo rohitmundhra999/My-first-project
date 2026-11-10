@@ -989,7 +989,7 @@ function lineStatus(l) {
   return ['With HO', 'waiting'];
 }
 const STATUS_FILTERS = [
-  ['pending', 'Pending approval'], ['po', 'PO raised'], ['received', 'Received'], ['invoiced', 'Invoice uploaded'], ['rejected', 'Rejected / hold'],
+  ['pending', 'Pending approval'], ['invoiced', 'Invoice uploaded'], ['rejected', 'Rejected / hold'],
 ];
 function statusMatch(l, f) {
   const c = lineStatus(l)[1];
@@ -1111,7 +1111,8 @@ function statusHtml() {
   const all = (sv.data?.lines || []);
   const rows = all.filter((l) => statusMatch(l, sv.filter) && (!q || [l.it, l.o, l.po || '', l.cat, l.ven || ''].join(' ').toLowerCase().includes(q)));
   const chips = STATUS_FILTERS.map(([k, label]) => {
-    const n = all.filter((l) => statusMatch(l, k)).length;
+    const m = all.filter((l) => statusMatch(l, k));
+    const n = k === 'invoiced' ? new Set(m.map((l) => l.po.toUpperCase())).size : m.length;
     return `<button class="chip ${sv.filter === k ? 'on' : ''}" data-sfilter="${k}">${label} ${n}</button>`;
   }).join('');
   const list = sv.filter === 'po' || sv.filter === 'invoiced' ? poListHtml(rows, sv.filter === 'invoiced') : rows.slice(0, sv.show).map((l) => {
@@ -1134,7 +1135,7 @@ function dlLink(u) {
   const m = String(u || '').match(/\/d\/([\w-]{20,})|[?&]id=([\w-]{20,})/);
   return m ? `https://drive.google.com/uc?export=download&id=${m[1] || m[2]}` : u;
 }
-const fileLinks = (u, what) => u ? `<a href="${esc(u)}" target="_blank" rel="noopener">View ${what}</a> · <a href="${esc(dlLink(u))}" target="_blank" rel="noopener">Download ${what}</a>` : `<span class="sub">${what} file not found</span>`;
+const fileLinks = (u, what) => u ? `<a="${esc(dlLink(u))}" target="_blank" rel="noopener">Download ${what}</a>` : `<span class="sub">${what} file not found</span>`;
 
 /** My requests → PO raised / Invoice uploaded: one card per PO. */
 function poListHtml(rows, invoiced) {
