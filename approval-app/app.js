@@ -1,4 +1,4 @@
-// Summit Purchase Reports and Approvals - front end. Talks to the Apps Script backend; all permission checks happen there.
+// Summit Procurement - front end. Talks to the Apps Script backend; all permission checks happen there.
 const CFG = self.APP_CONFIG || {};
 const $ = (id) => document.getElementById(id);
 const TOKEN_KEY = 'nlp.idToken';
@@ -12,7 +12,7 @@ const state = {
   df: { view: 'list', approver: '', status: '', cluster: '', unit: '', month: '', q: '' },
   // storekeeper
   po: null, vendors: null, poSel: new Set(), poPrice: {}, poForm: { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: '', shipTo: '', newVendor: null }, poUnit: '', poDone: null,
-  store: { unit: '', view: 'raise', data: null, meta: {}, draft: null, rq: {}, inv: null, filter: 'all', q: '', show: 150, done: null, formUnit: '',
+  store: { unit: '', view: 'raise', data: null, meta: {}, draft: null, rq: {}, inv: null, filter: 'pending', q: '', show: 150, done: null, formUnit: '',
            byUnit: {}, raw: {}, base: null, prefetchedAt: 0, prefetching: false },
 };
 const STATUSES = ['Approved', 'Rejected', 'On Hold', 'Withdrawn'];
@@ -602,7 +602,7 @@ async function download(which, fmt) {
   } else {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
-    doc.setFontSize(14); doc.text('Summit Purchase Reports and Approvals - ' + d.title, 30, 32);
+    doc.setFontSize(14); doc.text('Summit Procurement - ' + d.title, 30, 32);
     doc.setFontSize(9); doc.setTextColor(90); doc.text(doc.splitTextToSize(d.filters + ' · ' + d.body.length + ' rows · ' + new Date().toLocaleString('en-IN'), 780), 30, 48);
     const pick = (r) => d.pdfCols.map((i) => (i === d.money ? 'Rs ' + Number(r[i]).toLocaleString('en-IN') : String(r[i] ?? '')));
     doc.autoTable({
@@ -914,9 +914,9 @@ function putStore(unit, p) {
   if (p.same) {
     const d = sv.byUnit[unit]; if (d && p.asOf) { d.asOf = p.asOf; if (sv.raw[unit]) sv.raw[unit].asOf = p.asOf; }
   } else if (p.lines) {
-    sv.raw[unit] = { lines: p.lines, pol: p.pol || {}, asOf: p.asOf, v: p.v };
-    const lines = unpack(p.lines), pol = p.pol || {};
-    lines.forEach((l) => { if (l.po) l.pol = pol[l.po] || ''; });
+    sv.raw[unit] = { lines: p.lines, pol: p.pol || {}, ivl: p.ivl || {}, asOf: p.asOf, v: p.v };
+    const lines = unpack(p.lines), pol = p.pol || {}, ivl = p.ivl || {};
+    lines.forEach((l) => { if (l.po) { l.pol = pol[l.po] || ''; if (ivl[l.po]) l.ivi = ivl[l.po]; } });
     sv.byUnit[unit] = { unit, lines, asOf: p.asOf, v: p.v };
   }
   if (unit === sv.unit) sv.data = sv.byUnit[unit] || null;
@@ -969,7 +969,7 @@ function poGroups(filter) {
   const map = new Map();
   (sv.data?.lines || []).filter(filter).forEach((l) => {
     const k = l.po.toUpperCase();
-    if (!map.has(k)) map.set(k, { po: l.po, pol: l.pol, ven: l.ven, amt: l.amt, d: l.d, lines: [] });
+    if (!map.has(k)) map.set(k, { po: l.po, pol: l.pol, ivi: l.ivi, ven: l.ven, amt: l.amt, d: l.d, lines: [] });
     map.get(k).lines.push(l);
   });
   return [...map.values()].sort((a, b) => a.d.localeCompare(b.d));   // oldest first
@@ -989,15 +989,14 @@ function lineStatus(l) {
   return ['With HO', 'waiting'];
 }
 const STATUS_FILTERS = [
-  ['all', 'All'], ['pending', 'Pending'], ['approved', 'Approved'], ['po', 'PO raised'], ['received', 'Received'], ['rejected', 'Rejected / hold'],
+  ['pending', 'Pending approval'], ['po', 'PO raised'], ['received', 'Received'], ['invoiced', 'Invoice uploaded'], ['rejected', 'Rejected / hold'],
 ];
 function statusMatch(l, f) {
   const c = lineStatus(l)[1];
-  if (f === 'all') return true;
   if (f === 'pending') return c === 'waiting' && l.s !== 'Withdrawn';
-  if (f === 'approved') return l.s === 'Approved';
   if (f === 'po') return c === 'po';
-  if (f === 'received') return c === 'received' || c === 'done';
+  if (f === 'received') return c === 'received';
+  if (f === 'invoiced') return c === 'done';
   if (f === 'rejected') return c === 'rejected' || c === 'onhold' || l.s === 'Withdrawn';
   return true;
 }
@@ -1115,7 +1114,7 @@ function statusHtml() {
     const n = all.filter((l) => statusMatch(l, k)).length;
     return `<button class="chip ${sv.filter === k ? 'on' : ''}" data-sfilter="${k}">${label} ${n}</button>`;
   }).join('');
-  const list = rows.slice(0, sv.show).map((l) => {
+  const list = sv.filter === 'po' || sv.filter === 'invoiced' ? poListHtml(rows, sv.filter === 'invoiced') : rows.slice(0, sv.show).map((l) => {
     const [label, cls] = lineStatus(l);
     const qty = l.aq !== '' && l.aq != null && l.s === 'Approved' && Number(l.aq) !== Number(l.q) ? `${esc(l.q)} → ${esc(l.aq)}` : esc(l.q);
     return `<div class="po dec">
@@ -1127,7 +1126,38 @@ function statusHtml() {
   return `<input id="sSearch" class="field" type="search" placeholder="Search item, order no or PO" value="${esc(sv.q)}" aria-label="Search" style="width:100%;margin:2px 0 8px;font:inherit;padding:8px;border-radius:9px;border:1px solid var(--border);background:var(--surface);color:var(--ink)">
     <div class="chips">${chips}</div>
     ${rows.length ? list : '<p class="empty">No lines.</p>'}
-    ${rows.length > sv.show ? `<button class="btn sm more" id="sMore">Show more (${rows.length - sv.show} left)</button>` : ''}`;
+    ${rows.length > sv.show && sv.filter !== 'po' && sv.filter !== 'invoiced' ? `<button class="btn sm more" id="sMore">Show more (${rows.length - sv.show} left)</button>` : ''}`;
+}
+
+/** Drive "view" link -> direct download link (other links are returned as they are). */
+function dlLink(u) {
+  const m = String(u || '').match(/\/d\/([\w-]{20,})|[?&]id=([\w-]{20,})/);
+  return m ? `https://drive.google.com/uc?export=download&id=${m[1] || m[2]}` : u;
+}
+const fileLinks = (u, what) => u ? `<a href="${esc(u)}" target="_blank" rel="noopener">View ${what}</a> · <a href="${esc(dlLink(u))}" target="_blank" rel="noopener">Download ${what}</a>` : `<span class="sub">${what} file not found</span>`;
+
+/** My requests → PO raised / Invoice uploaded: one card per PO. */
+function poListHtml(rows, invoiced) {
+  const map = new Map();
+  rows.forEach((l) => {
+    const k = l.po.toUpperCase();
+    if (!map.has(k)) map.set(k, { po: l.po, pol: l.pol, ivi: l.ivi, ven: l.ven, amt: l.amt, d: l.d, lines: [] });
+    map.get(k).lines.push(l);
+  });
+  const groups = [...map.values()].sort((a, b) => b.d.localeCompare(a.d));   // newest first
+  return groups.map((g) => {
+    const iv = g.ivi;
+    return `<article class="card">
+      <div class="top"><h3>PO ${esc(g.po)}</h3>${g.amt ? `<span class="amt">${inr(g.amt)}</span>` : ''}</div>
+      <div class="sub"><b>${esc(g.ven || 'Vendor not given')}</b> · ${fmtDate(g.d)} · ${g.lines.length} item${g.lines.length > 1 ? 's' : ''}</div>
+      ${invoiced ? `<div class="sub">Invoice ${iv ? `<b>${esc(iv.n)}</b> · dated ${iv.d ? fmtDate(iv.d) : '-'} · ${iv.a ? inr(iv.a) : '-'}${iv.t ? ' · uploaded ' + fmtDate(iv.t) : ''}` : 'details not found'}</div>` : ''}
+      <div class="items">${g.lines.map((l) => {
+        const ord = l.aq !== '' && l.aq != null ? l.aq : l.q;
+        return esc(l.it) + ' (' + (invoiced ? 'recd ' + esc(l.rcv) : esc(ord)) + ' ' + esc(l.uom) + ')';
+      }).join(', ')}</div>
+      <div class="sub" style="margin-top:6px">${fileLinks(g.pol, 'PO')}${invoiced ? ' · ' + fileLinks(iv && iv.l, 'invoice') : ''}</div>
+    </article>`;
+  }).join('');
 }
 
 // ---- files: photos are made smaller on the phone before upload ----

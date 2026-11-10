@@ -1,6 +1,6 @@
 {
-  "name": "Summit Purchase Reports and Approvals",
-  "short_name": "Summit Purchase Reports and Approvals",
+  "name": "Summit Procurement",
+  "short_name": "Summit Procurement",
   "description": "Approve non-local purchase requisitions",
   "start_url": "./",
   "scope": "./",

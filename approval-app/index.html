@@ -3,21 +3,21 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Summit Purchase Reports and Approvals</title>
+<title>Summit Procurement</title>
 <meta name="theme-color" content="#1b5e20">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Summit Purchase Reports and Approvals">
-<link rel="stylesheet" href="styles.css?v=20261109n">
-<script src="config.js?v=20261109n"></script>
+<meta name="apple-mobile-web-app-title" content="Summit Procurement">
+<link rel="stylesheet" href="styles.css?v=20261111a">
+<script src="config.js?v=20261111a"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 <header class="bar">
   <div>
-    <h1>Summit Purchase Reports and Approvals <span id="modeTag" class="mode" title="Using Copy of NONLOCAL PURCHASES" hidden>TRIAL</span></h1>
+    <h1>Summit Procurement <span id="modeTag" class="mode" title="Using Copy of NONLOCAL PURCHASES" hidden>TRIAL</span></h1>
     <p id="who" class="sub"></p>
   </div>
   <div class="bar-actions">
@@ -63,8 +63,8 @@
       <p id="storeNote" class="sub storenote" hidden></p>
       <div class="seg" role="group" aria-label="Store activity">
         <button data-stype="raise" class="on">New request</button>
-        <button data-stype="receive">Receive <span class="count" id="cReceive"></span></button>
-        <button data-stype="invoice">Invoice <span class="count" id="cInvoice"></span></button>
+        <button data-stype="receive">Not received <span class="count" id="cReceive"></span></button>
+        <button data-stype="invoice">Invoice pending <span class="count" id="cInvoice"></span></button>
         <button data-stype="status">My requests</button>
       </div>
       <div id="storeBody"><p class="empty">Loading…</p></div>
@@ -202,6 +202,6 @@
 </div>
 
 <div id="toast" class="toast" role="status" hidden></div>
-<script type="module" src="app.js?v=20261109n"></script>
+<script type="module" src="app.js?v=20261111a"></script>
 </body>
 </html>
