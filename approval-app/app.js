@@ -16,6 +16,7 @@ const state = {
            byUnit: {}, raw: {}, base: null, prefetchedAt: 0, prefetching: false },
 };
 const STATUSES = ['Approved', 'Rejected', 'On Hold', 'Withdrawn'];
+const stLabel = (x) => (x === 'Approved' ? 'Approved but PO not raised' : x);
 const REMARK_MAX_WORDS = 10;
 const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO'];
 /** Preview that may not change anything (LIVE). In TRIAL the admin can act as the person ("actAs"). */
@@ -492,7 +493,7 @@ function renderDecisions() {
   D.lines.forEach((l) => { if (l.by) perApprover[l.by] = (perApprover[l.by] || 0) + 1; });
   const approvers = [...new Set([...(D.approvers || []), ...Object.keys(perApprover)])].sort((a, b) => a.localeCompare(b));
   f.approver = fillSelect('dApprover', 'All approvers', approvers.map((a) => [a, `${a} (${perApprover[a] || 0})`]), f.approver);
-  f.status = fillSelect('dStatus', 'All statuses', STATUSES.map((x) => [x, x]), f.status);
+  f.status = fillSelect('dStatus', 'All statuses', STATUSES.map((x) => [x, stLabel(x)]), f.status);
   const clusters = [...new Set(D.unitMap.map((x) => x[0]).concat(D.lines.some((l) => l.c === 'Other') ? ['Other'] : []))];
   f.cluster = fillSelect('dCluster', 'All clusters', clusters.map((c) => [c, c]), f.cluster);
   const units = [...new Set(D.lines.filter((l) => !f.cluster || l.c === f.cluster).map((l) => l.u))].sort((a, b) => a.localeCompare(b));
@@ -504,7 +505,7 @@ function renderDecisions() {
   const base = decFiltered(true);
   const counts = Object.fromEntries(STATUSES.map((x) => [x, 0]));
   base.forEach((l) => counts[l.s]++);
-  $('dTiles').innerHTML = STATUSES.map((x) => `<button class="tile ${f.status === x ? 'on' : ''}" data-dstatus="${esc(x)}"><span class="sub">${esc(x)}</span><b>${counts[x]}</b></button>`).join('');
+  $('dTiles').innerHTML = STATUSES.map((x) => `<button class="tile ${f.status === x ? 'on' : ''}" data-dstatus="${esc(x)}"><span class="sub">${esc(stLabel(x))}</span><b>${counts[x]}</b></button>`).join('');
   const rows = f.status ? base.filter((l) => l.s === f.status) : base;
   state.decRows = rows;
   $('dClear').hidden = !(f.approver || f.status || f.cluster || f.unit || f.month || f.q);
@@ -534,7 +535,7 @@ function decSummaryHtml(rows) {
   const names = Object.keys(by).sort((a, b) => a.localeCompare(b));
   const tot = STATUSES.map((x) => names.reduce((a, n) => a + by[n][x], 0));
   return `<div class="mwrap"><table class="matrix">
-    <thead><tr><th>Approver</th>${STATUSES.map((x) => `<th>${esc(x)}</th>`).join('')}<th>Total</th></tr></thead>
+    <thead><tr><th>Approver</th>${STATUSES.map((x) => `<th>${esc(stLabel(x))}</th>`).join('')}<th>Total</th></tr></thead>
     <tbody>${names.map((n) => `<tr><td>${esc(n)}</td>${STATUSES.map((x) => `<td>${by[n][x] ? `<button class="cell" data-dcell-by="${esc(n)}" data-dcell-st="${esc(x)}">${by[n][x]}</button>` : '<span class="zero">–</span>'}</td>`).join('')}<td><b>${STATUSES.reduce((a, x) => a + by[n][x], 0)}</b></td></tr>`).join('')}
     <tr class="total"><td>Total</td>${tot.map((v) => `<td>${v || '–'}</td>`).join('')}<td>${tot.reduce((a, b) => a + b, 0)}</td></tr></tbody>
   </table></div><p class="sub" style="margin-top:6px">Number of lines by approver and status. Tap a number to see those lines.</p>`;
@@ -564,7 +565,7 @@ function exportData(which) {
     const f = state.df, rows = state.decRows || [];
     return {
       title: 'Approval report', file: `Approval report ${stamp}`,
-      filters: filterText([['Approver', f.approver], ['Status', f.status], ['Cluster', f.cluster], ['Unit', f.unit], ['Month', f.month && monthLabel(f.month)], ['Search', f.q.trim()]]),
+      filters: filterText([['Approver', f.approver], ['Status', f.status && stLabel(f.status)], ['Cluster', f.cluster], ['Unit', f.unit], ['Month', f.month && monthLabel(f.month)], ['Search', f.q.trim()]]),
       head: ['#', 'Order No', 'Requested', 'Decided', 'Unit', 'Cluster', 'Item', 'Qty asked', 'Qty approved', 'UOM', 'Status', 'Approver', 'Reason for rejection'],
       body: rows.map((l, i) => [i + 1, l.o, fmtDate(l.d), decDate(l), l.u, l.c, l.it, l.q, l.aq, l.uom, l.s, l.by, l.rm]),
       pdfCols: [0, 1, 2, 3, 4, 6, 7, 8, 10, 11, 12],
