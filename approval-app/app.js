@@ -834,6 +834,7 @@ function setupNotifications() {
   $('btnNotify').onclick = () => registerPush(true);
 }
 
+let pushSentAt = 0, pushWatching = false;
 async function registerPush(ask) {
   try {
     if (ask) {
@@ -847,12 +848,26 @@ async function registerPush(ask) {
     if (!(await isSupported())) return banner('This browser cannot receive notifications.');
     const app = initializeApp(CFG.FIREBASE);
     const messaging = getMessaging(app);
-    const reg = await navigator.serviceWorker.register('firebase-messaging-sw.js');
-    const token = await getToken(messaging, { vapidKey: CFG.VAPID_KEY, serviceWorkerRegistration: reg });
-    if (!token) throw new Error('No notification token');
-    { // register on every open, so the server always has this device's current token
+    const reg = await navigator.serviceWorker.register('firebase-messaging-sw.js', { updateViaCache: 'none' });
+    reg.update().catch(() => {}); // always pick up the newest notification worker
+    const sendToken = async () => {
+      const token = await getToken(messaging, { vapidKey: CFG.VAPID_KEY, serviceWorkerRegistration: reg });
+      if (!token) throw new Error('No notification token');
       await api('register', { token, device: navigator.userAgent.slice(0, 120) });
       store.set('nlp.pushToken', token);
+      pushSentAt = Date.now();
+    };
+    await sendToken(); // register on every open, so the server always has this device's current token
+    if (!pushWatching) { // also re-register whenever the app comes back to the screen (at most every 30 min)
+      pushWatching = true;
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && Notification.permission === 'granted' && Date.now() - pushSentAt > 30 * 60 * 1000) {
+          sendToken().catch((e) => console.error(e));
+        }
+      });
+      navigator.serviceWorker.addEventListener('message', (ev) => { // push arrived while the app is open
+        if (ev.data && ev.data.type === 'nlp-push') { toast(ev.data.title || 'New update'); refresh(); }
+      });
     }
     onMessage(messaging, (m) => { // app is open: show it in the app AND as a phone notification
     const title = m.notification?.title || 'New update';
