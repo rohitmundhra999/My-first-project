@@ -655,11 +655,8 @@ function groupHtml(lines, mode, emptyMsg) {
     if (g && g.unit === l.unit && g.when === l.when) g.lines.push(l); else groups.push({ unit: l.unit, when: l.when, lines: [l] });
   });
   if (mode === 'assign' || mode === 'reassign') {   // unit-wise: all requisitions of a unit together, under the unit name
-    const order = [...new Set(groups.map((g) => g.unit))].sort((a, b) => a.localeCompare(b));
-    return order.map((u) => {
-      const gs = groups.filter((g) => g.unit === u), n = gs.reduce((a, g) => a + g.lines.length, 0);
-      return `<h3 class="unithead">${esc(u)} <span class="count">${n}</span></h3>` + gs.map((g) => assignGroupHtml(g, mode)).join('');
-    }).join('');
+    const order = [...new Set(lines.map((l) => l.unit))].sort((a, b) => a.localeCompare(b));
+    return order.map((u) => assignGroupHtml({ unit: u, when: '', lines: lines.filter((l) => l.unit === u) }, mode)).join('');
   }
   return groups.map((g) => {
     const allSel = g.lines.every((l) => state.sel.has(key(l)));
@@ -688,11 +685,11 @@ function assignGroupHtml(g, mode) {
   return `<article class="group">
     <div class="ghead assignhead">
       ${dis ? '' : `<input type="checkbox" data-group="${esc(keys)}" ${g.lines.every((l) => state.sel.has(key(l))) ? 'checked' : ''} aria-label="Select all lines of this requisition">`}
-      <span class="gtitle"><b>${esc(g.unit)}</b> <span class="sub">${esc(g.when)} · ${g.lines.length} line${g.lines.length > 1 ? 's' : ''}</span></span>
+      <span class="gtitle"><b>${esc(g.unit)}</b> <span class="sub">${g.when ? esc(g.when) + ' · ' : ''}${g.lines.length} line${g.lines.length > 1 ? 's' : ''}</span></span>
       ${g.lines.length > 1 ? `<select class="gpick" data-gpick="${esc(keys)}" ${dis} aria-label="Approver for all lines of ${esc(g.unit)}">${approverOptions('').replace('Choose approver…', 'Same approver for all…')}</select>` : ''}
     </div>
     ${g.lines.map((l) => {
-      const k = key(l), meta = [l.category, l.orderNo].filter(Boolean).map(esc).join(' · ');
+      const k = key(l), meta = [l.when, l.category, l.orderNo].filter(Boolean).map(esc).join(' · ');
       const pic = l.pic ? ` <a href="${esc(l.pic)}" target="_blank" rel="noopener">photo</a>` : '';
       const chosen = state.pick[k] ?? l.approver ?? '';
       return `<div class="line">
