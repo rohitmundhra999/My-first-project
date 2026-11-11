@@ -7,7 +7,7 @@ const state = {
   viewAs: null, gen: 0,  // gen changes on every "view as" switch; replies for an older view are ignored
   pick: {},              // HO: approver chosen per line (key -> name), sent with the group's Send button          // admin preview: email of the person whose screens are shown (read-only)
   reports: null, repAt: 0,
-  rep: { type: 'nr', view: 'list', cluster: '', unit: '', month: '', age: '', q: '', sort: 'old' },
+  rep: { type: 'nr', view: 'list', cluster: '', unit: '', vendor: '', month: '', age: '', q: '', sort: 'old' },
   dec: null, decAt: 0, decShow: 200,
   df: { view: 'list', approver: '', status: '', cluster: '', unit: '', month: '', q: '' },
   // storekeeper
@@ -405,6 +405,9 @@ function renderReports() {
   f.cluster = fillSelect('fCluster', 'All clusters', clusters.map((c) => [c, c]), f.cluster);
   const unitsInCluster = [...new Set(all.filter((p) => !f.cluster || p.cluster === f.cluster).map((p) => p.unit))].sort((a, b) => a.localeCompare(b));
   f.unit = fillSelect('fUnit', 'All units', unitsInCluster.map((u) => [u, u]), f.unit);
+  // Only vendors that have POs in this report (and in the chosen cluster/unit)
+  const vendors = [...new Set(all.filter((p) => (!f.cluster || p.cluster === f.cluster) && (!f.unit || p.unit === f.unit)).map((p) => p.vendor || 'No vendor'))].sort((a, b) => a.localeCompare(b));
+  f.vendor = fillSelect('fVendor', 'All vendors', vendors.map((v) => [v, v]), f.vendor);
   const months = reportMonths(R.from);
   f.month = fillSelect('fMonth', 'All months', months.slice().reverse().map((m) => [m, monthLabel(m)]), f.month);
   $('fAge').value = f.age; $('fAge').classList.toggle('on-filter', !!f.age);
@@ -413,7 +416,7 @@ function renderReports() {
 
   const q = f.q.trim().toLowerCase();
   const rows = all.filter((p) =>
-    (!f.cluster || p.cluster === f.cluster) && (!f.unit || p.unit === f.unit) &&
+    (!f.cluster || p.cluster === f.cluster) && (!f.unit || p.unit === f.unit) && (!f.vendor || (p.vendor || 'No vendor') === f.vendor) &&
     (!f.month || p.date.slice(0, 7) === f.month) && (!f.age || daysSince(p.date) > +f.age) &&
     (!q || [p.po, p.vendor, p.unitRaw, ...p.itemNames].join(' ').toLowerCase().includes(q)));
 
@@ -422,7 +425,7 @@ function renderReports() {
   $('tAmt').textContent = inr(rows.reduce((a, p) => a + p.amount, 0));
   const oldest = rows.reduce((a, p) => Math.max(a, daysSince(p.date)), 0);
   $('tOld').textContent = rows.length ? `${oldest} days` : '–';
-  $('btnClear').hidden = !(f.cluster || f.unit || f.month || f.age || f.q);
+  $('btnClear').hidden = !(f.cluster || f.unit || f.vendor || f.month || f.age || f.q);
   $('repAsOf').textContent = `${f.type === 'nr' ? 'Material not received' : 'Invoice pending'} · approved POs from ${fmtDate(R.from)} · Central Store excluded · updated ${R.asOf}`;
   $('repBody').innerHTML = f.view === 'matrix' ? matrixHtml(rows, R, months) : listHtml(rows);
 }
@@ -578,7 +581,7 @@ function exportData(which) {
   const name = f.type === 'nr' ? 'Material not received' : 'Invoice pending';
   return {
     title: name, file: `${name} ${stamp}`, money: 6,
-    filters: filterText([['Cluster', f.cluster], ['Unit', f.unit], ['Month', f.month && monthLabel(f.month)], ['Pending for', f.age && `over ${f.age} days`], ['Search', f.q.trim()]]),
+    filters: filterText([['Cluster', f.cluster], ['Unit', f.unit], ['Vendor', f.vendor], ['Month', f.month && monthLabel(f.month)], ['Pending for', f.age && `over ${f.age} days`], ['Search', f.q.trim()]]),
     head: ['#', 'PO No', 'PO date', 'Days', 'Unit', 'Cluster', 'Amount', 'Vendor', 'Items', 'Item names'],
     body: rows.map((p, i) => [i + 1, p.po, fmtDate(p.date), daysSince(p.date), p.unit, p.cluster, Math.round(p.amount), p.vendor, p.items,
       p.itemNames.join(', ') + (p.items > p.itemNames.length ? ` and ${p.items - p.itemNames.length} more` : '')]),
@@ -1514,10 +1517,10 @@ document.querySelectorAll('[data-rtype]').forEach((b) => (b.onclick = () => {
   if (b.dataset.rtype === 'dec' && !state.dec) refresh();
 }));
 document.querySelectorAll('[data-rview]').forEach((b) => (b.onclick = () => { state.rep.view = b.dataset.rview; renderReports(); }));
-[['fCluster', 'cluster'], ['fUnit', 'unit'], ['fMonth', 'month'], ['fAge', 'age'], ['fSort', 'sort']].forEach(([id, k]) =>
+[['fCluster', 'cluster'], ['fUnit', 'unit'], ['fVendor', 'vendor'], ['fMonth', 'month'], ['fAge', 'age'], ['fSort', 'sort']].forEach(([id, k]) =>
   ($(id).onchange = (e) => { state.rep[k] = e.target.value; if (k === 'cluster') state.rep.unit = ''; renderReports(); }));
 $('fSearch').oninput = (e) => { state.rep.q = e.target.value; renderReports(); };
-$('btnClear').onclick = () => { Object.assign(state.rep, { cluster: '', unit: '', month: '', age: '', q: '' }); renderReports(); };
+$('btnClear').onclick = () => { Object.assign(state.rep, { cluster: '', unit: '', vendor: '', month: '', age: '', q: '' }); renderReports(); };
 $('btnRefresh').onclick = () => { toast('Reading the latest from the sheet…'); run('refresh', () => refresh(true)); };
 $('btnSignOut').onclick = signOut;
 $('btnAssign').onclick = assignSelected;
