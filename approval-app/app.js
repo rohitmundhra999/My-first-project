@@ -796,7 +796,7 @@ function assignSelected() {
   });
 }
 
-const EDIT_ITEM_ON = false;   // switched on once the server writes the name to FORMDATA (not FMS)
+const EDIT_ITEM_ON = true;   // the server writes the name to FORMDATA (FMS follows by its QUERY)
 // ---------- HO: edit item name (writes FMS column E; refused if the sheet changed meanwhile) ----------
 function editItem(k) {
   const ho = state.ho; if (!ho) return;
