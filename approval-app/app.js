@@ -444,6 +444,7 @@ function listHtml(rows) {
       <div class="sub">${esc(p.unit)} <span class="sub">(${esc(p.cluster)})</span> · ${esc(p.vendor || 'No vendor')}</div>
       <div class="sub">Ordered ${fmtDate(p.date)} · <span class="age ${d > 30 ? 'bad' : d > 15 ? 'warn' : ''}">${d} days</span> · ${p.items} item${p.items > 1 ? 's' : ''}</div>
       ${p.itemNames.length ? `<div class="items">${esc(p.itemNames.join(', '))}${more}</div>` : ''}
+      ${state.rep.type === 'nr' && p.link ? `<div class="sub"><a class="btn sm" href="${esc(p.link)}" target="_blank" rel="noopener">Download PO (PDF)</a></div>` : ''}
     </article>`;
   }).join('');
 }
