@@ -698,7 +698,7 @@ function assignGroupHtml(g, mode) {
       return `<div class="line">
         <div class="lrow">${dis ? '' : `<input type="checkbox" data-key="${esc(k)}" ${state.sel.has(k) ? 'checked' : ''} aria-label="Select ${esc(l.item)}">`}
           <div class="lmain"><span class="item">${esc(l.item)}</span><span class="sub">${meta}${pic}</span></div>
-          ${dis ? '' : `<button class="btn sm ghost iedit" data-edit="${esc(k)}" title="Edit item name" aria-label="Edit item name">✎</button>`}</div>
+          ${dis || !EDIT_ITEM_ON ? '' : `<button class="btn sm ghost iedit" data-edit="${esc(k)}" title="Edit item name" aria-label="Edit item name">✎</button>`}</div>
         ${stockHtml(l)}
         <label class="pickrow"><span class="sub">Approver</span>
           <select data-pick="${esc(k)}" ${dis} aria-label="Approver for ${esc(l.item)}">${approverOptions(chosen)}</select></label>
@@ -796,16 +796,15 @@ function assignSelected() {
   });
 }
 
+const EDIT_ITEM_ON = false;   // switched on once the server writes the name to FORMDATA (not FMS)
 // ---------- HO: edit item name (writes FMS column E; refused if the sheet changed meanwhile) ----------
 function editItem(k) {
   const ho = state.ho; if (!ho) return;
   const l = [...ho.unassigned, ...ho.waiting].find((x) => key(x) === k); if (!l) return;
-  const first2 = l.item.slice(0, 2);
-  const typed = prompt(`Correct the item name (keep the first 2 letters "${first2}", so the order number does not change):`, l.item);
+  const typed = prompt('Correct the item name:', l.item);
   if (typed === null) return;
   const name = typed.replace(/\s+/g, ' ').trim();
   if (!name || name === l.item) return;
-  if (name.slice(0, 2).toUpperCase() !== first2.toUpperCase()) return toast(`Keep the first 2 letters "${first2}" so the order number does not change.`, true);
   run('editItem', async () => {
     const r = await api('editItem', { row: l.row, orderNo: l.orderNo, oldItem: l.item, item: name });
     const newK = r.row + '|' + r.orderNo;
