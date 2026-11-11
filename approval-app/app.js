@@ -1563,7 +1563,7 @@ function checkUpdate() {
 setInterval(checkUpdate, 60000);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkUpdate(); });
 // Keep the list fresh while the app is open; reload when it comes back to the front.
-setInterval(() => { if (document.visibilityState === 'visible' && state.me && !state.busy) refresh(); }, 120000);
+setInterval(() => { if (document.visibilityState === 'visible' && state.me && !state.busy) refresh(); }, 20000);   // every 20 s while the app is on screen (the server answers "no change" quickly)
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && state.me && !state.busy) refresh(); });
 
 boot();
