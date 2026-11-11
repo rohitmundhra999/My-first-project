@@ -18,7 +18,7 @@ const state = {
 const STATUSES = ['Approved', 'Rejected', 'On Hold', 'Withdrawn'];
 const stLabel = (x) => (x === 'Approved' ? 'Approved but PO not raised' : x);
 const REMARK_MAX_WORDS = 10;
-const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO'];
+const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO', 'editItem'];
 /** Preview that may not change anything (LIVE). In TRIAL the admin can act as the person ("actAs"). */
 const readOnly = () => !!(state.me && state.me.preview && !state.me.actAs);
 
@@ -349,9 +349,14 @@ const key = (l) => l.row + '|' + l.orderNo;
 function render() {
   if (state.ho) {
     $('tabAssign').querySelector('.count').textContent = state.ho.unassigned.length || '';
-    $('listUnassigned').innerHTML = groupHtml(state.ho.unassigned, 'assign', 'Nothing waiting for an approver.');
-    $('waitingCount').textContent = state.ho.waiting.length;
-    $('listWaiting').innerHTML = groupHtml(state.ho.waiting, 'reassign', 'Nothing waiting.');
+    const units = [...new Set([...state.ho.unassigned, ...state.ho.waiting].map((l) => l.unit))].sort((a, b) => a.localeCompare(b));
+    state.aUnit = fillSelect('aUnit', 'All units', units.map((u) => [u, u]), state.aUnit || '');
+    const inUnit = (l) => !state.aUnit || l.unit === state.aUnit;
+    const un = state.ho.unassigned.filter(inUnit), wt = state.ho.waiting.filter(inUnit);
+    $('listUnassigned').innerHTML = groupHtml(un, 'assign', state.aUnit ? 'Nothing waiting for an approver in this unit.' : 'Nothing waiting for an approver.');
+    $('aAll').checked = un.length > 0 && un.every((l) => state.sel.has(key(l)));
+    $('waitingCount').textContent = wt.length;
+    $('listWaiting').innerHTML = groupHtml(wt, 'reassign', 'Nothing waiting.');
   }
   if (state.mine) {
     $('tabApprove').querySelector('.count').textContent = state.mine.pending.length || '';
@@ -649,7 +654,13 @@ function groupHtml(lines, mode, emptyMsg) {
     const g = groups[groups.length - 1];
     if (g && g.unit === l.unit && g.when === l.when) g.lines.push(l); else groups.push({ unit: l.unit, when: l.when, lines: [l] });
   });
-  if (mode === 'assign' || mode === 'reassign') return groups.map((g) => assignGroupHtml(g, mode)).join('');
+  if (mode === 'assign' || mode === 'reassign') {   // unit-wise: all requisitions of a unit together, under the unit name
+    const order = [...new Set(groups.map((g) => g.unit))].sort((a, b) => a.localeCompare(b));
+    return order.map((u) => {
+      const gs = groups.filter((g) => g.unit === u), n = gs.reduce((a, g) => a + g.lines.length, 0);
+      return `<h3 class="unithead">${esc(u)} <span class="count">${n}</span></h3>` + gs.map((g) => assignGroupHtml(g, mode)).join('');
+    }).join('');
+  }
   return groups.map((g) => {
     const allSel = g.lines.every((l) => state.sel.has(key(l)));
     return `<article class="group">
@@ -676,7 +687,8 @@ function assignGroupHtml(g, mode) {
   const ready = g.lines.filter((l) => state.pick[key(l)] && state.pick[key(l)] !== l.approver).length;
   return `<article class="group">
     <div class="ghead assignhead">
-      <span><b>${esc(g.unit)}</b> <span class="sub">${esc(g.when)} · ${g.lines.length} line${g.lines.length > 1 ? 's' : ''}</span></span>
+      ${dis ? '' : `<input type="checkbox" data-group="${esc(keys)}" ${g.lines.every((l) => state.sel.has(key(l))) ? 'checked' : ''} aria-label="Select all lines of this requisition">`}
+      <span class="gtitle"><b>${esc(g.unit)}</b> <span class="sub">${esc(g.when)} · ${g.lines.length} line${g.lines.length > 1 ? 's' : ''}</span></span>
       ${g.lines.length > 1 ? `<select class="gpick" data-gpick="${esc(keys)}" ${dis} aria-label="Approver for all lines of ${esc(g.unit)}">${approverOptions('').replace('Choose approver…', 'Same approver for all…')}</select>` : ''}
     </div>
     ${g.lines.map((l) => {
@@ -684,7 +696,9 @@ function assignGroupHtml(g, mode) {
       const pic = l.pic ? ` <a href="${esc(l.pic)}" target="_blank" rel="noopener">photo</a>` : '';
       const chosen = state.pick[k] ?? l.approver ?? '';
       return `<div class="line">
-        <div class="lmain"><span class="item">${esc(l.item)}</span><span class="sub">${meta}${pic}</span></div>
+        <div class="lrow">${dis ? '' : `<input type="checkbox" data-key="${esc(k)}" ${state.sel.has(k) ? 'checked' : ''} aria-label="Select ${esc(l.item)}">`}
+          <div class="lmain"><span class="item">${esc(l.item)}</span><span class="sub">${meta}${pic}</span></div>
+          ${dis ? '' : `<button class="btn sm ghost iedit" data-edit="${esc(k)}" title="Edit item name" aria-label="Edit item name">✎</button>`}</div>
         ${stockHtml(l)}
         <label class="pickrow"><span class="sub">Approver</span>
           <select data-pick="${esc(k)}" ${dis} aria-label="Approver for ${esc(l.item)}">${approverOptions(chosen)}</select></label>
@@ -756,9 +770,10 @@ function selectedLines() {
 function updateDocks() {
   const n = selectedLines().length;
   const label = `${n} selected`;
-  $('assignDock').hidden = true;
+  const assignOn = state.tab === 'assign' && !!n && !readOnly();
+  $('assignDock').hidden = !assignOn; $('assignCount').textContent = label;
   $('approveDock').hidden = !(state.tab === 'approve' && n); $('approveCount').textContent = label;
-  document.body.classList.toggle('docked', !!n && state.tab === 'approve');
+  document.body.classList.toggle('docked', (!!n && state.tab === 'approve') || assignOn);
 }
 
 // ---------- actions ----------
@@ -779,6 +794,83 @@ function assignSelected() {
     toast(`${r.assigned} line${r.assigned === 1 ? '' : 's'} sent to ${r.approver}, ${how}.` + skippedText(r.skipped), r.skipped.length > 0);
     refresh();
   });
+}
+
+// ---------- HO: edit item name (writes FMS column E; refused if the sheet changed meanwhile) ----------
+function editItem(k) {
+  const ho = state.ho; if (!ho) return;
+  const l = [...ho.unassigned, ...ho.waiting].find((x) => key(x) === k); if (!l) return;
+  const typed = prompt('Correct the item name:', l.item);
+  if (typed === null) return;
+  const name = typed.replace(/\s+/g, ' ').trim();
+  if (!name || name === l.item) return;
+  run('editItem', async () => {
+    const r = await api('editItem', { row: l.row, orderNo: l.orderNo, oldItem: l.item, item: name });
+    const newK = r.row + '|' + r.orderNo;
+    [ho.unassigned, ho.waiting, state.mine?.pending, state.mine?.onHold].forEach((list) => (list || []).forEach((x) => {
+      if (x.row === l.row && x.orderNo === l.orderNo) { x.item = r.item; x.orderNo = r.orderNo; }
+    }));
+    if (newK !== k) {
+      if (state.sel.has(k)) { state.sel.delete(k); state.sel.add(newK); }
+      if (k in state.pick) { state.pick[newK] = state.pick[k]; delete state.pick[k]; }
+    }
+    render();
+    toast('Item name updated in the sheet.');
+  });
+}
+
+// ---------- HO: PDF / snapshot of the selected lines, ready to send to a vendor ----------
+function selectedAssignLines() {
+  return [...(state.ho?.unassigned || []), ...(state.ho?.waiting || [])].filter((l) => state.sel.has(key(l)))
+    .sort((a, b) => a.unit.localeCompare(b.unit));
+}
+async function shareFile(blob, name) {
+  const f = new File([blob], name, { type: blob.type });
+  if (navigator.canShare && navigator.canShare({ files: [f] })) {
+    try { await navigator.share({ files: [f], title: name }); return; } catch (e) { if (e.name === 'AbortError') return; }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+async function exportRequirement(kind) {
+  const ls = selectedAssignLines();
+  if (!ls.length) return toast('Select the items first.', true);
+  const units = [...new Set(ls.map((l) => l.unit))];
+  const when = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+  const sub = `${units.join(', ')} · ${ls.length} item${ls.length > 1 ? 's' : ''} · ${when}`;
+  const stamp = new Date().toISOString().slice(0, 10);
+  const head = ['#', 'Unit', 'Item', 'Qty', 'UOM', 'Category'];
+  const body = ls.map((l, i) => [i + 1, l.unit, l.item, l.qty === '' ? '' : String(l.qty), l.uom, l.category || '']);
+  if (kind === 'pdf') {
+    try { await loadLibs('pdf'); } catch (e) { return toast(e.message, true); }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+    doc.setFontSize(15); doc.text('Summit Hotels and Resorts - Purchase requirement', 40, 42);
+    doc.setFontSize(9); doc.setTextColor(90); doc.text(doc.splitTextToSize(sub, 515), 40, 58);
+    doc.autoTable({ startY: 72, head: [head], body, styles: { fontSize: 9, cellPadding: 4 }, headStyles: { fillColor: [30, 64, 120] },
+      columnStyles: { 0: { cellWidth: 24 }, 3: { halign: 'right' } }, margin: { left: 40, right: 40 } });
+    return shareFile(doc.output('blob'), `Requirement ${stamp}.pdf`);
+  }
+  // Snapshot: the same table drawn as a picture (PNG)
+  const W = [40, 190, 420, 80, 80, 170], pad = 10, rowH = 34, top = 86, width = W.reduce((a, b) => a + b, 0) + pad * 2;
+  const height = top + rowH * (ls.length + 1) + pad * 2, sc = 2;
+  const cv = document.createElement('canvas'); cv.width = width * sc; cv.height = height * sc;
+  const g = cv.getContext('2d'); g.scale(sc, sc);
+  g.fillStyle = '#fff'; g.fillRect(0, 0, width, height);
+  g.fillStyle = '#111'; g.font = 'bold 20px system-ui, sans-serif'; g.fillText('Summit Hotels and Resorts - Purchase requirement', pad, 34);
+  g.fillStyle = '#555'; g.font = '14px system-ui, sans-serif'; g.fillText(sub.length > 130 ? sub.slice(0, 127) + '…' : sub, pad, 60);
+  const fit = (t, w) => { t = String(t); if (g.measureText(t).width <= w) return t; while (t && g.measureText(t + '…').width > w) t = t.slice(0, -1); return t + '…'; };
+  [head, ...body].forEach((r, i) => {
+    const y = top + i * rowH;
+    g.fillStyle = i === 0 ? '#1e4078' : i % 2 ? '#fff' : '#f2f5fa'; g.fillRect(pad, y, width - pad * 2, rowH);
+    g.fillStyle = i === 0 ? '#fff' : '#111'; g.font = (i === 0 ? 'bold ' : '') + '14px system-ui, sans-serif';
+    let x = pad;
+    r.forEach((c, j) => { const w = W[j]; g.textAlign = j === 3 ? 'right' : 'left'; g.fillText(fit(c, w - 12), j === 3 ? x + w - 6 : x + 6, y + 22); x += w; });
+    g.textAlign = 'left';
+  });
+  g.strokeStyle = '#d0d6e0'; g.strokeRect(pad, top, width - pad * 2, rowH * (ls.length + 1));
+  cv.toBlob((b) => (b ? shareFile(b, `Requirement ${stamp}.png`) : toast('Could not make the snapshot.', true)), 'image/png');
 }
 
 async function decide(decision, lines) {
@@ -1524,6 +1616,13 @@ $('btnClear').onclick = () => { Object.assign(state.rep, { cluster: '', unit: ''
 $('btnRefresh').onclick = () => { toast('Reading the latest from the sheet…'); run('refresh', () => refresh(true)); };
 $('btnSignOut').onclick = signOut;
 $('btnAssign').onclick = assignSelected;
+$('aUnit').onchange = (e) => { state.aUnit = e.target.value; render(); };
+$('aAll').onchange = (e) => {   // select / unselect every line shown under "Needs an approver"
+  (state.ho?.unassigned || []).filter((l) => !state.aUnit || l.unit === state.aUnit).forEach((l) => (e.target.checked ? state.sel.add(key(l)) : state.sel.delete(key(l))));
+  render();
+};
+$('aPdf').onclick = () => exportRequirement('pdf');
+$('aSnap').onclick = () => exportRequirement('png');
 document.querySelectorAll('[data-bulk]').forEach((b) => (b.onclick = () => decide(b.dataset.bulk, selectedLines())));
 
 document.addEventListener('change', (e) => {
@@ -1547,6 +1646,8 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('#decMore')) { state.decShow += 300; return renderDecisions(); }
   const gs = e.target.closest('[data-gsend]');
   if (gs) return sendGroup(gs.dataset.gsend.split(','));
+  const ed = e.target.closest('[data-edit]');
+  if (ed) return editItem(ed.dataset.edit);
   const c = e.target.closest('[data-cell-unit]');
   if (c) { Object.assign(state.rep, { unit: c.dataset.cellUnit, month: c.dataset.cellMonth, view: 'list' }); renderReports(); window.scrollTo(0, 0); return; }
   const b = e.target.closest('[data-one]');

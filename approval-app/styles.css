@@ -149,6 +149,14 @@ table.matrix { border-collapse: collapse; font-size: 13px; width: 100%; font-var
 
 /* ---- HO: approver per line ---- */
 .assignhead { justify-content: space-between; flex-wrap: wrap; cursor: default; }
+.assignhead .gtitle { margin-right: auto; }
+.assignbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+.assignbar select { font: inherit; font-size: 14px; padding: 8px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); min-height: 40px; flex: 1 1 110px; min-width: 0; }
+.assignbar .selall { display: flex; gap: 6px; align-items: center; font-size: 14px; white-space: nowrap; cursor: pointer; }
+.unithead { font-size: 15px; margin: 14px 0 6px; padding: 6px 10px; border-left: 4px solid var(--brand); background: var(--surface-2); border-radius: 6px; }
+.lrow { display: flex; gap: 10px; align-items: flex-start; }
+.lrow .lmain { flex: 1; }
+.iedit { flex-shrink: 0; min-height: 32px; padding: 4px 10px; }
 .gpick, .pickrow select { font: inherit; font-size: 14px; padding: 7px 8px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); min-height: 38px; min-width: 0; }
 .gpick { max-width: 100%; }
 .pickrow { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
