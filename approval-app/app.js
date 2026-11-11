@@ -11,6 +11,7 @@ const state = {
   dec: null, decAt: 0, decShow: 200,
   df: { view: 'list', approver: '', status: '', cluster: '', unit: '', month: '', q: '' },
   // storekeeper
+  goods: null, gf: { unit: '', st: '', q: '' }, gsel: new Set(), gform: {}, gsf: { cluster: '', unit: '', st: '', q: '' },
   po: null, vendors: null, poSel: new Set(), poPrice: {}, poForm: { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: '', shipTo: '', newVendor: null }, poUnit: '', poDone: null,
   store: { unit: '', view: 'raise', data: null, meta: {}, draft: null, rq: {}, inv: null, filter: 'pending', q: '', show: 150, done: null, formUnit: '',
            byUnit: {}, raw: {}, base: null, prefetchedAt: 0, prefetching: false },
@@ -18,7 +19,7 @@ const state = {
 const STATUSES = ['Approved', 'Rejected', 'On Hold', 'Withdrawn'];
 const stLabel = (x) => (x === 'Approved' ? 'Approved but PO not raised' : x);
 const REMARK_MAX_WORDS = 10;
-const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO', 'editItem'];
+const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO', 'editItem', 'goodsSave'];
 /** Preview that may not change anything (LIVE). In TRIAL the admin can act as the person ("actAs"). */
 const readOnly = () => !!(state.me && state.me.preview && !state.me.actAs);
 
@@ -184,6 +185,7 @@ function setupChrome() {
   $('btnSignOut').hidden = false; $('btnRefresh').hidden = false;
   $('tabAssign').hidden = !u.isHO; $('tabApprove').hidden = !u.isApprover;
   $('tabPO').hidden = !u.isHO;
+  $('tabGoods').hidden = !u.isHO;
   $('tabStore').hidden = !hasStore();
   setupStoreUnits();
   $('approverPick').innerHTML = '<option value="">Choose approver…</option>' + state.me.approvers.map((n) => `<option>${esc(n)}</option>`).join('');
@@ -264,11 +266,14 @@ function setTab(tab, withMe) {
   if (tab === 'approve' && !u.isApprover) tab = u.isHO ? 'assign' : 'reports';
   if (tab === 'store' && !hasStore()) tab = 'reports';
   if (tab === 'po' && !u.isHO) tab = 'reports';
+  if (tab === 'goods' && !u.isHO) tab = 'reports';
   state.tab = tab; state.sel.clear();
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
   $('viewAssign').hidden = tab !== 'assign'; $('viewApprove').hidden = tab !== 'approve'; $('viewReports').hidden = tab !== 'reports';
   $('viewStore').hidden = tab !== 'store';
   $('viewPO').hidden = tab !== 'po';
+  $('viewGoods').hidden = tab !== 'goods';
+  if (tab === 'goods') renderGoods();
   if (tab === 'po') renderPO(true);
   if (tab === 'reports') renderReports();
   if (tab === 'store') renderStore(true);
@@ -289,6 +294,7 @@ async function refresh(fresh, withMe) {
   if (u.isHO && (state.tab === 'po' || state.po)) { want.po = { v: state.po?.v || '' }; if (!state.vendors) want.vendors = true; }
   if (state.tab === 'reports' || state.reports) want.reports = { v: state.reports?.v || '' };
   if ((state.tab === 'reports' && state.rep.type === 'dec') || state.dec) want.dec = { v: state.dec?.v || '' };
+  if (state.tab === 'goods' || (state.tab === 'reports' && state.rep.type === 'gs') || state.goods) want.goods = { v: state.goods?.v || '' };
   if (hasStore() && st.unit && (state.tab === 'store' || st.data)) {
     want.store = { unit: st.unit, v: st.byUnit[st.unit] ? st.byUnit[st.unit].v : '' };
     if (!st.base) want.base = true;
@@ -316,7 +322,7 @@ function applySync(r, unit) {
     if (changed && !$('app').hidden) {   // roles or units changed since last time
       setupChrome();
       const t = state.tab;
-      if ((t === 'assign' && !me.user.isHO) || (t === 'po' && !me.user.isHO) || (t === 'approve' && !me.user.isApprover) || (t === 'store' && !hasStore())) state.tab = null;
+      if ((t === 'assign' && !me.user.isHO) || ((t === 'po' || t === 'goods') && !me.user.isHO) || (t === 'approve' && !me.user.isApprover) || (t === 'store' && !hasStore())) state.tab = null;
     }
   });
   take('ho', (p) => (state.ho = p));
@@ -324,6 +330,7 @@ function applySync(r, unit) {
   // "same" = nothing changed since the copy here: keep it, just update its "as of" time
   take('reports', (p) => { if (!p.same) state.reports = p.reports; else if (state.reports && p.asOf) state.reports.asOf = p.asOf; state.repAt = Date.now(); });
   take('dec', (p) => { if (!p.same) state.dec = Object.assign({}, p.decisions, { lines: unpack(p.decisions.lines) }); else if (state.dec && p.asOf) state.dec.asOf = p.asOf; state.decAt = Date.now(); });
+  take('goods', (p) => { if (!p.same) state.goods = p; else if (state.goods && p.asOf) state.goods.asOf = p.asOf; });
   take('store', (p) => putStore(unit || p.unit, p));
   take('stores', (all) => Object.entries(all).forEach(([u, p]) => { if (!p.error) putStore(u, p); }));
   take('base', (p) => (state.store.base = p));
@@ -369,6 +376,7 @@ function render() {
   if (state.tab === 'store') renderStore();
   if (state.po) $('tabPO').querySelector('.count').textContent = state.po.lines.length || '';
   if (state.tab === 'po') renderPO();
+  if (state.tab === 'goods') renderGoods();
 }
 
 // ---------- reports ----------
@@ -398,8 +406,9 @@ function fillSelect(id, first, values, current) {
 function renderReports() {
   const R = state.reports, f = state.rep;
   document.querySelectorAll('[data-rtype]').forEach((b) => b.classList.toggle('on', b.dataset.rtype === f.type));
-  $('poReport').hidden = f.type === 'dec'; $('viewDecisions').hidden = f.type !== 'dec';
+  $('poReport').hidden = f.type === 'dec' || f.type === 'gs'; $('viewDecisions').hidden = f.type !== 'dec'; $('viewGoodsRep').hidden = f.type !== 'gs';
   if (f.type === 'dec') return renderDecisions();
+  if (f.type === 'gs') return renderGoodsRep();
   document.querySelectorAll('[data-rview]').forEach((b) => b.classList.toggle('on', b.dataset.rview === f.view));
   $('fSort').hidden = f.view !== 'list';
   if (!R) { $('repBody').innerHTML = '<p class="empty">Loading report…</p>'; return; }
@@ -579,6 +588,18 @@ function exportData(which) {
       pdfCols: [0, 1, 2, 3, 4, 6, 7, 8, 10, 11, 12],
     };
   }
+  if (which === 'gs' || which === 'gsel') {
+    const rows = which === 'gs' ? (state.gsRows || []) : goodsSelected();
+    const f = state.gsf;
+    return {
+      title: 'Status of goods', file: `Status of goods ${stamp}`, money: 6,
+      filters: which === 'gs' ? filterText([['Cluster', f.cluster], ['Unit', f.unit], ['Status', f.st], ['Search', f.q.trim()]]) : rows.length + ' selected PO' + (rows.length === 1 ? '' : 's'),
+      head: ['#', 'PO No', 'PO date', 'Unit', 'Cluster', 'Vendor', 'Amount', 'Items', 'Status of goods', 'Remark', 'Updated', 'Updated by', 'Document'],
+      body: rows.map((p, i) => [i + 1, p.po, fmtDate(p.date), p.unit, p.cluster, p.vendor, Math.round(p.amount), p.itemNames.join(', ') + (p.items > p.itemNames.length ? ` and ${p.items - p.itemNames.length} more` : ''),
+        p.g ? p.g.st : 'Not updated', p.g ? p.g.rm : '', p.g ? p.g.at : '', p.g ? p.g.by : '', p.g && p.g.doc ? p.g.doc : '']),
+      pdfCols: [0, 1, 2, 3, 5, 6, 7, 8, 9, 10],
+    };
+  }
   const f = state.rep, rows = (state.repRows || []).slice();
   const s = f.sort;
   rows.sort((a, b) => s === 'new' ? b.date.localeCompare(a.date) : s === 'amt' ? b.amount - a.amount :
@@ -594,10 +615,11 @@ function exportData(which) {
   };
 }
 
-async function download(which, fmt) {
+async function download(which, fmt, share) {
   const d = exportData(which);
-  if (!d.body.length) return toast('Nothing to download: no lines match these filters.', true);
-  toast(`Preparing ${fmt === 'xlsx' ? 'Excel' : 'PDF'}…`);
+  if (!d.body.length) return toast('Nothing to ' + (share ? 'share' : 'download') + ': no lines match these filters.', true);
+  toast(`Preparing ${fmt === 'xlsx' ? 'Excel' : fmt === 'png' ? 'snapshot' : 'PDF'}…`);
+  if (fmt === 'png') return snapshotTable(d.title, d.filters + ' · ' + d.body.length + ' rows', d.pdfCols.map((i) => d.head[i]), d.body.map((r) => d.pdfCols.map((i) => (i === d.money ? inr(r[i]) : r[i]))), d.file + '.png');
   try { await loadLibs(fmt); } catch (e) { return toast(e.message, true); }
   if (fmt === 'xlsx') {
     const XLSX = window.XLSX;
@@ -607,6 +629,7 @@ async function download(which, fmt) {
     ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 3, c: 0 }, e: { r: 3 + d.body.length, c: d.head.length - 1 } }) };
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, d.title.slice(0, 31));
+    if (share) return shareFile(new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), d.file + '.xlsx');
     XLSX.writeFile(wb, d.file + '.xlsx');
   } else {
     const { jsPDF } = window.jspdf;
@@ -620,8 +643,169 @@ async function download(which, fmt) {
       margin: { left: 30, right: 30 },
       didDrawPage: () => { doc.setFontSize(8); doc.setTextColor(120); doc.text('Page ' + doc.internal.getNumberOfPages(), 780, 580); },
     });
+    if (share) return shareFile(doc.output('blob'), d.file + '.pdf');
     doc.save(d.file + '.pdf');
   }
+}
+
+// ---------- snapshot (picture) of any table ----------
+function snapshotTable(title, sub, head, body, name) {
+  const MAXR = 150, rows = body.slice(0, MAXR).map((r) => r.map((c) => String(c ?? '')));
+  if (body.length > MAXR) sub += ` · first ${MAXR} rows shown (use PDF/Excel for all)`;
+  const cv = document.createElement('canvas'), g = cv.getContext('2d');
+  g.font = '13px system-ui, sans-serif';
+  const W = head.map((h, j) => Math.min(260, Math.max(36, g.measureText(h).width + 18, ...rows.map((r) => g.measureText(r[j]).width + 14))));
+  const pad = 10, rowH = 30, top = 76, sc = 2;
+  const width = Math.max(560, W.reduce((a, b) => a + b, 0) + pad * 2), height = top + rowH * (rows.length + 1) + pad * 2;
+  cv.width = width * sc; cv.height = height * sc; g.scale(sc, sc);
+  g.fillStyle = '#fff'; g.fillRect(0, 0, width, height);
+  g.fillStyle = '#111'; g.font = 'bold 18px system-ui, sans-serif'; g.fillText('Summit Procurement - ' + title, pad, 30);
+  g.fillStyle = '#555'; g.font = '12px system-ui, sans-serif'; g.fillText(sub.length > 160 ? sub.slice(0, 157) + '…' : sub, pad, 52);
+  const fit = (t, w) => { t = String(t); if (g.measureText(t).width <= w) return t; while (t && g.measureText(t + '…').width > w) t = t.slice(0, -1); return t + '…'; };
+  [head, ...rows].forEach((r, i) => {
+    const y = top + i * rowH;
+    g.fillStyle = i === 0 ? '#1b5e20' : i % 2 ? '#fff' : '#f2f6f2'; g.fillRect(pad, y, width - pad * 2, rowH);
+    g.fillStyle = i === 0 ? '#fff' : '#111'; g.font = (i === 0 ? 'bold ' : '') + '13px system-ui, sans-serif';
+    let x = pad;
+    r.forEach((c, j) => { g.fillText(fit(c, W[j] - 10), x + 5, y + 20); x += W[j]; });
+  });
+  g.strokeStyle = '#d0d6e0'; g.strokeRect(pad, top, width - pad * 2, rowH * (rows.length + 1));
+  cv.toBlob((b) => (b ? shareFile(b, name) : toast('Could not make the snapshot.', true)), 'image/png');
+}
+
+// ---------- PO / invoice / document files: download or share the real file ----------
+async function driveFile(url, name, share) {
+  toast('Getting the file…');
+  try {
+    const r = await api('fileData', { url });
+    const bytes = Uint8Array.from(atob(r.data), (c) => c.charCodeAt(0));
+    const ext = (r.name.match(/\.\w{2,4}$/) || [''])[0] || (r.type === 'application/pdf' ? '.pdf' : r.type === 'image/png' ? '.png' : r.type === 'image/jpeg' ? '.jpg' : '');
+    const blob = new Blob([bytes], { type: r.type || 'application/octet-stream' });
+    const file = String(name || r.name).replace(/[\\/:*?"<>|]/g, '-') + (String(name || '').endsWith(ext) ? '' : ext);
+    if (share) return shareFile(blob, file);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = file; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch (e) {
+    // could not fetch the file through the app: fall back to the Drive link
+    if (share && navigator.share) { try { await navigator.share({ title: name, text: name, url }); return; } catch (x) { if (x.name === 'AbortError') return; } }
+    if (share) { window.open('https://wa.me/?text=' + encodeURIComponent(name + ': ' + url), '_blank', 'noopener'); return; }
+    window.open(dlLink(url), '_blank', 'noopener');
+  }
+}
+
+// ---------- HO: status of goods ----------
+const NOT_UPDATED = 'Not updated';
+const docBtns = (doc, po) => doc ? `<a class="btn sm" href="${esc(doc)}" target="_blank" rel="noopener">View document</a><button type="button" class="btn sm" data-fdl="${esc(doc)}" data-fname="Goods status ${esc(po)}">Download</button><button type="button" class="btn sm" data-fshare="${esc(doc)}" data-fname="Goods status ${esc(po)}">Share</button>` : '';
+function goodsFiltered() {
+  const G = state.goods, f = state.gf, q = f.q.trim().toLowerCase();
+  return (G?.list || []).filter((p) => (!f.unit || p.unit === f.unit) && (!f.st || (p.g ? p.g.st : NOT_UPDATED) === f.st) &&
+    (!q || [p.po, p.vendor, p.unit, ...p.itemNames, p.g ? p.g.rm : ''].join(' ').toLowerCase().includes(q)));
+}
+function goodsSelected() { return (state.goods?.list || []).filter((p) => state.gsel.has(p.po)); }
+function renderGoods(force) {
+  const G = state.goods, f = state.gf, body = $('goodsBody');
+  if (!G) { body.innerHTML = '<p class="empty">Loading… this can take a few seconds.</p>'; return; }
+  if (!force && state.gform.po && body.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;   // keep what is being typed
+  if (!force && state.gform.po && $('gFile') && $('gFile').files.length) return;
+  const units = [...new Set(G.list.map((p) => p.unit))].sort((a, b) => a.localeCompare(b));
+  f.unit = fillSelect('gUnit', 'All units', units.map((u) => [u, u]), f.unit);
+  f.st = fillSelect('gStatus', 'All statuses', [NOT_UPDATED, ...G.statuses].map((x) => [x, x]), f.st);
+  if ($('gSearch').value !== f.q) $('gSearch').value = f.q;
+  const rows = goodsFiltered();
+  $('gAll').checked = rows.length > 0 && rows.every((p) => state.gsel.has(p.po));
+  $('gCount').textContent = state.gsel.size ? state.gsel.size + ' selected' : '';
+  $('goodsAsOf').textContent = `${rows.length} PO${rows.length === 1 ? '' : 's'} · POs made from ${fmtDate(REP_FROM_ISO)} · updated ${G.asOf}`;
+  const ro = readOnly();
+  body.innerHTML = rows.length ? rows.map((p) => {
+    const open = state.gform.po === p.po, g = p.g, fm = state.gform;
+    const more = p.items > p.itemNames.length ? ` and ${p.items - p.itemNames.length} more` : '';
+    return `<article class="card">
+      <div class="top"><label class="selall"><input type="checkbox" data-gsel="${esc(p.po)}" ${state.gsel.has(p.po) ? 'checked' : ''}> <b>PO ${esc(p.po)}</b></label>${p.amount ? `<span class="amt">${inr(p.amount)}</span>` : ''}</div>
+      <div class="sub">${esc(p.unit)} · <b>${esc(p.vendor || 'Vendor not given')}</b> · ${fmtDate(p.date)} · ${daysSince(p.date)} days${p.link ? ` · <a href="${esc(p.link)}" target="_blank" rel="noopener">View PO</a>` : ''}</div>
+      <div class="items">${esc(p.itemNames.join(', '))}${more}</div>
+      <div class="sub">Received at unit: ${p.rcv}/${p.items} item${p.items > 1 ? 's' : ''}</div>
+      <div class="sub" style="margin-top:4px">Status of goods: <span class="gst">${esc(g ? g.st : NOT_UPDATED)}</span>${g && g.rm ? ' · ' + esc(g.rm) : ''}${g ? ` <span class="sub">(${esc(g.at)}, ${esc(g.by)})</span>` : ''}</div>
+      ${g && g.doc ? `<div class="filelinks">${docBtns(g.doc, p.po)}</div>` : ''}
+      ${open ? `<form class="gform" id="gForm" data-po="${esc(p.po)}">
+        <label class="field">Status<select name="st" required><option value="">Choose…</option>${G.statuses.map((x) => `<option ${x === (fm.st ?? g?.st) ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>
+        <label class="field">Document (photo or PDF)<input id="gFile" name="file" type="file" accept="image/*,application/pdf"></label>
+        <label class="field full">Remark<input name="rm" maxlength="300" value="${esc(fm.rm ?? (g ? g.rm : ''))}" placeholder="e.g. Dispatched by transport, LR no. 1234"></label>
+        <div class="formfoot full"><button type="button" class="btn ghost" data-gcancel>Cancel</button><button type="submit" class="btn primary">Save status</button></div>
+      </form>` : (ro ? '' : `<div class="formfoot" style="margin:8px 0 0"><span></span><button class="btn primary" data-gopen="${esc(p.po)}">Update status</button></div>`)}
+    </article>`;
+  }).join('') : '<p class="empty">No POs match these filters.</p>';
+}
+async function saveGoods(form) {
+  if (!noPreview()) return;
+  const po = form.dataset.po, st = form.st.value, rm = form.rm.value.trim(), f = form.file.files[0];
+  if (!st) return toast('Choose the status of the goods.', true);
+  let file = null;
+  try { if (f) file = await fileForUpload(f); } catch (e) { return toast(e.message, true); }
+  await run('Saving status…', async () => {
+    const r = await api('goodsSave', { pos: [po], status: st, remark: rm, file });
+    const p = (state.goods?.list || []).find((x) => x.po === po);
+    if (p) p.g = { st, rm, doc: r.doc || (p.g && p.g.doc) || '', at: 'just now', by: state.me.user.name };
+    state.gform = {}; state.goods.v = '';
+    toast('Status of goods saved.');
+    renderGoods(true);
+    refresh();
+  });
+}
+function goodsClick(e) {
+  const o = e.target.closest('[data-gopen]');
+  if (o) { state.gform = { po: o.dataset.gopen }; renderGoods(true); return true; }
+  if (e.target.closest('[data-gcancel]')) { state.gform = {}; renderGoods(true); return true; }
+  return false;
+}
+function setupGoodsEvents() {
+  $('gUnit').onchange = (e) => { state.gf.unit = e.target.value; renderGoods(true); };
+  $('gStatus').onchange = (e) => { state.gf.st = e.target.value; renderGoods(true); };
+  $('gSearch').oninput = (e) => { state.gf.q = e.target.value; renderGoods(true); };
+  $('gAll').onchange = (e) => { goodsFiltered().forEach((p) => (e.target.checked ? state.gsel.add(p.po) : state.gsel.delete(p.po))); renderGoods(true); };
+  $('gPdf').onclick = () => (state.gsel.size ? download('gsel', 'pdf', true) : toast('Tick the POs first.', true));
+  $('gSnap').onclick = () => (state.gsel.size ? download('gsel', 'png', true) : toast('Tick the POs first.', true));
+  document.addEventListener('change', (e) => {
+    const t = e.target;
+    if (t.matches('input[type=checkbox][data-gsel]')) { t.checked ? state.gsel.add(t.dataset.gsel) : state.gsel.delete(t.dataset.gsel); renderGoods(true); }
+    else if (t.closest('#gForm') && t.name === 'st') state.gform.st = t.value;
+  });
+  document.addEventListener('input', (e) => { if (e.target.closest('#gForm') && e.target.name === 'rm') state.gform.rm = e.target.value; });
+  document.addEventListener('submit', (e) => { if (e.target.id === 'gForm') { e.preventDefault(); saveGoods(e.target); } });
+  [['gsCluster', 'cluster'], ['gsUnit', 'unit'], ['gsStatus', 'st']].forEach(([id, k]) =>
+    ($(id).onchange = (e) => { state.gsf[k] = e.target.value; if (k === 'cluster') state.gsf.unit = ''; renderGoodsRep(); }));
+  $('gsSearch').oninput = (e) => { state.gsf.q = e.target.value; renderGoodsRep(); };
+  $('gsClear').onclick = () => { Object.assign(state.gsf, { cluster: '', unit: '', st: '', q: '' }); renderGoodsRep(); };
+}
+const REP_FROM_ISO = '2026-04-01';
+
+// ---------- Reports: status of goods ----------
+function renderGoodsRep() {
+  const G = state.goods, f = state.gsf;
+  if (!G) { $('gsBody').innerHTML = '<p class="empty">Loading report… this can take a few seconds.</p>'; return; }
+  const clusters = [...new Set(G.list.map((p) => p.cluster))];
+  f.cluster = fillSelect('gsCluster', 'All clusters', clusters.map((c) => [c, c]), f.cluster);
+  const units = [...new Set(G.list.filter((p) => !f.cluster || p.cluster === f.cluster).map((p) => p.unit))].sort((a, b) => a.localeCompare(b));
+  f.unit = fillSelect('gsUnit', 'All units', units.map((u) => [u, u]), f.unit);
+  f.st = fillSelect('gsStatus', 'All statuses', [NOT_UPDATED, ...G.statuses].map((x) => [x, x]), f.st);
+  if ($('gsSearch').value !== f.q) $('gsSearch').value = f.q;
+  const q = f.q.trim().toLowerCase();
+  const rows = G.list.filter((p) => (!f.cluster || p.cluster === f.cluster) && (!f.unit || p.unit === f.unit) && (!f.st || (p.g ? p.g.st : NOT_UPDATED) === f.st) &&
+    (!q || [p.po, p.vendor, p.unit, ...p.itemNames, p.g ? p.g.rm : ''].join(' ').toLowerCase().includes(q)));
+  state.gsRows = rows;
+  $('gsTotal').textContent = `${rows.length} PO${rows.length === 1 ? '' : 's'} · ${inr(rows.reduce((a, p) => a + p.amount, 0))}`;
+  $('gsClear').hidden = !(f.cluster || f.unit || f.st || f.q);
+  $('gsAsOf').textContent = `Status of goods · POs made from ${fmtDate(REP_FROM_ISO)} · updated ${G.asOf}`;
+  $('gsBody').innerHTML = rows.length ? rows.slice(0, 300).map((p) => {
+    const g = p.g, more = p.items > p.itemNames.length ? ` and ${p.items - p.itemNames.length} more` : '';
+    return `<article class="po">
+      <div class="top"><b>${esc(p.po)}</b><span class="amt">${inr(p.amount)}</span></div>
+      <div class="sub">${esc(p.unit)} <span class="sub">(${esc(p.cluster)})</span> · ${esc(p.vendor || 'No vendor')} · ${fmtDate(p.date)}</div>
+      <div class="items">${esc(p.itemNames.join(', '))}${more}</div>
+      <div class="sub">Status of goods: <span class="gst">${esc(g ? g.st : NOT_UPDATED)}</span>${g && g.rm ? ' · ' + esc(g.rm) : ''}${g ? ` <span class="sub">(${esc(g.at)}, ${esc(g.by)})</span>` : ''}</div>
+      <div class="filelinks">${p.link ? `<a class="btn sm" href="${esc(p.link)}" target="_blank" rel="noopener">View PO</a>` : ''}${g && g.doc ? docBtns(g.doc, p.po) : ''}</div>
+    </article>`;
+  }).join('') + (rows.length > 300 ? '<p class="sub">First 300 shown. Use the filters, or download for all.</p>' : '') : '<p class="empty">No POs match these filters.</p>';
 }
 
 // ---------- reason for rejection (max 10 words) ----------
@@ -1244,7 +1428,7 @@ function dlLink(u) {
   const m = String(u || '').match(/\/d\/([\w-]{20,})|[?&]id=([\w-]{20,})/);
   return m ? `https://drive.google.com/uc?export=download&id=${m[1] || m[2]}` : u;
 }
-const fileLinks = (u, what) => u ? `<a="${esc(dlLink(u))}" target="_blank" rel="noopener">Download ${what}</a>` : `<span class="sub">${what} file not found</span>`;
+const fileLinks = (u, what, name) => u ? `<button type="button" class="btn sm" data-fdl="${esc(u)}" data-fname="${esc(name || what)}">Download ${what}</button><button type="button" class="btn sm" data-fshare="${esc(u)}" data-fname="${esc(name || what)}">Share ${what}</button>` : `<span class="sub">${what} file not found</span>`;
 
 /** My requests → PO raised / Invoice uploaded: one card per PO. */
 function poListHtml(rows, invoiced) {
@@ -1265,7 +1449,7 @@ function poListHtml(rows, invoiced) {
         const ord = l.aq !== '' && l.aq != null ? l.aq : l.q;
         return esc(l.it) + ' (' + (invoiced ? 'recd ' + esc(l.rcv) : esc(ord)) + ' ' + esc(l.uom) + ')';
       }).join(', ')}</div>
-      <div class="sub" style="margin-top:6px">${fileLinks(g.pol, 'PO')}${invoiced ? ' · ' + fileLinks(iv && iv.l, 'invoice') : ''}</div>
+      <div class="filelinks">${fileLinks(g.pol, 'PO', 'PO ' + g.po)}${invoiced ? fileLinks(iv && iv.l, 'invoice', 'Invoice ' + g.po) : ''}</div>
     </article>`;
   }).join('');
 }
@@ -1596,6 +1780,8 @@ $('tabApprove').onclick = () => setTab('approve');
 $('tabReports').onclick = () => setTab('reports');
 $('tabStore').onclick = () => setTab('store');
 $('tabPO').onclick = () => setTab('po');
+$('tabGoods').onclick = () => setTab('goods');
+setupGoodsEvents();
 [['dApprover', 'approver'], ['dStatus', 'status'], ['dCluster', 'cluster'], ['dUnit', 'unit'], ['dMonth', 'month']].forEach(([id, k]) =>
   ($(id).onchange = (e) => { state.df[k] = e.target.value; if (k === 'cluster') state.df.unit = ''; state.decShow = 200; renderDecisions(); }));
 $('dSearch').oninput = (e) => { state.df.q = e.target.value; state.decShow = 200; renderDecisions(); };
@@ -1604,7 +1790,7 @@ document.querySelectorAll('[data-dview]').forEach((b) => (b.onclick = () => { st
 $('viewAsPick').onchange = (e) => changeViewAs(e.target.value);
 document.querySelectorAll('[data-rtype]').forEach((b) => (b.onclick = () => {
   state.rep.type = b.dataset.rtype; state.rep.unit = ''; renderReports();
-  if (b.dataset.rtype === 'dec' && !state.dec) refresh();
+  if ((b.dataset.rtype === 'dec' && !state.dec) || (b.dataset.rtype === 'gs' && !state.goods)) refresh();
 }));
 document.querySelectorAll('[data-rview]').forEach((b) => (b.onclick = () => { state.rep.view = b.dataset.rview; renderReports(); }));
 [['fCluster', 'cluster'], ['fUnit', 'unit'], ['fVendor', 'vendor'], ['fMonth', 'month'], ['fAge', 'age'], ['fSort', 'sort']].forEach(([id, k]) =>
@@ -1637,6 +1823,13 @@ document.addEventListener('input', (e) => { if (e.target.matches('[data-qty]')) 
 document.addEventListener('click', (e) => {
   const dl = e.target.closest('[data-dl]');
   if (dl) return download(dl.dataset.dl, dl.dataset.fmt);
+  const sh = e.target.closest('[data-share]');
+  if (sh) return download(sh.dataset.share, sh.dataset.fmt, true);
+  const fd = e.target.closest('[data-fdl]');
+  if (fd) return driveFile(fd.dataset.fdl, fd.dataset.fname, false);
+  const fs = e.target.closest('[data-fshare]');
+  if (fs) return driveFile(fs.dataset.fshare, fs.dataset.fname, true);
+  if (goodsClick(e)) return;
   const ds = e.target.closest('[data-dstatus]');
   if (ds) { state.df.status = state.df.status === ds.dataset.dstatus ? '' : ds.dataset.dstatus; state.decShow = 200; return renderDecisions(); }
   const dc = e.target.closest('[data-dcell-by]');

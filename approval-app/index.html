@@ -10,8 +10,8 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Summit Procurement">
-<link rel="stylesheet" href="styles.css?v=20261111n">
-<script src="config.js?v=20261111n"></script>
+<link rel="stylesheet" href="styles.css?v=20261111s">
+<script src="config.js?v=20261111s"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
@@ -49,6 +49,7 @@
       <button id="tabStore" data-tab="store" hidden>Store <span class="count"></span></button>
       <button id="tabAssign" data-tab="assign" hidden>Assign approver <span class="count"></span></button>
       <button id="tabPO" data-tab="po" hidden>Make PO <span class="count"></span></button>
+      <button id="tabGoods" data-tab="goods" hidden>Status of goods</button>
       <button id="tabApprove" data-tab="approve" hidden>To approve <span class="count"></span></button>
       <button id="tabReports" data-tab="reports">Reports</button>
     </nav>
@@ -79,6 +80,23 @@
       </div>
       <div id="poBody"><p class="empty">Loading…</p></div>
       <p class="sub asof" id="poAsOf"></p>
+    </div>
+
+    <!-- HO in-charge: status of goods of every PO made, with a document -->
+    <div id="viewGoods" hidden>
+      <div class="assignbar">
+        <select id="gUnit" aria-label="Unit"></select>
+        <select id="gStatus" aria-label="Status"></select>
+        <input id="gSearch" type="search" placeholder="Search PO, vendor or item" aria-label="Search">
+      </div>
+      <div class="assignbar">
+        <label class="selall"><input type="checkbox" id="gAll"> Select all</label>
+        <span id="gCount" class="sub"></span>
+        <button id="gPdf" class="btn sm">PDF</button>
+        <button id="gSnap" class="btn sm">Snapshot</button>
+      </div>
+      <div id="goodsBody"><p class="empty">Loading…</p></div>
+      <p class="sub asof" id="goodsAsOf"></p>
     </div>
 
     <!-- HO in-charge -->
@@ -121,6 +139,7 @@
       <div class="seg" role="group" aria-label="Report">
         <button data-rtype="nr" class="on">Material not received</button>
         <button data-rtype="ip">Invoice pending</button>
+        <button data-rtype="gs">Status of goods</button>
         <button data-rtype="dec">Approval report</button>
       </div>
       <div id="poReport">
@@ -161,6 +180,10 @@
         <span class="sub">Download</span>
         <button class="btn sm" data-dl="rep" data-fmt="xlsx">Excel</button>
         <button class="btn sm" data-dl="rep" data-fmt="pdf">PDF</button>
+        <span class="sub">Share</span>
+        <button class="btn sm" data-share="rep" data-fmt="pdf">PDF</button>
+        <button class="btn sm" data-share="rep" data-fmt="xlsx">Excel</button>
+        <button class="btn sm" data-share="rep" data-fmt="png">Snapshot</button>
       </div>
       <p class="sub asof" id="repAsOf"></p>
       </div>
@@ -188,8 +211,34 @@
         <span class="sub">Download</span>
         <button class="btn sm" data-dl="dec" data-fmt="xlsx">Excel</button>
         <button class="btn sm" data-dl="dec" data-fmt="pdf">PDF</button>
+        <span class="sub">Share</span>
+        <button class="btn sm" data-share="dec" data-fmt="pdf">PDF</button>
+        <button class="btn sm" data-share="dec" data-fmt="xlsx">Excel</button>
+        <button class="btn sm" data-share="dec" data-fmt="png">Snapshot</button>
       </div>
       <p class="sub asof" id="decAsOf"></p>
+    </div>
+
+    <!-- Status of goods report -->
+    <div id="viewGoodsRep" hidden>
+      <div class="filters">
+        <select id="gsCluster" aria-label="Cluster"></select>
+        <select id="gsUnit" aria-label="Unit"></select>
+        <select id="gsStatus" aria-label="Status"></select>
+        <input id="gsSearch" type="search" placeholder="Search PO, vendor, item or remark" aria-label="Search">
+      </div>
+      <div class="rbar"><span id="gsTotal" class="sub"></span><button id="gsClear" class="btn sm ghost">Clear filters</button></div>
+      <div id="gsBody"><p class="empty">Loading report…</p></div>
+      <div class="dl" aria-label="Download this report">
+        <span class="sub">Download</span>
+        <button class="btn sm" data-dl="gs" data-fmt="xlsx">Excel</button>
+        <button class="btn sm" data-dl="gs" data-fmt="pdf">PDF</button>
+        <span class="sub">Share</span>
+        <button class="btn sm" data-share="gs" data-fmt="pdf">PDF</button>
+        <button class="btn sm" data-share="gs" data-fmt="xlsx">Excel</button>
+        <button class="btn sm" data-share="gs" data-fmt="png">Snapshot</button>
+      </div>
+      <p class="sub asof" id="gsAsOf"></p>
     </div>
     </div>
   </section>
@@ -209,6 +258,6 @@
 </div>
 
 <div id="toast" class="toast" role="status" hidden></div>
-<script type="module" src="app.js?v=20261111n"></script>
+<script type="module" src="app.js?v=20261111s"></script>
 </body>
 </html>
