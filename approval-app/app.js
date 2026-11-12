@@ -11,7 +11,7 @@ const state = {
   dec: null, decAt: 0, decShow: 200,
   df: { view: 'list', approver: '', status: '', cluster: '', unit: '', month: '', q: '' },
   // storekeeper
-  goods: null, gf: { unit: '', vendor: '', st: '', q: '' }, gsel: new Set(), gform: {}, gsf: { cluster: '', unit: '', vendor: '', st: '', q: '' },
+  goods: null, gf: { unit: '', vendor: '', st: '', q: '' }, hi: { unit: '', vendor: '', form: null }, gsel: new Set(), gform: {}, gsf: { cluster: '', unit: '', vendor: '', st: '', q: '' },
   po: null, vendors: null, poSel: new Set(), poPrice: {}, poForm: { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: '', shipTo: '', newVendor: null }, poUnit: '', poDone: null,
   store: { unit: '', view: 'raise', data: null, meta: {}, draft: null, rq: {}, inv: null, filter: 'pending', q: '', ven: '', show: 150, done: null, formUnit: '',
            byUnit: {}, raw: {}, base: null, prefetchedAt: 0, prefetching: false },
@@ -186,6 +186,7 @@ function setupChrome() {
   $('tabAssign').hidden = !u.isHO; $('tabApprove').hidden = !u.isApprover;
   $('tabPO').hidden = !u.isHO;
   $('tabGoods').hidden = !u.isHO;
+  $('tabHoInv').hidden = !u.isHO;
   $('tabStore').hidden = !hasStore();
   setupStoreUnits();
   $('approverPick').innerHTML = '<option value="">Choose approver…</option>' + state.me.approvers.map((n) => `<option>${esc(n)}</option>`).join('');
@@ -266,7 +267,7 @@ function setTab(tab, withMe) {
   if (tab === 'approve' && !u.isApprover) tab = u.isHO ? 'assign' : 'reports';
   if (tab === 'store' && !hasStore()) tab = 'reports';
   if (tab === 'po' && !u.isHO) tab = 'reports';
-  if (tab === 'goods' && !u.isHO) tab = 'reports';
+  if ((tab === 'goods' || tab === 'hoinv') && !u.isHO) tab = 'reports';
   state.tab = tab; state.sel.clear();
   if (tab !== 'store' || state.store.view !== 'reports') unmountStoreReports();
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
@@ -274,6 +275,8 @@ function setTab(tab, withMe) {
   $('viewStore').hidden = tab !== 'store';
   $('viewPO').hidden = tab !== 'po';
   $('viewGoods').hidden = tab !== 'goods';
+  $('viewHoInv').hidden = tab !== 'hoinv';
+  if (tab === 'hoinv') renderHoInv(true);
   if (tab === 'goods') renderGoods();
   if (tab === 'po') renderPO(true);
   if (tab === 'reports') renderReports();
@@ -293,7 +296,7 @@ async function refresh(fresh, withMe) {
   const want = { ho: u.isHO, mine: u.isApprover };
   if (withMe) want.me = true;
   if (u.isHO && (state.tab === 'po' || state.po)) { want.po = { v: state.po?.v || '' }; if (!state.vendors) want.vendors = true; }
-  const repOn = state.tab === 'reports' || (state.tab === 'store' && st.view === 'reports');
+  const repOn = state.tab === 'reports' || state.tab === 'hoinv' || (state.tab === 'store' && st.view === 'reports');
   if (repOn || state.reports) want.reports = { v: state.reports?.v || '' };
   if ((repOn && state.rep.type === 'dec') || state.dec) want.dec = { v: state.dec?.v || '' };
   if (state.tab === 'goods' || (repOn && state.rep.type === 'gs') || state.goods) want.goods = { v: state.goods?.v || '' };
@@ -324,7 +327,7 @@ function applySync(r, unit) {
     if (changed && !$('app').hidden) {   // roles or units changed since last time
       setupChrome();
       const t = state.tab;
-      if ((t === 'assign' && !me.user.isHO) || ((t === 'po' || t === 'goods') && !me.user.isHO) || (t === 'approve' && !me.user.isApprover) || (t === 'store' && !hasStore())) state.tab = null;
+      if ((t === 'assign' && !me.user.isHO) || ((t === 'po' || t === 'goods' || t === 'hoinv') && !me.user.isHO) || (t === 'approve' && !me.user.isApprover) || (t === 'store' && !hasStore())) state.tab = null;
     }
   });
   take('ho', (p) => (state.ho = p));
@@ -379,6 +382,7 @@ function render() {
   if (state.po) $('tabPO').querySelector('.count').textContent = state.po.lines.length || '';
   if (state.tab === 'po') renderPO();
   if (state.tab === 'goods') renderGoods();
+  if (state.tab === 'hoinv') renderHoInv();
 }
 
 // ---------- reports ----------
@@ -792,6 +796,69 @@ function setupGoodsEvents() {
   $('gsClear').onclick = () => { Object.assign(state.gsf, { cluster: '', unit: '', vendor: '', st: '', q: '' }); renderGoodsRep(); };
 }
 const REP_FROM_ISO = '2026-04-01';
+
+// ---------- HO: upload invoice (any unit), with unit-wise and vendor-wise drop-downs ----------
+function renderHoInv(force) {
+  const H = state.hi, body = $('hiBody'), R = state.reports;
+  if (!R) { body.innerHTML = '<p class="empty">Loading…</p>'; return; }
+  if (!force && H.form && body.querySelector('#hoInvForm')) return;   // don't wipe what is being typed
+  const all = R.invoicePending;
+  H.unit = fillSelect('hiUnit', 'All units', [...new Set(all.map((p) => p.unit))].sort((a, b) => a.localeCompare(b)).map((u) => [u, u]), H.unit);
+  const vend = [...new Set(all.filter((p) => !H.unit || p.unit === H.unit).map((p) => p.vendor || 'No vendor'))].sort((a, b) => a.localeCompare(b));
+  H.vendor = fillSelect('hiVendor', 'All vendors', vend.map((v) => [v, v]), H.vendor);
+  const rows = all.filter((p) => (!H.unit || p.unit === H.unit) && (!H.vendor || (p.vendor || 'No vendor') === H.vendor))
+    .slice().sort((a, b) => a.date.localeCompare(b.date));
+  $('hiAsOf').textContent = `${rows.length} PO${rows.length === 1 ? '' : 's'} with invoice pending · updated ${R.asOf}`;
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  body.innerHTML = rows.length ? rows.map((p) => {
+    const f = H.form && H.form.po === p.po ? H.form : null;
+    const more = p.items > p.itemNames.length ? ` and ${p.items - p.itemNames.length} more` : '';
+    return `<article class="card">
+      <div class="top"><h3>PO ${esc(p.po)}</h3><span class="amt">${inr(p.amount)}</span></div>
+      <div class="sub">${esc(p.unit)} · ${esc(p.vendor || 'No vendor')} · ${fmtDate(p.date)} · ${p.items} item${p.items > 1 ? 's' : ''}</div>
+      ${p.itemNames.length ? `<div class="items">${esc(p.itemNames.join(', '))}${more}</div>` : ''}
+      ${f ? `<form class="grid2" id="hoInvForm" data-po="${esc(p.po)}">
+        <label class="field full">Invoice photo or PDF<input name="file" type="file" accept="image/*,application/pdf" required></label>
+        <p class="field full aihint">${f.ai ? esc(f.ai) : '✨ Choose the invoice first – AI will fill the number, date and total for you.'}</p>
+        <label class="field">Invoice number<input name="no" maxlength="40" required value="${esc(f.no || '')}"></label>
+        <label class="field">Invoice date<input name="date" type="date" max="${today}" required value="${esc(f.date || today)}"></label>
+        <label class="field">Invoice total (₹)<input name="amount" type="number" inputmode="decimal" min="0" step="any" required value="${esc(f.amount ?? (p.amount || ''))}"></label>
+        <div class="formfoot field full"><button type="button" class="btn ghost" data-hicancel>Cancel</button><button type="submit" class="btn primary">Upload invoice</button></div>
+      </form>` : `<div class="formfoot" style="margin:8px 0 0"><span></span><button class="btn primary" data-hiopen="${esc(p.po)}">Upload invoice</button></div>`}
+    </article>`;
+  }).join('') : '<p class="empty">No invoice pending for these filters.</p>';
+}
+async function hoUploadInvoice(form) {
+  if (!noPreview()) return;
+  const po = form.dataset.po, no = form.no.value.trim(), date = form.date.value, amount = form.amount.value, file = form.file.files[0];
+  if (!no) return toast('Enter the invoice number.', true);
+  if (!date) return toast('Enter the invoice date.', true);
+  if (!(Number(amount) > 0)) return toast('Enter the invoice total.', true);
+  if (!file) return toast('Choose the invoice photo or PDF.', true);
+  run('storeInvoice', async () => {
+    let f;
+    try { f = await fileForUpload(file); } catch (e) { return toast(e.message, true); }
+    toast('Uploading invoice…');
+    await api('storeInvoice', { po, invoiceNo: no, date, amount: Number(amount), file: { type: f.type, data: f.data } });
+    state.hi.form = null;
+    if (state.reports) state.reports.invoicePending = state.reports.invoicePending.filter((p) => p.po !== po);
+    toast(`Invoice uploaded for PO ${po}.`);
+    renderHoInv(true);
+  });
+}
+function setupHoInvEvents() {
+  $('hiUnit').onchange = (e) => { state.hi.unit = e.target.value; state.hi.vendor = ''; renderHoInv(true); };
+  $('hiVendor').onchange = (e) => { state.hi.vendor = e.target.value; renderHoInv(true); };
+  const body = $('hiBody');
+  body.addEventListener('click', (e) => {
+    const o = e.target.closest('[data-hiopen]');
+    if (o) { state.hi.form = { po: o.dataset.hiopen }; renderHoInv(true); return; }
+    if (e.target.closest('[data-hicancel]')) { state.hi.form = null; renderHoInv(true); }
+  });
+  body.addEventListener('input', (e) => { const t = e.target; if (t.form && t.form.id === 'hoInvForm' && state.hi.form && t.name !== 'file') state.hi.form[t.name] = t.value; });
+  body.addEventListener('change', (e) => { const t = e.target; if (t.name === 'file' && t.form && t.form.id === 'hoInvForm' && t.files[0]) aiReadInvoice(t.form, t.files[0], () => state.hi.form); });
+  body.addEventListener('submit', (e) => { if (e.target.id === 'hoInvForm') { e.preventDefault(); hoUploadInvoice(e.target); } });
+}
 
 // ---------- Reports: status of goods ----------
 function renderGoodsRep() {
@@ -1561,23 +1628,25 @@ function saveReceived(po) {
 
 // AI: when the invoice is chosen, Gemini (on the server) reads the number, date and total and fills the form.
 // The storekeeper checks the values and can change any of them before uploading.
-async function aiReadInvoice(form, file) {
-  const hint = $('invAi'), po = form.dataset.po;
-  const say = (msg) => { if (hint) hint.textContent = msg; if (sv.inv && sv.inv.po === po) sv.inv.ai = msg; };
+async function aiReadInvoice(form, file, getSt = () => sv.inv) {
+  const hint = form.querySelector('.aihint'), po = form.dataset.po;
+  const cur = () => { const st = getSt(); return st && st.po === po ? st : null; };
+  const say = (msg) => { if (hint) hint.textContent = msg; if (cur()) cur().ai = msg; };
   let f;
   try { f = await fileForUpload(file); } catch (e) { return say(e.message); }
   say('✨ Reading the invoice with AI…');
   form.classList.add('aibusy');
   try {
     const r = await api('readInvoice', { file: { type: f.type, data: f.data } });
-    if (!form.isConnected || !sv.inv || sv.inv.po !== po) return;
+    const st = cur();
+    if (!form.isConnected || !st) return;
     const got = [];
-    if (r.invoiceNo) { form.no.value = r.invoiceNo; sv.inv.no = r.invoiceNo; got.push('number'); }
-    if (r.date) { form.date.value = r.date; sv.inv.date = r.date; got.push('date'); }
-    if (r.amount > 0) { form.amount.value = r.amount; sv.inv.amount = r.amount; got.push('total'); }
+    if (r.invoiceNo) { form.no.value = r.invoiceNo; st.no = r.invoiceNo; got.push('number'); }
+    if (r.date) { form.date.value = r.date; st.date = r.date; got.push('date'); }
+    if (r.amount > 0) { form.amount.value = r.amount; st.amount = r.amount; got.push('total'); }
     say(got.length ? `✨ AI filled the invoice ${got.join(', ')}. Please check before uploading.` : '✨ AI could not read the details. Please type them.');
   } catch (e) {
-    say('✨ ' + ((e && e.message) || 'AI could not read this invoice.') .replace(/^✨ /, ''));
+    say('✨ ' + ((e && e.message) || 'AI could not read this invoice.').replace(/^✨ /, ''));
   } finally { form.classList.remove('aibusy'); }
 }
 
@@ -1857,6 +1926,7 @@ $('tabStore').onclick = () => setTab('store');
 $('tabPO').onclick = () => setTab('po');
 $('tabGoods').onclick = () => setTab('goods');
 setupGoodsEvents();
+setupHoInvEvents();
 [['dApprover', 'approver'], ['dStatus', 'status'], ['dCluster', 'cluster'], ['dUnit', 'unit'], ['dMonth', 'month']].forEach(([id, k]) =>
   ($(id).onchange = (e) => { state.df[k] = e.target.value; if (k === 'cluster') state.df.unit = ''; state.decShow = 200; renderDecisions(); }));
 $('dSearch').oninput = (e) => { state.df.q = e.target.value; state.decShow = 200; renderDecisions(); };
