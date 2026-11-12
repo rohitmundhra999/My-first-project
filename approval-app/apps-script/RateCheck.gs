@@ -5,7 +5,7 @@
 // - old PO PDFs are read once by AI in the background (rateBackfill, hourly trigger; switches itself off when done)
 
 const RATE_CFG = { TAB: 'ITEM RATES', HEAD: ['Date', 'PO No', 'Unit', 'Vendor', 'Item', 'Qty', 'UOM', 'Rate', 'GST %', 'Source'],
-  CACHE: 'rate_index_' + MODE, BF_MODELS: ['gemini-3.1-flash-lite', 'gemini-3.5-flash'], BF_PER_RUN: 25 };
+  CACHE: 'rate_index_' + MODE, BF_MODELS: ['gemini-3.1-flash-lite', 'gemini-3.5-flash'], BF_PER_RUN: 150, BF_PARALLEL: 8 };
 
 function rateTab_() {
   const b = book_();
@@ -121,7 +121,7 @@ function startRateBackfill() {
     p.setProperty('RATE_BF_NEXT_' + MODE, String(lastFilled_(pos, 2)));   // start from the newest PO and go back
   }
   ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'rateBackfill').forEach(t => ScriptApp.deleteTrigger(t));
-  ScriptApp.newTrigger('rateBackfill').timeBased().everyHours(1).create();
+  ScriptApp.newTrigger('rateBackfill').timeBased().everyMinutes(15).create();
   rateBackfill();
 }
 
@@ -133,49 +133,59 @@ function rateBackfill() {
     const p = PropertiesService.getScriptProperties(), K = 'RATE_BF_NEXT_' + MODE;
     let row = Number(p.getProperty(K) || 0);
     const t0 = Date.now(), pos = book_().getSheetByName(PO_CFG.POS), sh = rateTab_();
-    const fms = fms_(), fl = fms.getLastRow();
-    const unitOf = {};
-    fms.getRange(1, 1, fl, 3).getValues().forEach(r => { if (r[0]) unitOf[String(r[0]).trim()] = String(r[2]).trim(); });
-    const have = {};
-    const rl = lastFilled_(sh, 2);
+    const fl = fms_().getLastRow(), unitOf = {};
+    fms_().getRange(1, 1, fl, 3).getValues().forEach(r => { if (r[0]) unitOf[String(r[0]).trim()] = String(r[2]).trim(); });
+    const have = {}, rl = lastFilled_(sh, 2);
     if (rl >= 2) sh.getRange(2, 2, rl - 1, 1).getValues().forEach(r => (have[String(r[0]).trim().toUpperCase()] = true));
-    let done = 0;
-    while (row >= 2 && done < RATE_CFG.BF_PER_RUN && Date.now() - t0 < 270000) {
-      const from = Math.max(2, row - 49);
-      const block = pos.getRange(from, 1, row - from + 1, 8).getValues();
-      for (let i = block.length - 1; i >= 0 && done < RATE_CFG.BF_PER_RUN && Date.now() - t0 < 270000; i--) {
-        const r = block[i], po = String(r[1]).trim(), link = String(r[2]);
-        row = from + i - 1;
-        if (!po || have[po.toUpperCase()]) continue;
+    const key = prop_('GEMINI_API_KEY');
+    const prompt = 'This is a purchase order. List every item line: item name, qty, uom, rate (unit price before GST, rupees), gst (tax %, -1 if not shown). Skip freight, transport, packing, loading and other charges.';
+    const schema = { type: 'OBJECT', properties: { items: { type: 'ARRAY', items: { type: 'OBJECT', properties: { item: { type: 'STRING' }, qty: { type: 'NUMBER' },
+      uom: { type: 'STRING' }, rate: { type: 'NUMBER' }, gst: { type: 'NUMBER' } }, required: ['item', 'rate'] } } }, required: ['items'] };
+    const req = (model, b64) => ({ url: 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', method: 'post', contentType: 'application/json',
+      headers: { 'x-goog-api-key': key }, muteHttpExceptions: true,
+      payload: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: 'application/pdf', data: b64 } }, { text: prompt }] }],
+        generationConfig: { temperature: 0, responseMimeType: 'application/json', responseSchema: schema } }) });
+    let total = 0, limited = false;
+    while (row >= 2 && !limited && total < RATE_CFG.BF_PER_RUN && Date.now() - t0 < 180000) {
+      // next batch: up to BF_PARALLEL unread POs, read by AI at the same time
+      const batch = [];
+      while (row >= 2 && batch.length < RATE_CFG.BF_PARALLEL) {
+        const r = pos.getRange(row, 1, 1, 8).getValues()[0], po = String(r[1]).trim(), id = (String(r[2]).match(/[-\w]{25,}/) || [])[0];
+        const at = row; row--;
+        if (!po || !id || have[po.toUpperCase()]) continue;
         have[po.toUpperCase()] = true;
-        const id = (link.match(/[-\w]{25,}/) || [])[0];
-        if (!id) continue;
         let blob;
         try { blob = DriveApp.getFileById(id).getBlob(); } catch (e) { continue; }
         if (blob.getContentType() !== 'application/pdf' || blob.getBytes().length > 8 * 1024 * 1024) continue;
-        let out;
-        try {
-          out = geminiJson_([{ inline_data: { mime_type: 'application/pdf', data: Utilities.base64Encode(blob.getBytes()) } },
-            { text: 'This is a purchase order. List every item line: item name, qty, uom, rate (unit price before GST, rupees), gst (tax %, -1 if not shown).' }],
-            { type: 'OBJECT', properties: { items: { type: 'ARRAY', items: { type: 'OBJECT', properties: { item: { type: 'STRING' }, qty: { type: 'NUMBER' },
-              uom: { type: 'STRING' }, rate: { type: 'NUMBER' }, gst: { type: 'NUMBER' } }, required: ['item', 'rate'] } } }, required: ['items'] }, RATE_CFG.BF_MODELS);
-        } catch (e) {
-          if (e.appCode === 'BUSY') { row = from + i; p.setProperty(K, String(row)); return; }   // free limit reached: continue next hour
-          continue;
-        }
-        const date = r[3] instanceof Date ? r[3] : new Date(r[3]);
-        const unit = String(r[7]).trim() || unitOf[String(r[0]).trim()] || '';
-        const lines = (out.items || []).filter(x => x.item && Number(x.rate) > 0)
-          .map(x => [isNaN(date) ? '' : date, po, unit, String(r[4]).trim(), String(x.item).trim(), Number(x.qty) || '', String(x.uom || ''), Number(x.rate), Number(x.gst) >= 0 ? Number(x.gst) : '', 'PDF']);
-        if (lines.length) sh.getRange(lastFilled_(sh, 2) + 1, 1, lines.length, 10).setValues(lines);
-        done++;
+        batch.push({ r: r, po: po, at: at, b64: Utilities.base64Encode(blob.getBytes()) });
       }
+      if (!batch.length) break;
+      let res = UrlFetchApp.fetchAll(batch.map(b => req(RATE_CFG.BF_MODELS[0], b.b64)));
+      const busy = res.map((x, i) => [429, 503].indexOf(x.getResponseCode()) !== -1 ? i : -1).filter(i => i >= 0);
+      if (busy.length) {   // the 1st model is at its limit: try the 2nd for those
+        const res2 = UrlFetchApp.fetchAll(busy.map(i => req(RATE_CFG.BF_MODELS[1], batch[i].b64)));
+        busy.forEach((i, k) => (res[i] = res2[k]));
+      }
+      const out = [];
+      batch.forEach((b, i) => {
+        const code = res[i].getResponseCode();
+        if (code === 429 || code === 503) { limited = true; delete have[b.po.toUpperCase()]; row = Math.max(row, b.at); return; }   // free limit: this PO again next run
+        if (code !== 200) return;
+        let items = [];
+        try { const j = JSON.parse(res[i].getContentText()); items = JSON.parse(j.candidates[0].content.parts.filter(x => !x.thought).map(x => x.text || '').join('')).items || []; } catch (e) { return; }
+        const date = b.r[3] instanceof Date ? b.r[3] : new Date(b.r[3]);
+        const unit = String(b.r[7]).trim() || unitOf[String(b.r[0]).trim()] || '';
+        items.filter(x => x.item && Number(x.rate) > 0).forEach(x => out.push([isNaN(date) ? '' : date, b.po, unit, String(b.r[4]).trim(), String(x.item).trim(),
+          Number(x.qty) || '', String(x.uom || ''), Number(x.rate), Number(x.gst) >= 0 ? Number(x.gst) : '', 'PDF']));
+        total++;
+      });
+      if (out.length) sh.getRange(lastFilled_(sh, 2) + 1, 1, out.length, 10).setValues(out);
       p.setProperty(K, String(row));
     }
     if (row < 2) {
       p.setProperty('RATE_BF_DONE_' + MODE, '1');
       ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'rateBackfill').forEach(t => ScriptApp.deleteTrigger(t));
     }
-    if (done) CacheService.getScriptCache().remove(RATE_CFG.CACHE);
+    if (total) CacheService.getScriptCache().remove(RATE_CFG.CACHE);
   } finally { c.remove('rate_bf_running'); }
 }
