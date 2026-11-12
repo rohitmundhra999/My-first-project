@@ -10,8 +10,8 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Summit Procurement">
-<link rel="stylesheet" href="styles.css?v=20261112a">
-<script src="config.js?v=20261112a"></script>
+<link rel="stylesheet" href="styles.css?v=20261112b">
+<script src="config.js?v=20261112b"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
@@ -67,8 +67,10 @@
         <button data-stype="receive">Not received <span class="count" id="cReceive"></span></button>
         <button data-stype="invoice">Invoice pending <span class="count" id="cInvoice"></span></button>
         <button data-stype="status">My requests</button>
+        <button data-stype="reports">Reports</button>
       </div>
       <div id="storeBody"><p class="empty">Loading…</p></div>
+      <div id="storeRepSlot"></div>
       <p class="sub asof" id="storeAsOf"></p>
     </div>
 
@@ -260,6 +262,6 @@
 </div>
 
 <div id="toast" class="toast" role="status" hidden></div>
-<script type="module" src="app.js?v=20261112a"></script>
+<script type="module" src="app.js?v=20261112b"></script>
 </body>
 </html>

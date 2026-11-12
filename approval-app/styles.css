@@ -253,3 +253,8 @@ body.actas .viewas { background: #e3f0e4; }
 .tabs { position: sticky; top: var(--top, 56px); z-index: 9; background: var(--page); margin-top: 0; padding-top: 12px; }
 #viewStore > .seg, #viewReports > .seg { position: sticky; top: calc(var(--top, 56px) + var(--tabsH, 48px)); z-index: 8; margin-top: 0; box-shadow: 0 6px 0 var(--page), 0 -14px 0 var(--page); }
 #storeBody .chips { position: sticky; top: calc(var(--top, 56px) + var(--tabsH, 48px) + var(--segH, 46px)); z-index: 7; background: var(--page); margin: 0; padding: 6px 0 10px; }
+
+/* Reports shown inside the Store tab: locked to the unit chosen at the top */
+#storeRepSlot #viewReports > .seg { position: static; box-shadow: none; }
+#viewReports.instore #fCluster, #viewReports.instore #fUnit, #viewReports.instore #dCluster, #viewReports.instore #dUnit,
+#viewReports.instore #gsCluster, #viewReports.instore #gsUnit { display: none; }

@@ -268,6 +268,7 @@ function setTab(tab, withMe) {
   if (tab === 'po' && !u.isHO) tab = 'reports';
   if (tab === 'goods' && !u.isHO) tab = 'reports';
   state.tab = tab; state.sel.clear();
+  if (tab !== 'store' || state.store.view !== 'reports') unmountStoreReports();
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
   $('viewAssign').hidden = tab !== 'assign'; $('viewApprove').hidden = tab !== 'approve'; $('viewReports').hidden = tab !== 'reports';
   $('viewStore').hidden = tab !== 'store';
@@ -292,9 +293,10 @@ async function refresh(fresh, withMe) {
   const want = { ho: u.isHO, mine: u.isApprover };
   if (withMe) want.me = true;
   if (u.isHO && (state.tab === 'po' || state.po)) { want.po = { v: state.po?.v || '' }; if (!state.vendors) want.vendors = true; }
-  if (state.tab === 'reports' || state.reports) want.reports = { v: state.reports?.v || '' };
-  if ((state.tab === 'reports' && state.rep.type === 'dec') || state.dec) want.dec = { v: state.dec?.v || '' };
-  if (state.tab === 'goods' || (state.tab === 'reports' && state.rep.type === 'gs') || state.goods) want.goods = { v: state.goods?.v || '' };
+  const repOn = state.tab === 'reports' || (state.tab === 'store' && st.view === 'reports');
+  if (repOn || state.reports) want.reports = { v: state.reports?.v || '' };
+  if ((repOn && state.rep.type === 'dec') || state.dec) want.dec = { v: state.dec?.v || '' };
+  if (state.tab === 'goods' || (repOn && state.rep.type === 'gs') || state.goods) want.goods = { v: state.goods?.v || '' };
   if (hasStore() && st.unit && (state.tab === 'store' || st.data)) {
     want.store = { unit: st.unit, v: st.byUnit[st.unit] ? st.byUnit[st.unit].v : '' };
     if (!st.base) want.base = true;
@@ -404,6 +406,7 @@ function fillSelect(id, first, values, current) {
 }
 
 function renderReports() {
+  lockStoreUnit(state.rep);
   const R = state.reports, f = state.rep;
   document.querySelectorAll('[data-rtype]').forEach((b) => b.classList.toggle('on', b.dataset.rtype === f.type));
   $('poReport').hidden = f.type === 'dec' || f.type === 'gs'; $('viewDecisions').hidden = f.type !== 'dec'; $('viewGoodsRep').hidden = f.type !== 'gs';
@@ -419,6 +422,7 @@ function renderReports() {
   f.cluster = fillSelect('fCluster', 'All clusters', clusters.map((c) => [c, c]), f.cluster);
   const unitsInCluster = [...new Set(all.filter((p) => !f.cluster || p.cluster === f.cluster).map((p) => p.unit))].sort((a, b) => a.localeCompare(b));
   f.unit = fillSelect('fUnit', 'All units', unitsInCluster.map((u) => [u, u]), f.unit);
+  if (inStoreReports()) f.unit = repUnitOf(state.store.unit);   // Store > Reports: always this unit, even with no POs
   // Only vendors that have POs in this report (and in the chosen cluster/unit)
   const vendors = [...new Set(all.filter((p) => (!f.cluster || p.cluster === f.cluster) && (!f.unit || p.unit === f.unit)).map((p) => p.vendor || 'No vendor'))].sort((a, b) => a.localeCompare(b));
   f.vendor = fillSelect('fVendor', 'All vendors', vendors.map((v) => [v, v]), f.vendor);
@@ -502,6 +506,7 @@ function decFiltered(ignoreStatus) {
 }
 
 function renderDecisions() {
+  lockStoreUnit(state.df);
   const D = state.dec, f = state.df;
   document.querySelectorAll('[data-dview]').forEach((b) => b.classList.toggle('on', b.dataset.dview === f.view));
   if (!D) { $('decBody').innerHTML = '<p class="empty">Loading report… this can take a few seconds.</p>'; $('dTiles').innerHTML = ''; return; }
@@ -515,6 +520,7 @@ function renderDecisions() {
   f.cluster = fillSelect('dCluster', 'All clusters', clusters.map((c) => [c, c]), f.cluster);
   const units = [...new Set(D.lines.filter((l) => !f.cluster || l.c === f.cluster).map((l) => l.u))].sort((a, b) => a.localeCompare(b));
   f.unit = fillSelect('dUnit', 'All units', units.map((u) => [u, u]), f.unit);
+  if (inStoreReports()) f.unit = repUnitOf(state.store.unit);   // Store > Reports: always this unit, even with no POs
   const months = reportMonths(D.from);
   f.month = fillSelect('dMonth', 'All months', months.slice().reverse().map((m) => [m, monthLabel(m)]), f.month);
   if ($('dSearch').value !== f.q) $('dSearch').value = f.q;
@@ -789,12 +795,14 @@ const REP_FROM_ISO = '2026-04-01';
 
 // ---------- Reports: status of goods ----------
 function renderGoodsRep() {
+  lockStoreUnit(state.gsf);
   const G = state.goods, f = state.gsf;
   if (!G) { $('gsBody').innerHTML = '<p class="empty">Loading report… this can take a few seconds.</p>'; return; }
   const clusters = [...new Set(G.list.map((p) => p.cluster))];
   f.cluster = fillSelect('gsCluster', 'All clusters', clusters.map((c) => [c, c]), f.cluster);
   const units = [...new Set(G.list.filter((p) => !f.cluster || p.cluster === f.cluster).map((p) => p.unit))].sort((a, b) => a.localeCompare(b));
   f.unit = fillSelect('gsUnit', 'All units', units.map((u) => [u, u]), f.unit);
+  if (inStoreReports()) f.unit = repUnitOf(state.store.unit);   // Store > Reports: always this unit, even with no POs
   const vendors = [...new Set(G.list.filter((p) => (!f.cluster || p.cluster === f.cluster) && (!f.unit || p.unit === f.unit)).map(vendorOf))].sort((a, b) => a.localeCompare(b));
   f.vendor = fillSelect('gsVendor', 'All vendors', vendors.map((v) => [v, v]), f.vendor);
   f.st = fillSelect('gsStatus', 'All statuses', [NOT_UPDATED, ...G.statuses].map((x) => [x, x]), f.st);
@@ -1314,8 +1322,11 @@ function renderStore(force) {
   $('cReceive').textContent = loaded ? toReceive().length || '' : '';
   $('cInvoice').textContent = loaded ? toInvoice().length || '' : '';
   $('tabStore').querySelector('.count').textContent = loaded ? (toReceive().length + toInvoice().length) || '' : '';
-  $('storeAsOf').textContent = loaded ? `${sv.unit} · as of ${sv.data.asOf}` : '';
+  $('storeAsOf').textContent = loaded && sv.view !== 'reports' ? `${sv.unit} · as of ${sv.data.asOf}` : '';
   const body = $('storeBody');
+  body.hidden = sv.view === 'reports';
+  if (sv.view === 'reports') { mountStoreReports(); renderReports(); return; }
+  unmountStoreReports();
   if (sv.view === 'raise') {
     if (!sv.base) { body.innerHTML = '<p class="empty">Loading…</p>'; return; }
     if (sv.formUnit === sv.unit && body.querySelector('#raiseForm')) return;   // keep what is being typed
@@ -1563,10 +1574,35 @@ async function uploadInvoice(form) {
   });
 }
 
+// ---- Reports inside the Store tab: the same reports, for the unit chosen at the top only ----
+// Same unit words as UNIT_MAP in the server, so a store unit name finds its report unit name.
+const REP_UNIT_WORDS = [['DIRANG', ['dirang']], ['Green', ['green']], ['Bougainvillea', ['bougainvillea']], ['Enigma', ['enigma']], ['Grace', ['grace']],
+  ['Hermon', ['hermon']], ['Mall Stone', ['mallstone', 'mall']], ['Montana', ['montana']], ['Oakdene', ['oakden']], ['POSHTEL', ['poshtel']], ['Swiss', ['swiss']],
+  ['West Gate', ['westgate', 'west']], ['Grand', ['grand']], ['Namnang', ['namnang']], ['Norling', ['norling']], ['North Star', ['northstar']],
+  ['Signature', ['signature']], ['Ttakshang', ['ttakshang']], ['Calangute', ['calangute']], ['Le Royale', ['royale']], ['Barsana', ['barsana']],
+  ['Samthar', ['samthar']], ['Sherpa', ['sherpa']], ['Gangchen', ['gangchen']], ['Khangri', ['khangri']], ['Panghen', ['panghen']], ['Newa', ['newa']],
+  ['Tashi Ghang', ['tashi']], ['Head Office', ['headoffice', 'head']], ['Singalila', ['singalila']], ['Ganges', ['ganges']], ['Jungle', ['jungle']], ['SALASAR', ['salasar']]];
+const repUnitOf = (raw) => { const n = String(raw || '').toLowerCase().replace(/[^a-z0-9]/g, ''); const m = REP_UNIT_WORDS.find(([, w]) => w.some((k) => n.includes(k))); return m ? m[0] : String(raw || '').trim(); };
+const inStoreReports = () => $('viewReports').parentElement === $('storeRepSlot');
+function lockStoreUnit(f) { if (inStoreReports()) { f.cluster = ''; f.unit = repUnitOf(state.store.unit); } }
+function mountStoreReports() {
+  const v = $('viewReports');
+  if (!inStoreReports()) $('storeRepSlot').appendChild(v);
+  v.classList.add('instore'); v.hidden = false;
+}
+function unmountStoreReports() {
+  const v = $('viewReports');
+  if (!inStoreReports()) return;
+  $('viewStore').after(v);   // back to its own place
+  v.classList.remove('instore'); v.hidden = state.tab !== 'reports';
+  [state.rep, state.df, state.gsf].forEach((f) => { f.cluster = ''; f.unit = ''; });
+}
+
 // ---- wiring (store) ----
 $('storeUnit').onchange = (e) => changeStoreUnit(e.target.value);
 document.querySelectorAll('[data-stype]').forEach((b) => (b.onclick = () => {
   sv.view = b.dataset.stype; if (sv.view !== 'raise') sv.done = null; renderStore(true);
+  if (sv.view === 'reports') { if (!state.reports || (state.rep.type === 'dec' && !state.dec) || (state.rep.type === 'gs' && !state.goods)) refresh(); return; }
   if (!sv.data && sv.view !== 'raise') loadStore(false, state.gen).then(() => renderStore(true)).catch(handleError);
 }));
 $('storeBody').addEventListener('input', (e) => {
