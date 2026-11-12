@@ -11,7 +11,7 @@ const state = {
   dec: null, decAt: 0, decShow: 200,
   df: { view: 'list', approver: '', status: '', cluster: '', unit: '', month: '', q: '' },
   // storekeeper
-  goods: null, gf: { unit: '', st: '', q: '' }, gsel: new Set(), gform: {}, gsf: { cluster: '', unit: '', st: '', q: '' },
+  goods: null, gf: { unit: '', vendor: '', st: '', q: '' }, gsel: new Set(), gform: {}, gsf: { cluster: '', unit: '', vendor: '', st: '', q: '' },
   po: null, vendors: null, poSel: new Set(), poPrice: {}, poForm: { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: '', shipTo: '', newVendor: null }, poUnit: '', poDone: null,
   store: { unit: '', view: 'raise', data: null, meta: {}, draft: null, rq: {}, inv: null, filter: 'pending', q: '', show: 150, done: null, formUnit: '',
            byUnit: {}, raw: {}, base: null, prefetchedAt: 0, prefetching: false },
@@ -588,12 +588,12 @@ function exportData(which) {
       pdfCols: [0, 1, 2, 3, 4, 6, 7, 8, 10, 11, 12],
     };
   }
-  if (which === 'gs' || which === 'gsel') {
-    const rows = which === 'gs' ? (state.gsRows || []) : goodsSelected();
+  if (which === 'gs' || which === 'gsel' || which === 'gone') {
+    const rows = which === 'gs' ? (state.gsRows || []) : which === 'gone' ? (state.goods?.list || []).filter((p) => p.po === state.gOne) : goodsSelected();
     const f = state.gsf;
     return {
-      title: 'Status of goods', file: `Status of goods ${stamp}`, money: 6,
-      filters: which === 'gs' ? filterText([['Cluster', f.cluster], ['Unit', f.unit], ['Status', f.st], ['Search', f.q.trim()]]) : rows.length + ' selected PO' + (rows.length === 1 ? '' : 's'),
+      title: 'Status of goods', file: which === 'gone' ? `Status of goods PO ${state.gOne}` : `Status of goods ${stamp}`, money: 6,
+      filters: which === 'gs' ? filterText([['Cluster', f.cluster], ['Unit', f.unit], ['Vendor', f.vendor], ['Status', f.st], ['Search', f.q.trim()]]) : which === 'gone' ? 'PO ' + state.gOne : rows.length + ' selected PO' + (rows.length === 1 ? '' : 's'),
       head: ['#', 'PO No', 'PO date', 'Unit', 'Cluster', 'Vendor', 'Amount', 'Items', 'Status of goods', 'Remark', 'Updated', 'Updated by', 'Document'],
       body: rows.map((p, i) => [i + 1, p.po, fmtDate(p.date), p.unit, p.cluster, p.vendor, Math.round(p.amount), p.itemNames.join(', ') + (p.items > p.itemNames.length ? ` and ${p.items - p.itemNames.length} more` : ''),
         p.g ? p.g.st : 'Not updated', p.g ? p.g.rm : '', p.g ? p.g.at : '', p.g ? p.g.by : '', p.g && p.g.doc ? p.g.doc : '']),
@@ -696,10 +696,13 @@ async function driveFile(url, name, share) {
 
 // ---------- HO: status of goods ----------
 const NOT_UPDATED = 'Not updated';
-const docBtns = (doc, po) => doc ? `<a class="btn sm" href="${esc(doc)}" target="_blank" rel="noopener">View document</a><button type="button" class="btn sm" data-fdl="${esc(doc)}" data-fname="Goods status ${esc(po)}">Download</button><button type="button" class="btn sm" data-fshare="${esc(doc)}" data-fname="Goods status ${esc(po)}">Share</button>` : '';
+const docBtns = (doc, po) => doc ? `<a class="btn sm" href="${esc(doc)}" target="_blank" rel="noopener">View document</a><button type="button" class="btn sm" data-fdl="${esc(doc)}" data-fname="Goods status ${esc(po)}">Download document</button><button type="button" class="btn sm" data-fshare="${esc(doc)}" data-fname="Goods status ${esc(po)}">Share document</button>` : '';
+// every PO card: View PO + share/download this PO's status (+ document buttons when a document is uploaded)
+const goodsBtns = (p) => `<div class="filelinks">${p.link ? `<a class="btn sm" href="${esc(p.link)}" target="_blank" rel="noopener">View PO</a>` : ''}<button type="button" class="btn sm" data-gone="${esc(p.po)}" data-gfmt="pdf" data-gsh="1">Share status</button><button type="button" class="btn sm" data-gone="${esc(p.po)}" data-gfmt="png" data-gsh="1">Share snapshot</button><button type="button" class="btn sm" data-gone="${esc(p.po)}" data-gfmt="pdf">Download status</button>${p.g && p.g.doc ? docBtns(p.g.doc, p.po) : ''}</div>`;
+const vendorOf = (p) => p.vendor || 'Vendor not given';
 function goodsFiltered() {
   const G = state.goods, f = state.gf, q = f.q.trim().toLowerCase();
-  return (G?.list || []).filter((p) => (!f.unit || p.unit === f.unit) && (!f.st || (p.g ? p.g.st : NOT_UPDATED) === f.st) &&
+  return (G?.list || []).filter((p) => (!f.unit || p.unit === f.unit) && (!f.vendor || vendorOf(p) === f.vendor) && (!f.st || (p.g ? p.g.st : NOT_UPDATED) === f.st) &&
     (!q || [p.po, p.vendor, p.unit, ...p.itemNames, p.g ? p.g.rm : ''].join(' ').toLowerCase().includes(q)));
 }
 function goodsSelected() { return (state.goods?.list || []).filter((p) => state.gsel.has(p.po)); }
@@ -710,6 +713,8 @@ function renderGoods(force) {
   if (!force && state.gform.po && $('gFile') && $('gFile').files.length) return;
   const units = [...new Set(G.list.map((p) => p.unit))].sort((a, b) => a.localeCompare(b));
   f.unit = fillSelect('gUnit', 'All units', units.map((u) => [u, u]), f.unit);
+  const vendors = [...new Set(G.list.filter((p) => !f.unit || p.unit === f.unit).map(vendorOf))].sort((a, b) => a.localeCompare(b));
+  f.vendor = fillSelect('gVendor', 'All vendors', vendors.map((v) => [v, v]), f.vendor);
   f.st = fillSelect('gStatus', 'All statuses', [NOT_UPDATED, ...G.statuses].map((x) => [x, x]), f.st);
   if ($('gSearch').value !== f.q) $('gSearch').value = f.q;
   const rows = goodsFiltered();
@@ -722,17 +727,17 @@ function renderGoods(force) {
     const more = p.items > p.itemNames.length ? ` and ${p.items - p.itemNames.length} more` : '';
     return `<article class="card">
       <div class="top"><label class="selall"><input type="checkbox" data-gsel="${esc(p.po)}" ${state.gsel.has(p.po) ? 'checked' : ''}> <b>PO ${esc(p.po)}</b></label>${p.amount ? `<span class="amt">${inr(p.amount)}</span>` : ''}</div>
-      <div class="sub">${esc(p.unit)} · <b>${esc(p.vendor || 'Vendor not given')}</b> · ${fmtDate(p.date)} · ${daysSince(p.date)} days${p.link ? ` · <a href="${esc(p.link)}" target="_blank" rel="noopener">View PO</a>` : ''}</div>
+      <div class="sub">${esc(p.unit)} · <b>${esc(p.vendor || 'Vendor not given')}</b> · ${fmtDate(p.date)} · ${daysSince(p.date)} days</div>
       <div class="items">${esc(p.itemNames.join(', '))}${more}</div>
       <div class="sub">Received at unit: ${p.rcv}/${p.items} item${p.items > 1 ? 's' : ''}</div>
       <div class="sub" style="margin-top:4px">Status of goods: <span class="gst">${esc(g ? g.st : NOT_UPDATED)}</span>${g && g.rm ? ' · ' + esc(g.rm) : ''}${g ? ` <span class="sub">(${esc(g.at)}, ${esc(g.by)})</span>` : ''}</div>
-      ${g && g.doc ? `<div class="filelinks">${docBtns(g.doc, p.po)}</div>` : ''}
+      ${goodsBtns(p)}
       ${open ? `<form class="gform" id="gForm" data-po="${esc(p.po)}">
         <label class="field">Status<select name="st" required><option value="">Choose…</option>${G.statuses.map((x) => `<option ${x === (fm.st ?? g?.st) ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>
         <label class="field">Document (photo or PDF)<input id="gFile" name="file" type="file" accept="image/*,application/pdf"></label>
         <label class="field full">Remark<input name="rm" maxlength="300" value="${esc(fm.rm ?? (g ? g.rm : ''))}" placeholder="e.g. Dispatched by transport, LR no. 1234"></label>
-        <div class="formfoot full"><button type="button" class="btn ghost" data-gcancel>Cancel</button><button type="submit" class="btn primary">Save status</button></div>
-      </form>` : (ro ? '' : `<div class="formfoot" style="margin:8px 0 0"><span></span><button class="btn primary" data-gopen="${esc(p.po)}">Update status</button></div>`)}
+        <div class="formfoot full"><button type="button" class="btn ghost" data-gcancel>Cancel</button><button type="submit" class="btn primary">${g ? 'Update status' : 'Save status'}</button></div>
+      </form>` : (ro ? '' : `<div class="formfoot" style="margin:8px 0 0"><span></span><button class="btn primary" data-gopen="${esc(p.po)}">${g ? 'Update status' : 'Enter status'}</button></div>`)}
     </article>`;
   }).join('') : '<p class="empty">No POs match these filters.</p>';
 }
@@ -747,20 +752,23 @@ async function saveGoods(form) {
     const p = (state.goods?.list || []).find((x) => x.po === po);
     if (p) p.g = { st, rm, doc: r.doc || (p.g && p.g.doc) || '', at: 'just now', by: state.me.user.name };
     state.gform = {}; state.goods.v = '';
-    toast('Status of goods saved.');
+    toast('Status of goods saved. You can update it any time.');
     renderGoods(true);
     refresh();
   });
 }
 function goodsClick(e) {
+  const one = e.target.closest('[data-gone]');
+  if (one) { state.gOne = one.dataset.gone; download('gone', one.dataset.gfmt, !!one.dataset.gsh); return true; }
   const o = e.target.closest('[data-gopen]');
   if (o) { state.gform = { po: o.dataset.gopen }; renderGoods(true); return true; }
   if (e.target.closest('[data-gcancel]')) { state.gform = {}; renderGoods(true); return true; }
   return false;
 }
 function setupGoodsEvents() {
-  $('gUnit').onchange = (e) => { state.gf.unit = e.target.value; renderGoods(true); };
+  $('gUnit').onchange = (e) => { state.gf.unit = e.target.value; state.gf.vendor = ''; renderGoods(true); };
   $('gStatus').onchange = (e) => { state.gf.st = e.target.value; renderGoods(true); };
+  $('gVendor').onchange = (e) => { state.gf.vendor = e.target.value; renderGoods(true); };
   $('gSearch').oninput = (e) => { state.gf.q = e.target.value; renderGoods(true); };
   $('gAll').onchange = (e) => { goodsFiltered().forEach((p) => (e.target.checked ? state.gsel.add(p.po) : state.gsel.delete(p.po))); renderGoods(true); };
   $('gPdf').onclick = () => (state.gsel.size ? download('gsel', 'pdf', true) : toast('Tick the POs first.', true));
@@ -772,10 +780,10 @@ function setupGoodsEvents() {
   });
   document.addEventListener('input', (e) => { if (e.target.closest('#gForm') && e.target.name === 'rm') state.gform.rm = e.target.value; });
   document.addEventListener('submit', (e) => { if (e.target.id === 'gForm') { e.preventDefault(); saveGoods(e.target); } });
-  [['gsCluster', 'cluster'], ['gsUnit', 'unit'], ['gsStatus', 'st']].forEach(([id, k]) =>
-    ($(id).onchange = (e) => { state.gsf[k] = e.target.value; if (k === 'cluster') state.gsf.unit = ''; renderGoodsRep(); }));
+  [['gsCluster', 'cluster'], ['gsUnit', 'unit'], ['gsVendor', 'vendor'], ['gsStatus', 'st']].forEach(([id, k]) =>
+    ($(id).onchange = (e) => { state.gsf[k] = e.target.value; if (k === 'cluster') state.gsf.unit = ''; if (k === 'cluster' || k === 'unit') state.gsf.vendor = ''; renderGoodsRep(); }));
   $('gsSearch').oninput = (e) => { state.gsf.q = e.target.value; renderGoodsRep(); };
-  $('gsClear').onclick = () => { Object.assign(state.gsf, { cluster: '', unit: '', st: '', q: '' }); renderGoodsRep(); };
+  $('gsClear').onclick = () => { Object.assign(state.gsf, { cluster: '', unit: '', vendor: '', st: '', q: '' }); renderGoodsRep(); };
 }
 const REP_FROM_ISO = '2026-04-01';
 
@@ -787,14 +795,16 @@ function renderGoodsRep() {
   f.cluster = fillSelect('gsCluster', 'All clusters', clusters.map((c) => [c, c]), f.cluster);
   const units = [...new Set(G.list.filter((p) => !f.cluster || p.cluster === f.cluster).map((p) => p.unit))].sort((a, b) => a.localeCompare(b));
   f.unit = fillSelect('gsUnit', 'All units', units.map((u) => [u, u]), f.unit);
+  const vendors = [...new Set(G.list.filter((p) => (!f.cluster || p.cluster === f.cluster) && (!f.unit || p.unit === f.unit)).map(vendorOf))].sort((a, b) => a.localeCompare(b));
+  f.vendor = fillSelect('gsVendor', 'All vendors', vendors.map((v) => [v, v]), f.vendor);
   f.st = fillSelect('gsStatus', 'All statuses', [NOT_UPDATED, ...G.statuses].map((x) => [x, x]), f.st);
   if ($('gsSearch').value !== f.q) $('gsSearch').value = f.q;
   const q = f.q.trim().toLowerCase();
-  const rows = G.list.filter((p) => (!f.cluster || p.cluster === f.cluster) && (!f.unit || p.unit === f.unit) && (!f.st || (p.g ? p.g.st : NOT_UPDATED) === f.st) &&
+  const rows = G.list.filter((p) => (!f.cluster || p.cluster === f.cluster) && (!f.unit || p.unit === f.unit) && (!f.vendor || vendorOf(p) === f.vendor) && (!f.st || (p.g ? p.g.st : NOT_UPDATED) === f.st) &&
     (!q || [p.po, p.vendor, p.unit, ...p.itemNames, p.g ? p.g.rm : ''].join(' ').toLowerCase().includes(q)));
   state.gsRows = rows;
   $('gsTotal').textContent = `${rows.length} PO${rows.length === 1 ? '' : 's'} · ${inr(rows.reduce((a, p) => a + p.amount, 0))}`;
-  $('gsClear').hidden = !(f.cluster || f.unit || f.st || f.q);
+  $('gsClear').hidden = !(f.cluster || f.unit || f.vendor || f.st || f.q);
   $('gsAsOf').textContent = `Status of goods · POs made from ${fmtDate(REP_FROM_ISO)} · updated ${G.asOf}`;
   $('gsBody').innerHTML = rows.length ? rows.slice(0, 300).map((p) => {
     const g = p.g, more = p.items > p.itemNames.length ? ` and ${p.items - p.itemNames.length} more` : '';
@@ -803,7 +813,7 @@ function renderGoodsRep() {
       <div class="sub">${esc(p.unit)} <span class="sub">(${esc(p.cluster)})</span> · ${esc(p.vendor || 'No vendor')} · ${fmtDate(p.date)}</div>
       <div class="items">${esc(p.itemNames.join(', '))}${more}</div>
       <div class="sub">Status of goods: <span class="gst">${esc(g ? g.st : NOT_UPDATED)}</span>${g && g.rm ? ' · ' + esc(g.rm) : ''}${g ? ` <span class="sub">(${esc(g.at)}, ${esc(g.by)})</span>` : ''}</div>
-      <div class="filelinks">${p.link ? `<a class="btn sm" href="${esc(p.link)}" target="_blank" rel="noopener">View PO</a>` : ''}${g && g.doc ? docBtns(g.doc, p.po) : ''}</div>
+      ${goodsBtns(p)}
     </article>`;
   }).join('') + (rows.length > 300 ? '<p class="sub">First 300 shown. Use the filters, or download for all.</p>' : '') : '<p class="empty">No POs match these filters.</p>';
 }
