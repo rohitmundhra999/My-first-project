@@ -67,7 +67,7 @@ function doPost(e) {
     const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_,
       reports: (u, r) => scopeReports_(u, reports_(u, r)), decisions: (u, r) => scopeReports_(u, decisions_(u, r)), testPush: testPush_,
       storeMeta: storeMeta_, storeList: storeList_, storeRaise: storeRaise_, storeReceive: storeReceive_, storeInvoice: storeInvoice_,
-      sync: sync_, makePO: makePO_, readInvoice: readInvoice_, hoReceiveList: hoReceiveList_ };
+      sync: sync_, makePO: makePO_, readInvoice: readInvoice_, hoReceiveList: hoReceiveList_, rateList: rateList_, rateCompare: rateCompare_ };
     const fn = handlers[req.action];
     if (!fn) throw appError_('BAD_REQUEST', 'Unknown action.');
     const user = previewUser_(realUser, req);
@@ -1548,6 +1548,7 @@ function makePO_(user, req) {
     }
     const at = posLast + 1;
     pos.getRange(at, 1, lines.length, 8).setValues(lines.map(l => [l.orderNo, poNo, link, now, vendor[0], days, grand, unit]));
+    try { rateSavePO_(poNo, now, vendor[0], lines); } catch (e) { console.warn('ITEM RATES: ' + e); }   // Check rates history
     if (terms) lines.forEach(l => sh.getRange(l.row, 15).setValue(terms));   // FMS O: payment terms
     SpreadsheetApp.flush();
     log_(user, 'PO', lines.map(l => l.orderNo).join(', '), poNo + ' | ' + vendor[0] + ' | â¹' + grand + ' | ' + link);
