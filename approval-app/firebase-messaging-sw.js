@@ -4,6 +4,29 @@
 self.addEventListener('install', () => self.skipWaiting());              // a new version takes over at once
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 
+// Speed: app files are kept on the phone. Versioned files (?v=...) and libraries open straight from the phone;
+// the page itself is checked online first (max 1.5 s) so a new version shows at once, else the kept copy opens.
+const SHELL = 'summit-shell-v1';
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  if (req.method !== 'GET') return;
+  const u = new URL(req.url);
+  const same = u.origin === self.location.origin, lib = u.hostname === 'cdnjs.cloudflare.com' || u.hostname === 'www.gstatic.com';
+  if ((!same && !lib) || u.pathname.endsWith('firebase-messaging-sw.js')) return;
+  const keep = (res) => { if (res && res.ok) caches.open(SHELL).then((c) => c.put(req, res.clone())); return res; };
+  if (req.mode === 'navigate') {
+    event.respondWith(new Promise((resolve) => {
+      let done = false;
+      const fallback = () => caches.match(req).then((hit) => { if (!done && hit) { done = true; resolve(hit); } });
+      const t = setTimeout(fallback, 1500);
+      fetch(req).then((res) => { clearTimeout(t); keep(res.clone()); if (!done) { done = true; resolve(res); } })
+        .catch(() => caches.match(req).then((hit) => { if (!done) { done = true; resolve(hit || Response.error()); } }));
+    }));
+    return;
+  }
+  event.respondWith(caches.match(req).then((hit) => hit || fetch(req).then(keep)));
+});
+
 self.addEventListener('push', (event) => {
   let p = {};
   try { p = event.data ? event.data.json() : {}; } catch (e) { p = { notification: { body: event.data ? event.data.text() : '' } }; }

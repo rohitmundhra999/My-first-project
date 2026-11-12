@@ -137,6 +137,8 @@ function saveLocal() {
   // every unit's store lines, kept packed (as the server sent them) so they take little room
   try { localStorage.setItem(k + '.stores', JSON.stringify(sv.raw)); } catch { try { localStorage.removeItem(k + '.stores'); } catch { /* ignore */ } }
   try { if (state.dec) localStorage.setItem(k + '.dec', JSON.stringify(state.dec)); } catch { try { localStorage.removeItem(k + '.dec'); } catch { /* ignore */ } }
+  try { localStorage.setItem(k + '.ho2', JSON.stringify({ goods: state.goods, hr: state.hr.data })); } catch { try { localStorage.removeItem(k + '.ho2'); } catch { /* ignore */ } }
+  try { if (state.rt.data) localStorage.setItem(k + '.rates', JSON.stringify(state.rt.data)); } catch { try { localStorage.removeItem(k + '.rates'); } catch { /* ignore */ } }
 }
 function loadLocal() {
   const k = localKey(); if (!k) return null;
@@ -145,10 +147,12 @@ function loadLocal() {
     if (!s || !s.me || Date.now() - s.at > 7 * 86400000) return null;
     try { s.dec = JSON.parse(localStorage.getItem(k + '.dec') || 'null'); } catch { s.dec = null; }
     try { s.stores = JSON.parse(localStorage.getItem(k + '.stores') || 'null'); } catch { s.stores = null; }
+    try { s.ho2 = JSON.parse(localStorage.getItem(k + '.ho2') || 'null'); } catch { s.ho2 = null; }
+    try { s.rates = JSON.parse(localStorage.getItem(k + '.rates') || 'null'); } catch { s.rates = null; }
     return s;
   } catch { return null; }
 }
-function clearLocal() { const k = localKey(); if (!k) return; try { localStorage.removeItem(k); localStorage.removeItem(k + '.dec'); localStorage.removeItem(k + '.stores'); } catch { /* ignore */ } }
+function clearLocal() { const k = localKey(); if (!k) return; try { ['', '.dec', '.stores', '.ho2', '.rates'].forEach((x) => localStorage.removeItem(k + x)); } catch { /* ignore */ } }
 /** packed list from the server ({k:[names], r:[[values]]}) -> list of objects */
 const unpack = (p) => (p && p.k ? p.r.map((row) => { const o = {}; p.k.forEach((k, i) => { if (row[i] !== null) o[k] = row[i]; }); return o; }) : (p || []));
 
@@ -166,6 +170,8 @@ async function boot(prefetched) {
     if (local.store) { st.unit = local.store.unit || ''; st.base = local.store.base || null; if (local.store.meta) st.meta[local.store.unit] = local.store.meta; }
     if (local.stores) Object.entries(local.stores).forEach(([u, p]) => putStore(u, p));
     st.data = st.byUnit[st.unit] || null;
+    if (local.ho2) { state.goods = local.ho2.goods || null; state.hr.data = local.ho2.hr || null; }
+    if (local.rates) state.rt.data = local.rates;
     return startApp(true);
   }
   show('loading');
@@ -200,6 +206,11 @@ function startApp(withMe) {
   render();
   setTab(state.tab || defaultTab(), withMe);
   if (state.me.preview) banner(''); else setupNotifications();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('firebase-messaging-sw.js', { updateViaCache: 'none' }).catch(() => {});
+  if (state.me.user.isHO) setTimeout(() => {   // HO tabs open instantly: their data is fetched quietly in the background
+    if (state.tab !== 'honr') loadHoNr(false, true);
+    if (state.tab !== 'rates') loadRates(true, true);
+  }, 2500);
 }
 
 const roleLabel = (u) => {
@@ -280,7 +291,7 @@ function setTab(tab, withMe) {
   $('viewHoInv').hidden = tab !== 'hoinv';
   $('viewHoNr').hidden = tab !== 'honr';
   $('viewRates').hidden = tab !== 'rates';
-  if (tab === 'rates') loadRates();
+  if (tab === 'rates') loadRates(false);
   if (tab === 'honr') loadHoNr(false);
   if (tab === 'hoinv') renderHoInv(true);
   if (tab === 'goods') renderGoods();
@@ -878,11 +889,12 @@ function setupHoInvEvents() {
 }
 
 // ---------- HO: material not received (any unit), receive like the store ----------
-async function loadHoNr(fresh) {
+async function loadHoNr(fresh, quiet) {
   const H = state.hr;
-  if (!H.data) $('hrBody').innerHTML = '<p class="empty">Loading… this can take a few seconds.</p>';
-  try { H.data = await api('hoReceiveList', fresh ? { fresh: true } : {}); } catch (e) { return handleError(e); }
-  if (state.tab === 'honr') renderHoNr();
+  if (!quiet) { if (H.data) renderHoNr(); else $('hrBody').innerHTML = '<p class="empty">Loading… this can take a few seconds.</p>'; }
+  try { H.data = await api('hoReceiveList', fresh ? { fresh: true } : {}); } catch (e) { return quiet ? null : handleError(e); }
+  if (state.tab === 'honr' && !document.querySelector('#hrBody input:focus')) renderHoNr();
+  saveLocal();
 }
 function hoNrGroups() {
   const H = state.hr, map = new Map();
@@ -955,13 +967,17 @@ function setupHoNrEvents() {
 }
 
 // ---------- HO: check rates (last purchase rate + GST; AI compares a vendor quotation) ----------
-async function loadRates(fresh) {
+let ratesAt = 0;
+async function loadRates(fresh, quiet) {
   const R = state.rt;
-  if (R.data && !fresh) return renderRates();
-  $('rtList').innerHTML = '<p class="empty">Loading item rates…</p>';
-  try { R.data = await api('rateList'); } catch (e) { return handleError(e); }
-  $('rtNames').innerHTML = Object.values(R.data.names).sort((a, b) => a.localeCompare(b)).map((n) => `<option value="${esc(n)}">`).join('');
-  renderRates();
+  const fill = () => { $('rtNames').innerHTML = Object.values(R.data.names).sort((a, b) => a.localeCompare(b)).map((n) => `<option value="${esc(n)}">`).join(''); };
+  if (R.data && !quiet) { if (!$('rtNames').options.length) fill(); renderRates(); }
+  if (R.data && !fresh && Date.now() - ratesAt < 300000) return;   // fetched in the last 5 minutes
+  if (!R.data && !quiet) $('rtList').innerHTML = '<p class="empty">Loading item rates…</p>';
+  try { R.data = await api('rateList'); ratesAt = Date.now(); } catch (e) { return quiet ? null : handleError(e); }
+  fill();
+  if (state.tab === 'rates') renderRates();
+  saveLocal();
 }
 const rateDiff = (r) => r.last && r.rate > 0 ? { amt: Math.round((r.rate - r.last[6]) * 100) / 100, pct: Math.round((r.rate - r.last[6]) / r.last[6] * 1000) / 10 } : null;
 function histHtml(h) {
