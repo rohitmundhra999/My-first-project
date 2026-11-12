@@ -666,7 +666,7 @@ async function download(which, fmt, share) {
     const pick = (r) => d.pdfCols.map((i) => (i === d.money ? 'Rs ' + Number(r[i]).toLocaleString('en-IN') : String(r[i] ?? '')));
     doc.autoTable({
       head: [pick(d.head).map((h, i) => (d.pdfCols[i] === d.money ? 'Amount' : h))], body: d.body.map(pick), startY: 62,
-      styles: { fontSize: 7.5, cellPadding: 3, overflow: 'linebreak' }, headStyles: { fillColor: [123, 30, 43] },
+      styles: { fontSize: 7.5, cellPadding: 3, overflow: 'linebreak' }, headStyles: { fillColor: [133, 22, 27] },
       margin: { left: 30, right: 30 },
       didDrawPage: () => { doc.setFontSize(8); doc.setTextColor(120); doc.text('Page ' + doc.internal.getNumberOfPages(), 780, 580); },
     });
@@ -691,7 +691,7 @@ function snapshotTable(title, sub, head, body, name) {
   const fit = (t, w) => { t = String(t); if (g.measureText(t).width <= w) return t; while (t && g.measureText(t + '…').width > w) t = t.slice(0, -1); return t + '…'; };
   [head, ...rows].forEach((r, i) => {
     const y = top + i * rowH;
-    g.fillStyle = i === 0 ? '#7b1e2b' : i % 2 ? '#fff' : '#f8f1f2'; g.fillRect(pad, y, width - pad * 2, rowH);
+    g.fillStyle = i === 0 ? '#85161b' : i % 2 ? '#fff' : '#f8f1f2'; g.fillRect(pad, y, width - pad * 2, rowH);
     g.fillStyle = i === 0 ? '#fff' : '#111'; g.font = (i === 0 ? 'bold ' : '') + '13px system-ui, sans-serif';
     let x = pad;
     r.forEach((c, j) => { g.fillText(fit(c, W[j] - 10), x + 5, y + 20); x += W[j]; });
