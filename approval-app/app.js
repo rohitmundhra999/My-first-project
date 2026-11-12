@@ -13,7 +13,7 @@ const state = {
   // storekeeper
   goods: null, gf: { unit: '', vendor: '', st: '', q: '' }, gsel: new Set(), gform: {}, gsf: { cluster: '', unit: '', vendor: '', st: '', q: '' },
   po: null, vendors: null, poSel: new Set(), poPrice: {}, poForm: { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: '', shipTo: '', newVendor: null }, poUnit: '', poDone: null,
-  store: { unit: '', view: 'raise', data: null, meta: {}, draft: null, rq: {}, inv: null, filter: 'pending', q: '', show: 150, done: null, formUnit: '',
+  store: { unit: '', view: 'raise', data: null, meta: {}, draft: null, rq: {}, inv: null, filter: 'pending', q: '', ven: '', show: 150, done: null, formUnit: '',
            byUnit: {}, raw: {}, base: null, prefetchedAt: 0, prefetching: false },
 };
 const STATUSES = ['Approved', 'Rejected', 'On Hold', 'Withdrawn'];
@@ -1423,7 +1423,10 @@ function invoiceHtml() {
 function statusHtml() {
   const q = sv.q.trim().toLowerCase();
   const all = (sv.data?.lines || []);
-  const rows = all.filter((l) => statusMatch(l, sv.filter) && (!q || [l.it, l.o, l.po || '', l.cat, l.ven || ''].join(' ').toLowerCase().includes(q)));
+  // Invoice uploaded: vendor drop-down with only the vendors in that list
+  const invVens = sv.filter === 'invoiced' ? [...new Set(all.filter((l) => statusMatch(l, 'invoiced')).map((l) => l.ven || 'Vendor not given'))].sort((a, b) => a.localeCompare(b)) : [];
+  if (!invVens.includes(sv.ven)) sv.ven = '';
+  const rows = all.filter((l) => statusMatch(l, sv.filter) && (!sv.ven || (l.ven || 'Vendor not given') === sv.ven) && (!q || [l.it, l.o, l.po || '', l.cat, l.ven || ''].join(' ').toLowerCase().includes(q)));
   const chips = STATUS_FILTERS.map(([k, label]) => {
     const m = all.filter((l) => statusMatch(l, k));
     const n = k === 'invoiced' ? new Set(m.map((l) => l.po.toUpperCase())).size : m.length;
@@ -1440,6 +1443,7 @@ function statusHtml() {
   }).join('');
   return `<input id="sSearch" class="field" type="search" placeholder="Search item, order no or PO" value="${esc(sv.q)}" aria-label="Search" style="width:100%;margin:2px 0 8px;font:inherit;padding:8px;border-radius:9px;border:1px solid var(--border);background:var(--surface);color:var(--ink)">
     <div class="chips">${chips}</div>
+    ${sv.filter === 'invoiced' ? `<select id="sVen" aria-label="Vendor" style="width:100%;margin:0 0 8px">${['', ...invVens].map((v) => `<option value="${esc(v)}"${v === sv.ven ? ' selected' : ''}>${v ? esc(v) : 'All vendors'}</option>`).join('')}</select>` : ''}
     ${rows.length ? list : '<p class="empty">No lines.</p>'}
     ${rows.length > sv.show && sv.filter !== 'po' && sv.filter !== 'invoiced' ? `<button class="btn sm more" id="sMore">Show more (${rows.length - sv.show} left)</button>` : ''}`;
 }
@@ -1599,6 +1603,7 @@ function unmountStoreReports() {
 }
 
 // ---- wiring (store) ----
+$('storeBody').addEventListener('change', (e) => { if (e.target.id === 'sVen') { sv.ven = e.target.value; renderStore(true); } });
 $('storeUnit').onchange = (e) => changeStoreUnit(e.target.value);
 document.querySelectorAll('[data-stype]').forEach((b) => (b.onclick = () => {
   sv.view = b.dataset.stype; if (sv.view !== 'raise') sv.done = null; renderStore(true);
@@ -1642,7 +1647,7 @@ $('storeBody').addEventListener('click', (e) => {
   if (t.dataset.recv) return saveReceived(t.dataset.recv);
   if (t.dataset.invopen) { sv.inv = { po: t.dataset.invopen }; renderStore(true); return; }
   if (t.dataset.invcancel !== undefined) { sv.inv = null; renderStore(true); return; }
-  if (t.dataset.sfilter) { sv.filter = t.dataset.sfilter; sv.show = 150; renderStore(true); return; }
+  if (t.dataset.sfilter) { sv.filter = t.dataset.sfilter; sv.ven = ''; sv.show = 150; renderStore(true); return; }
   if (t.id === 'sMore') { sv.show += 300; renderStore(true); }
 });
 
