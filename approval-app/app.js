@@ -11,7 +11,7 @@ const state = {
   dec: null, decAt: 0, decShow: 200,
   df: { view: 'list', approver: '', status: '', cluster: '', unit: '', month: '', q: '' },
   // storekeeper
-  goods: null, gf: { unit: '', vendor: '', st: '', q: '' }, hi: { unit: '', vendor: '', form: null }, hr: { unit: '', vendor: '', data: null, rq: {} }, gsel: new Set(), gform: {}, gsf: { cluster: '', unit: '', vendor: '', st: '', q: '' },
+  goods: null, gf: { unit: '', vendor: '', st: '', q: '' }, hi: { unit: '', vendor: '', form: null }, hr: { unit: '', vendor: '', data: null, rq: {} }, rt: { data: null, q: '', cmp: null, busy: '' }, gsel: new Set(), gform: {}, gsf: { cluster: '', unit: '', vendor: '', st: '', q: '' },
   po: null, vendors: null, poSel: new Set(), poPrice: {}, poForm: { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: '', shipTo: '', newVendor: null }, poUnit: '', poDone: null,
   store: { unit: '', view: 'raise', data: null, meta: {}, draft: null, rq: {}, inv: null, filter: 'pending', q: '', ven: '', show: 150, done: null, formUnit: '',
            byUnit: {}, raw: {}, base: null, prefetchedAt: 0, prefetching: false },
@@ -51,7 +51,7 @@ async function api(action, data = {}) {
   const write = WRITE_ACTIONS.includes(action) && action !== 'register';
   const body = JSON.stringify({ action, idToken: state.idToken, ...(state.viewAs && action !== 'register' ? { viewAs: state.viewAs } : {}),
     ...(write ? { requestId: newId() } : {}), ...data });
-  const limit = write ? 120000 : 45000;
+  const limit = write || action === 'rateCompare' ? 120000 : 45000;
   let lastErr = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt) await new Promise((r) => setTimeout(r, 1500));
@@ -188,6 +188,7 @@ function setupChrome() {
   $('tabGoods').hidden = !u.isHO;
   $('tabHoInv').hidden = !u.isHO;
   $('tabHoNr').hidden = !u.isHO;
+  $('tabRates').hidden = !u.isHO;
   $('tabStore').hidden = !hasStore();
   setupStoreUnits();
   $('approverPick').innerHTML = '<option value="">Choose approver…</option>' + state.me.approvers.map((n) => `<option>${esc(n)}</option>`).join('');
@@ -268,7 +269,7 @@ function setTab(tab, withMe) {
   if (tab === 'approve' && !u.isApprover) tab = u.isHO ? 'assign' : 'reports';
   if (tab === 'store' && !hasStore()) tab = 'reports';
   if (tab === 'po' && !u.isHO) tab = 'reports';
-  if ((tab === 'goods' || tab === 'hoinv' || tab === 'honr') && !u.isHO) tab = 'reports';
+  if ((tab === 'goods' || tab === 'hoinv' || tab === 'honr' || tab === 'rates') && !u.isHO) tab = 'reports';
   state.tab = tab; state.sel.clear();
   if (tab !== 'store' || state.store.view !== 'reports') unmountStoreReports();
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
@@ -278,6 +279,8 @@ function setTab(tab, withMe) {
   $('viewGoods').hidden = tab !== 'goods';
   $('viewHoInv').hidden = tab !== 'hoinv';
   $('viewHoNr').hidden = tab !== 'honr';
+  $('viewRates').hidden = tab !== 'rates';
+  if (tab === 'rates') loadRates();
   if (tab === 'honr') loadHoNr(false);
   if (tab === 'hoinv') renderHoInv(true);
   if (tab === 'goods') renderGoods();
@@ -330,7 +333,7 @@ function applySync(r, unit) {
     if (changed && !$('app').hidden) {   // roles or units changed since last time
       setupChrome();
       const t = state.tab;
-      if ((t === 'assign' && !me.user.isHO) || ((t === 'po' || t === 'goods' || t === 'hoinv' || t === 'honr') && !me.user.isHO) || (t === 'approve' && !me.user.isApprover) || (t === 'store' && !hasStore())) state.tab = null;
+      if ((t === 'assign' && !me.user.isHO) || ((t === 'po' || t === 'goods' || t === 'hoinv' || t === 'honr' || t === 'rates') && !me.user.isHO) || (t === 'approve' && !me.user.isApprover) || (t === 'store' && !hasStore())) state.tab = null;
     }
   });
   take('ho', (p) => (state.ho = p));
@@ -599,6 +602,17 @@ function exportData(which) {
       head: ['#', 'Order No', 'Requested', 'Decided', 'Unit', 'Cluster', 'Item', 'Qty asked', 'Qty approved', 'UOM', 'Status', 'Approver', 'Reason for rejection'],
       body: rows.map((l, i) => [i + 1, l.o, fmtDate(l.d), decDate(l), l.u, l.c, l.it, l.q, l.aq, l.uom, l.s, l.by, l.rm]),
       pdfCols: [0, 1, 2, 3, 4, 6, 7, 8, 10, 11, 12],
+    };
+  }
+  if (which === 'cr') {
+    const C = state.rt.cmp || { rows: [] };
+    return {
+      title: 'Rate comparison', file: `Rate comparison ${C.vendor || ''} ${stamp}`.replace(/\s+/g, ' '), money: -1,
+      filters: (C.vendor ? 'Vendor: ' + C.vendor + ' · ' : '') + (C.file || ''),
+      head: ['#', 'Quoted item', 'Qty', 'UOM', 'Quoted rate', 'Quoted GST %', 'Matched past item', 'Last rate', 'Last GST %', 'Diff Rs', 'Diff %', 'Last vendor', 'Last date', 'Last unit'],
+      body: C.rows.map((r, i) => { const d = rateDiff(r); return [i + 1, r.item, r.qty, r.uom, r.rate, r.gst, r.match || 'No past purchase', r.last ? r.last[6] : '', r.last ? r.last[7] : '',
+        d ? d.amt : '', d ? d.pct + '%' : '', r.last ? r.last[3] : '', r.last ? fmtDate(r.last[0]) : '', r.last ? r.last[2] : '']; }),
+      pdfCols: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     };
   }
   if (which === 'gs' || which === 'gsel' || which === 'gone') {
@@ -938,6 +952,82 @@ function setupHoNrEvents() {
   const body = $('hrBody');
   body.addEventListener('input', (e) => { const k = e.target.dataset.hrq; if (k) state.hr.rq[k] = e.target.value; });
   body.addEventListener('click', (e) => { const b = e.target.closest('[data-hrecv]'); if (b) hoSaveReceived(b.dataset.hrecv); });
+}
+
+// ---------- HO: check rates (last purchase rate + GST; AI compares a vendor quotation) ----------
+async function loadRates(fresh) {
+  const R = state.rt;
+  if (R.data && !fresh) return renderRates();
+  $('rtList').innerHTML = '<p class="empty">Loading item rates…</p>';
+  try { R.data = await api('rateList'); } catch (e) { return handleError(e); }
+  $('rtNames').innerHTML = Object.values(R.data.names).sort((a, b) => a.localeCompare(b)).map((n) => `<option value="${esc(n)}">`).join('');
+  renderRates();
+}
+const rateDiff = (r) => r.last && r.rate > 0 ? { amt: Math.round((r.rate - r.last[6]) * 100) / 100, pct: Math.round((r.rate - r.last[6]) / r.last[6] * 1000) / 10 } : null;
+function histHtml(h) {
+  return `<div class="sub">${fmtDate(h[0])} · ${esc(h[3] || 'Vendor not given')} · ${esc(h[2])} · PO ${esc(h[1])}${h[4] ? ' · ' + esc(h[4]) + ' ' + esc(h[5]) : ''}</div>`;
+}
+function renderRates() {
+  const R = state.rt, D = R.data;
+  if (!D) return;
+  const bf = D.backfill;
+  $('rtAsOf').textContent = `${D.count} past purchase lines · ${Object.keys(D.names).length} items · updated ${D.asOf}` + (bf && !bf.done ? ' · old PO PDFs are still being read in the background' : '');
+  const q = R.q.trim().toLowerCase();
+  if (!q) { $('rtList').innerHTML = '<p class="sub">Type an item name to see its last purchase rate and GST.</p>'; }
+  else {
+    const words = q.split(/\s+/);
+    const hits = Object.keys(D.names).filter((k) => words.every((w) => D.names[k].toLowerCase().includes(w)))
+      .sort((a, b) => (D.names[a].toLowerCase() === q ? -1 : 0) - (D.names[b].toLowerCase() === q ? -1 : 0) || D.idx[b][0][0].localeCompare(D.idx[a][0][0])).slice(0, 25);
+    $('rtList').innerHTML = hits.length ? hits.map((k) => {
+      const h = D.idx[k], l = h[0];
+      return `<article class="card">
+        <div class="top"><h3>${esc(D.names[k])}</h3><span class="amt">${inr(l[6])}${l[5] ? ' / ' + esc(l[5]) : ''}</span></div>
+        <div class="sub"><b>GST ${l[7] === '' ? 'not known' : esc(l[7]) + '%'}</b> · last bought ${fmtDate(l[0])} from ${esc(l[3] || '-')} · ${esc(l[2])} · PO ${esc(l[1])}</div>
+        ${h.length > 1 ? `<details><summary class="sub">Earlier rates (${h.length - 1})</summary>${h.slice(1).map((x) => `<div class="sub">${inr(x[6])} · GST ${x[7] === '' ? '-' : esc(x[7]) + '%'} · ${fmtDate(x[0])} · ${esc(x[3] || '-')} · ${esc(x[2])}</div>`).join('')}</details>` : ''}
+      </article>`;
+    }).join('') : '<p class="empty">No past purchase found for this item.</p>';
+  }
+  renderCompare();
+}
+function renderCompare() {
+  const R = state.rt, C = R.cmp, box = $('rtCmp');
+  $('rtDl').hidden = !(C && C.rows.length);
+  if (R.busy) { box.innerHTML = `<p class="sub">✨ ${esc(R.busy)}</p>`; return; }
+  if (!C) { box.innerHTML = ''; return; }
+  if (!C.rows.length) { box.innerHTML = '<p class="empty">AI found no item lines in this file.</p>'; return; }
+  const max = Math.max(...C.rows.map((r) => Math.max(r.rate || 0, r.last ? r.last[6] : 0)), 1);
+  const up = C.rows.filter((r) => { const d = rateDiff(r); return d && d.amt > 0; }).length, down = C.rows.filter((r) => { const d = rateDiff(r); return d && d.amt < 0; }).length;
+  box.innerHTML = `<p class="sub">${C.vendor ? '<b>' + esc(C.vendor) + '</b> · ' : ''}${C.rows.length} items · ${up} costlier · ${down} cheaper · ${C.rows.length - C.rows.filter((r) => r.last).length} with no past purchase</p>
+    <div class="legend sub"><span class="bar q"></span> Quoted rate <span class="bar l"></span> Last purchase rate</div>` +
+    C.rows.map((r) => {
+      const d = rateDiff(r);
+      return `<article class="card cmp">
+        <div class="top"><h3>${esc(r.item)}</h3>${d ? `<span class="age ${d.amt > 0 ? 'bad' : d.amt < 0 ? 'good' : ''}">${d.amt > 0 ? '+' : ''}${d.pct}%</span>` : '<span class="age">New item</span>'}</div>
+        <div class="sub">${r.match ? 'Matched to: <b>' + esc(r.match) + '</b>' : 'No past purchase of this item'}</div>
+        <div class="bars"><div class="bar q" style="width:${Math.max(2, r.rate / max * 55)}%"></div><span>${inr(r.rate)}${r.gst !== '' ? ' + ' + esc(r.gst) + '% GST' : ''} quoted</span></div>
+        ${r.last ? `<div class="bars"><div class="bar l" style="width:${Math.max(2, r.last[6] / max * 55)}%"></div><span>${inr(r.last[6])}${r.last[7] !== '' ? ' + ' + esc(r.last[7]) + '% GST' : ''} last paid</span></div>${histHtml(r.last)}` : ''}
+        ${d ? `<div class="sub">Difference: <b>${d.amt > 0 ? '+' : ''}${inr(d.amt)}</b> per ${esc(r.uom || 'unit')}${r.qty ? ` · on qty ${esc(r.qty)}: ${d.amt > 0 ? '+' : ''}${inr(Math.round(d.amt * r.qty))}` : ''}</div>` : ''}
+      </article>`;
+    }).join('');
+}
+async function compareQuote(file) {
+  const R = state.rt;
+  R.cmp = null; R.busy = 'Reading the quotation with AI and matching items… this can take up to a minute.'; renderCompare();
+  try {
+    let payload;
+    if (/\.(xlsx|xls|csv)$/i.test(file.name) || /sheet|excel|csv/.test(file.type)) {
+      await loadLibs('xlsx');
+      const wb = window.XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      payload = { text: wb.SheetNames.slice(0, 5).map((n) => window.XLSX.utils.sheet_to_csv(wb.Sheets[n], { blankrows: false })).join('\n\n').slice(0, 60000) };
+    } else { const f = await fileForUpload(file); payload = { file: { type: f.type, data: f.data } }; }
+    const r = await api('rateCompare', payload);
+    R.cmp = { vendor: r.vendor, rows: r.rows, file: file.name };
+  } catch (e) { R.busy = ''; renderCompare(); return handleError(e); }
+  R.busy = ''; renderCompare();
+}
+function setupRatesEvents() {
+  $('rtSearch').oninput = (e) => { state.rt.q = e.target.value; renderRates(); };
+  $('rtFile').onchange = (e) => { const f = e.target.files[0]; if (f) compareQuote(f); e.target.value = ''; };
 }
 
 // ---------- Reports: status of goods ----------
@@ -2007,9 +2097,11 @@ $('tabPO').onclick = () => setTab('po');
 $('tabGoods').onclick = () => setTab('goods');
 $('tabHoInv').onclick = () => setTab('hoinv');
 $('tabHoNr').onclick = () => setTab('honr');
+$('tabRates').onclick = () => setTab('rates');
 setupGoodsEvents();
 setupHoInvEvents();
 setupHoNrEvents();
+setupRatesEvents();
 [['dApprover', 'approver'], ['dStatus', 'status'], ['dCluster', 'cluster'], ['dUnit', 'unit'], ['dMonth', 'month']].forEach(([id, k]) =>
   ($(id).onchange = (e) => { state.df[k] = e.target.value; if (k === 'cluster') state.df.unit = ''; state.decShow = 200; renderDecisions(); }));
 $('dSearch').oninput = (e) => { state.df.q = e.target.value; state.decShow = 200; renderDecisions(); };

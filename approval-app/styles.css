@@ -260,3 +260,12 @@ body.actas .viewas { background: #e3f0e4; }
 #viewReports.instore #gsCluster, #viewReports.instore #gsUnit { display: none; }
 .aihint { margin: 0; font-size: 13px; color: var(--muted, #667); }
 form.aibusy input[name="no"], form.aibusy input[name="date"], form.aibusy input[name="amount"] { opacity: .5; }
+
+.sect { margin: 14px 0 6px; font-size: 15px; }
+.age.good { background: var(--ok, #2e7d32); color: #fff; }
+.cmp .bars { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 13px; }
+.cmp .bars span { white-space: nowrap; }
+.bar { display: inline-block; height: 12px; border-radius: 3px; min-width: 4px; }
+.cmp .bars .bar { flex: 0 0 auto; }
+.bar.q { background: #1b5e20; } .bar.l { background: #9e9e9e; }
+.legend { display: flex; gap: 6px; align-items: center; margin: 4px 0 8px; } .legend .bar { width: 18px; }
