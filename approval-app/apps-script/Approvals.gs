@@ -1302,7 +1302,7 @@ function storeInvoice_(user, req) {
   let lines = 0, received = 0, unit = '';
   pos.forEach((p, i) => {
     if (String(p[0]).trim().toUpperCase() !== key) return;
-    unit = checkUnit_(user, units[i][0]);
+    unit = user.isHO ? (storeMetaData_().units.find(k => normU_(k) === normU_(units[i][0])) || String(units[i][0]).trim()) : checkUnit_(user, units[i][0]);   // HO may upload for any unit
     lines++;
     if (rcv[i][0] !== '') received++;
   });
