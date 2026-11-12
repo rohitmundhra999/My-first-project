@@ -11,7 +11,7 @@ const state = {
   dec: null, decAt: 0, decShow: 200,
   df: { view: 'list', approver: '', status: '', cluster: '', unit: '', month: '', q: '' },
   // storekeeper
-  goods: null, gf: { unit: '', vendor: '', st: '', q: '' }, hi: { unit: '', vendor: '', form: null }, gsel: new Set(), gform: {}, gsf: { cluster: '', unit: '', vendor: '', st: '', q: '' },
+  goods: null, gf: { unit: '', vendor: '', st: '', q: '' }, hi: { unit: '', vendor: '', form: null }, hr: { unit: '', vendor: '', data: null, rq: {} }, gsel: new Set(), gform: {}, gsf: { cluster: '', unit: '', vendor: '', st: '', q: '' },
   po: null, vendors: null, poSel: new Set(), poPrice: {}, poForm: { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: '', shipTo: '', newVendor: null }, poUnit: '', poDone: null,
   store: { unit: '', view: 'raise', data: null, meta: {}, draft: null, rq: {}, inv: null, filter: 'pending', q: '', ven: '', show: 150, done: null, formUnit: '',
            byUnit: {}, raw: {}, base: null, prefetchedAt: 0, prefetching: false },
@@ -187,6 +187,7 @@ function setupChrome() {
   $('tabPO').hidden = !u.isHO;
   $('tabGoods').hidden = !u.isHO;
   $('tabHoInv').hidden = !u.isHO;
+  $('tabHoNr').hidden = !u.isHO;
   $('tabStore').hidden = !hasStore();
   setupStoreUnits();
   $('approverPick').innerHTML = '<option value="">Choose approver…</option>' + state.me.approvers.map((n) => `<option>${esc(n)}</option>`).join('');
@@ -267,7 +268,7 @@ function setTab(tab, withMe) {
   if (tab === 'approve' && !u.isApprover) tab = u.isHO ? 'assign' : 'reports';
   if (tab === 'store' && !hasStore()) tab = 'reports';
   if (tab === 'po' && !u.isHO) tab = 'reports';
-  if ((tab === 'goods' || tab === 'hoinv') && !u.isHO) tab = 'reports';
+  if ((tab === 'goods' || tab === 'hoinv' || tab === 'honr') && !u.isHO) tab = 'reports';
   state.tab = tab; state.sel.clear();
   if (tab !== 'store' || state.store.view !== 'reports') unmountStoreReports();
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
@@ -276,6 +277,8 @@ function setTab(tab, withMe) {
   $('viewPO').hidden = tab !== 'po';
   $('viewGoods').hidden = tab !== 'goods';
   $('viewHoInv').hidden = tab !== 'hoinv';
+  $('viewHoNr').hidden = tab !== 'honr';
+  if (tab === 'honr') loadHoNr(false);
   if (tab === 'hoinv') renderHoInv(true);
   if (tab === 'goods') renderGoods();
   if (tab === 'po') renderPO(true);
@@ -327,7 +330,7 @@ function applySync(r, unit) {
     if (changed && !$('app').hidden) {   // roles or units changed since last time
       setupChrome();
       const t = state.tab;
-      if ((t === 'assign' && !me.user.isHO) || ((t === 'po' || t === 'goods' || t === 'hoinv') && !me.user.isHO) || (t === 'approve' && !me.user.isApprover) || (t === 'store' && !hasStore())) state.tab = null;
+      if ((t === 'assign' && !me.user.isHO) || ((t === 'po' || t === 'goods' || t === 'hoinv' || t === 'honr') && !me.user.isHO) || (t === 'approve' && !me.user.isApprover) || (t === 'store' && !hasStore())) state.tab = null;
     }
   });
   take('ho', (p) => (state.ho = p));
@@ -858,6 +861,83 @@ function setupHoInvEvents() {
   body.addEventListener('input', (e) => { const t = e.target; if (t.form && t.form.id === 'hoInvForm' && state.hi.form && t.name !== 'file') state.hi.form[t.name] = t.value; });
   body.addEventListener('change', (e) => { const t = e.target; if (t.name === 'file' && t.form && t.form.id === 'hoInvForm' && t.files[0]) aiReadInvoice(t.form, t.files[0], () => state.hi.form); });
   body.addEventListener('submit', (e) => { if (e.target.id === 'hoInvForm') { e.preventDefault(); hoUploadInvoice(e.target); } });
+}
+
+// ---------- HO: material not received (any unit), receive like the store ----------
+async function loadHoNr(fresh) {
+  const H = state.hr;
+  if (!H.data) $('hrBody').innerHTML = '<p class="empty">Loading… this can take a few seconds.</p>';
+  try { H.data = await api('hoReceiveList', fresh ? { fresh: true } : {}); } catch (e) { return handleError(e); }
+  if (state.tab === 'honr') renderHoNr();
+}
+function hoNrGroups() {
+  const H = state.hr, map = new Map();
+  (H.data?.lines || []).filter((l) => (!H.unit || l.u === H.unit) && (!H.vendor || (l.ven || 'No vendor') === H.vendor)).forEach((l) => {
+    const k = l.u + '|' + l.po.toUpperCase();
+    if (!map.has(k)) map.set(k, { u: l.u, po: l.po, ven: l.ven, amt: l.amt, d: l.d, pol: H.data.pol[l.po], lines: [] });
+    map.get(k).lines.push(l);
+  });
+  return [...map.values()].sort((a, b) => a.d.localeCompare(b.d));
+}
+function renderHoNr() {
+  const H = state.hr, body = $('hrBody');
+  if (!H.data) return;
+  const all = H.data.lines;
+  H.unit = fillSelect('hrUnit', 'All units', [...new Set(all.map((l) => l.u))].sort((a, b) => a.localeCompare(b)).map((u) => [u, u]), H.unit);
+  const vend = [...new Set(all.filter((l) => !H.unit || l.u === H.unit).map((l) => l.ven || 'No vendor'))].sort((a, b) => a.localeCompare(b));
+  H.vendor = fillSelect('hrVendor', 'All vendors', vend.map((v) => [v, v]), H.vendor);
+  const groups = hoNrGroups();
+  $('hrAsOf').textContent = `${groups.length} PO${groups.length === 1 ? '' : 's'} not received · updated ${H.data.asOf}`;
+  body.innerHTML = groups.length ? `<p class="sub">Enter the quantity that actually arrived. Clear the box for items that have not come yet.</p>` + groups.map((g) => {
+    const days = daysSince(g.d);
+    return `<article class="card">
+      <div class="top"><h3>PO ${esc(g.po)}</h3><span class="age ${days > 30 ? 'bad' : days > 15 ? 'warn' : ''}">${days} days</span></div>
+      <div class="sub">${esc(g.u)} · ${esc(g.ven || 'Vendor not given')} · ${fmtDate(g.d)}${g.amt ? ' · ' + inr(g.amt) : ''}${g.pol ? ` · <a href="${esc(g.pol)}" target="_blank" rel="noopener">View PO</a>` : ''}</div>
+      ${g.lines.map((l) => {
+        const k = l.row + '|' + l.o, ordered = l.aq !== '' && l.aq != null ? l.aq : l.q;
+        const v = k in H.rq ? H.rq[k] : ordered;
+        return `<div class="rline">
+          <div class="lmain"><span class="item">${esc(l.it)}</span><span class="sub">Ordered ${esc(ordered)} ${esc(l.uom)} · ${esc(l.o)}</span></div>
+          <label class="qty">Recd <input type="number" inputmode="decimal" min="0" step="any" data-hrq="${esc(k)}" value="${esc(v)}" aria-label="Received quantity of ${esc(l.it)}"></label>
+        </div>`;
+      }).join('')}
+      <div class="formfoot" style="margin:8px 0 0"><span></span><button class="btn primary" data-hrecv="${esc(g.u + '|' + g.po)}">Save received</button></div>
+    </article>`;
+  }).join('') : '<p class="empty">No material pending for these filters.</p>';
+}
+function hoSaveReceived(key) {
+  if (!noPreview()) return;
+  const H = state.hr, g = hoNrGroups().find((x) => x.u + '|' + x.po === key);
+  if (!g) return;
+  const items = [];
+  for (const l of g.lines) {
+    const k = l.row + '|' + l.o;
+    const input = document.querySelector(`[data-hrq="${CSS.escape(k)}"]`);
+    const v = input ? input.value.trim() : '';
+    if (v === '') continue;
+    const n = Number(v);
+    if (!(n > 0)) return toast(`Enter a quantity above 0 for ${l.it}, or clear the box.`, true);
+    items.push({ row: l.row, orderNo: l.o, qty: n, it: l.it, ordered: l.aq !== '' && l.aq != null ? Number(l.aq) : Number(l.q) });
+  }
+  if (!items.length) return toast('Enter the received quantity for at least one item.', true);
+  const over = items.filter((i) => i.qty > i.ordered);
+  if (over.length && !confirm(`More than ordered for: ${over.map((i) => i.it).join(', ')}. Save anyway?`)) return;
+  run('storeReceive', async () => {
+    const r = await api('storeReceive', { items: items.map(({ row, orderNo, qty }) => ({ row, orderNo, qty })) });
+    const ok = new Set(items.map((i) => i.row));
+    (r.skipped || []).forEach((s) => { const it = items.find((i) => i.orderNo === s.orderNo); if (it) ok.delete(it.row); });
+    H.data.lines = H.data.lines.filter((l) => !ok.has(l.row));
+    items.forEach((i) => delete H.rq[i.row + '|' + i.orderNo]);
+    toast(`${r.received} item${r.received === 1 ? '' : 's'} marked received for PO ${g.po}.` + skippedText(r.skipped), r.skipped.length > 0);
+    renderHoNr();
+  });
+}
+function setupHoNrEvents() {
+  $('hrUnit').onchange = (e) => { state.hr.unit = e.target.value; state.hr.vendor = ''; renderHoNr(); };
+  $('hrVendor').onchange = (e) => { state.hr.vendor = e.target.value; renderHoNr(); };
+  const body = $('hrBody');
+  body.addEventListener('input', (e) => { const k = e.target.dataset.hrq; if (k) state.hr.rq[k] = e.target.value; });
+  body.addEventListener('click', (e) => { const b = e.target.closest('[data-hrecv]'); if (b) hoSaveReceived(b.dataset.hrecv); });
 }
 
 // ---------- Reports: status of goods ----------
@@ -1926,8 +2006,10 @@ $('tabStore').onclick = () => setTab('store');
 $('tabPO').onclick = () => setTab('po');
 $('tabGoods').onclick = () => setTab('goods');
 $('tabHoInv').onclick = () => setTab('hoinv');
+$('tabHoNr').onclick = () => setTab('honr');
 setupGoodsEvents();
 setupHoInvEvents();
+setupHoNrEvents();
 [['dApprover', 'approver'], ['dStatus', 'status'], ['dCluster', 'cluster'], ['dUnit', 'unit'], ['dMonth', 'month']].forEach(([id, k]) =>
   ($(id).onchange = (e) => { state.df[k] = e.target.value; if (k === 'cluster') state.df.unit = ''; state.decShow = 200; renderDecisions(); }));
 $('dSearch').oninput = (e) => { state.df.q = e.target.value; state.decShow = 200; renderDecisions(); };
@@ -1943,7 +2025,7 @@ document.querySelectorAll('[data-rview]').forEach((b) => (b.onclick = () => { st
   ($(id).onchange = (e) => { state.rep[k] = e.target.value; if (k === 'cluster') state.rep.unit = ''; renderReports(); }));
 $('fSearch').oninput = (e) => { state.rep.q = e.target.value; renderReports(); };
 $('btnClear').onclick = () => { Object.assign(state.rep, { cluster: '', unit: '', vendor: '', month: '', age: '', q: '' }); renderReports(); };
-$('btnRefresh').onclick = () => { toast('Reading the latest from the sheet…'); run('refresh', () => refresh(true)); };
+$('btnRefresh').onclick = () => { toast('Reading the latest from the sheet…'); run('refresh', () => refresh(true)); if (state.tab === 'honr') loadHoNr(true); };
 $('btnSignOut').onclick = signOut;
 $('btnAssign').onclick = assignSelected;
 $('aUnit').onchange = (e) => { state.aUnit = e.target.value; render(); };
