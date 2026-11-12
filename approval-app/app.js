@@ -666,7 +666,7 @@ async function download(which, fmt, share) {
     const pick = (r) => d.pdfCols.map((i) => (i === d.money ? 'Rs ' + Number(r[i]).toLocaleString('en-IN') : String(r[i] ?? '')));
     doc.autoTable({
       head: [pick(d.head).map((h, i) => (d.pdfCols[i] === d.money ? 'Amount' : h))], body: d.body.map(pick), startY: 62,
-      styles: { fontSize: 7.5, cellPadding: 3, overflow: 'linebreak' }, headStyles: { fillColor: [27, 94, 32] },
+      styles: { fontSize: 7.5, cellPadding: 3, overflow: 'linebreak' }, headStyles: { fillColor: [123, 30, 43] },
       margin: { left: 30, right: 30 },
       didDrawPage: () => { doc.setFontSize(8); doc.setTextColor(120); doc.text('Page ' + doc.internal.getNumberOfPages(), 780, 580); },
     });
@@ -691,7 +691,7 @@ function snapshotTable(title, sub, head, body, name) {
   const fit = (t, w) => { t = String(t); if (g.measureText(t).width <= w) return t; while (t && g.measureText(t + '…').width > w) t = t.slice(0, -1); return t + '…'; };
   [head, ...rows].forEach((r, i) => {
     const y = top + i * rowH;
-    g.fillStyle = i === 0 ? '#1b5e20' : i % 2 ? '#fff' : '#f2f6f2'; g.fillRect(pad, y, width - pad * 2, rowH);
+    g.fillStyle = i === 0 ? '#7b1e2b' : i % 2 ? '#fff' : '#f8f1f2'; g.fillRect(pad, y, width - pad * 2, rowH);
     g.fillStyle = i === 0 ? '#fff' : '#111'; g.font = (i === 0 ? 'bold ' : '') + '13px system-ui, sans-serif';
     let x = pad;
     r.forEach((c, j) => { g.fillText(fit(c, W[j] - 10), x + 5, y + 20); x += W[j]; });
@@ -998,14 +998,14 @@ function renderCompare() {
   const max = Math.max(...C.rows.map((r) => Math.max(r.rate || 0, r.last ? r.last[6] : 0)), 1);
   const up = C.rows.filter((r) => { const d = rateDiff(r); return d && d.amt > 0; }).length, down = C.rows.filter((r) => { const d = rateDiff(r); return d && d.amt < 0; }).length;
   box.innerHTML = `<p class="sub">${C.vendor ? '<b>' + esc(C.vendor) + '</b> · ' : ''}${C.rows.length} items · ${up} costlier · ${down} cheaper · ${C.rows.length - C.rows.filter((r) => r.last).length} with no past purchase</p>
-    <div class="legend sub"><span class="bar q"></span> Quoted rate <span class="bar l"></span> Last purchase rate</div>` +
+    <div class="legend sub"><span class="cbar q"></span> Quoted rate <span class="cbar l"></span> Last purchase rate</div>` +
     C.rows.map((r) => {
       const d = rateDiff(r);
       return `<article class="card cmp">
         <div class="top"><h3>${esc(r.item)}</h3>${d ? `<span class="age ${d.amt > 0 ? 'bad' : d.amt < 0 ? 'good' : ''}">${d.amt > 0 ? '+' : ''}${d.pct}%</span>` : '<span class="age">New item</span>'}</div>
         <div class="sub">${r.match ? 'Matched to: <b>' + esc(r.match) + '</b>' : 'No past purchase of this item'}</div>
-        <div class="bars"><div class="bar q" style="width:${Math.max(2, r.rate / max * 55)}%"></div><span>${inr(r.rate)}${r.gst !== '' ? ' + ' + esc(r.gst) + '% GST' : ''} quoted</span></div>
-        ${r.last ? `<div class="bars"><div class="bar l" style="width:${Math.max(2, r.last[6] / max * 55)}%"></div><span>${inr(r.last[6])}${r.last[7] !== '' ? ' + ' + esc(r.last[7]) + '% GST' : ''} last paid</span></div>${histHtml(r.last)}` : ''}
+        <div class="bars"><div class="cbar q" style="width:${Math.max(2, r.rate / max * 55)}%"></div><span>${inr(r.rate)}${r.gst !== '' ? ' + ' + esc(r.gst) + '% GST' : ''} quoted</span></div>
+        ${r.last ? `<div class="bars"><div class="cbar l" style="width:${Math.max(2, r.last[6] / max * 55)}%"></div><span>${inr(r.last[6])}${r.last[7] !== '' ? ' + ' + esc(r.last[7]) + '% GST' : ''} last paid</span></div>${histHtml(r.last)}` : ''}
         ${d ? `<div class="sub">Difference: <b>${d.amt > 0 ? '+' : ''}${inr(d.amt)}</b> per ${esc(r.uom || 'unit')}${r.qty ? ` · on qty ${esc(r.qty)}: ${d.amt > 0 ? '+' : ''}${inr(Math.round(d.amt * r.qty))}` : ''}</div>` : ''}
       </article>`;
     }).join('');
