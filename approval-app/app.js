@@ -1925,6 +1925,7 @@ $('tabReports').onclick = () => setTab('reports');
 $('tabStore').onclick = () => setTab('store');
 $('tabPO').onclick = () => setTab('po');
 $('tabGoods').onclick = () => setTab('goods');
+$('tabHoInv').onclick = () => setTab('hoinv');
 setupGoodsEvents();
 setupHoInvEvents();
 [['dApprover', 'approver'], ['dStatus', 'status'], ['dCluster', 'cluster'], ['dUnit', 'unit'], ['dMonth', 'month']].forEach(([id, k]) =>
