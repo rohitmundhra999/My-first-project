@@ -258,3 +258,5 @@ body.actas .viewas { background: #e3f0e4; }
 #storeRepSlot #viewReports > .seg { position: static; box-shadow: none; }
 #viewReports.instore #fCluster, #viewReports.instore #fUnit, #viewReports.instore #dCluster, #viewReports.instore #dUnit,
 #viewReports.instore #gsCluster, #viewReports.instore #gsUnit { display: none; }
+.aihint { margin: 0; font-size: 13px; color: var(--muted, #667); }
+form.aibusy input[name="no"], form.aibusy input[name="date"], form.aibusy input[name="amount"] { opacity: .5; }

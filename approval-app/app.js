@@ -1410,10 +1410,11 @@ function invoiceHtml() {
       <div class="sub">${esc(g.ven || 'Vendor not given')} · ${fmtDate(g.d)} · ${g.lines.length} line${g.lines.length > 1 ? 's' : ''} received${g.pol ? ` · <a href="${esc(g.pol)}" target="_blank" rel="noopener">View PO</a>` : ''}</div>
       <div class="items">${g.lines.map((l) => esc(l.it) + ' (' + esc(l.rcv) + ' ' + esc(l.uom) + ')').join(', ')}</div>
       ${open ? `<form class="grid2" id="invForm" data-po="${esc(g.po)}">
+        <label class="field full">Invoice photo or PDF<input name="file" type="file" accept="image/*,application/pdf" required></label>
+        <p class="field full aihint" id="invAi">${f.ai ? esc(f.ai) : '✨ Choose the invoice first – AI will fill the number, date and total for you.'}</p>
         <label class="field">Invoice number<input name="no" maxlength="40" required value="${esc(f.no || '')}"></label>
         <label class="field">Invoice date<input name="date" type="date" max="${today}" required value="${esc(f.date || today)}"></label>
         <label class="field">Invoice total (₹)<input name="amount" type="number" inputmode="decimal" min="0" step="any" required value="${esc(f.amount ?? (g.amt || ''))}"></label>
-        <label class="field">Invoice photo or PDF<input name="file" type="file" accept="image/*,application/pdf" required></label>
         <div class="formfoot field full storeact"><button type="button" class="btn ghost" data-invcancel>Cancel</button><button type="submit" class="btn primary">Upload invoice</button></div>
       </form>` : `<div class="formfoot storeact" style="margin:8px 0 0"><span></span><button class="btn primary" data-invopen="${esc(g.po)}">Upload invoice</button></div>`}
     </article>`;
@@ -1558,6 +1559,28 @@ function saveReceived(po) {
     .finally(() => { endSave(sid); renderStore(true); });
 }
 
+// AI: when the invoice is chosen, Gemini (on the server) reads the number, date and total and fills the form.
+// The storekeeper checks the values and can change any of them before uploading.
+async function aiReadInvoice(form, file) {
+  const hint = $('invAi'), po = form.dataset.po;
+  const say = (msg) => { if (hint) hint.textContent = msg; if (sv.inv && sv.inv.po === po) sv.inv.ai = msg; };
+  let f;
+  try { f = await fileForUpload(file); } catch (e) { return say(e.message); }
+  say('✨ Reading the invoice with AI…');
+  form.classList.add('aibusy');
+  try {
+    const r = await api('readInvoice', { file: { type: f.type, data: f.data } });
+    if (!form.isConnected || !sv.inv || sv.inv.po !== po) return;
+    const got = [];
+    if (r.invoiceNo) { form.no.value = r.invoiceNo; sv.inv.no = r.invoiceNo; got.push('number'); }
+    if (r.date) { form.date.value = r.date; sv.inv.date = r.date; got.push('date'); }
+    if (r.amount > 0) { form.amount.value = r.amount; sv.inv.amount = r.amount; got.push('total'); }
+    say(got.length ? `✨ AI filled the invoice ${got.join(', ')}. Please check before uploading.` : '✨ AI could not read the details. Please type them.');
+  } catch (e) {
+    say('✨ ' + ((e && e.message) || 'AI could not read this invoice.') .replace(/^✨ /, ''));
+  } finally { form.classList.remove('aibusy'); }
+}
+
 async function uploadInvoice(form) {
   if (!noPreview()) return;
   const po = form.dataset.po;
@@ -1629,6 +1652,7 @@ $('storeBody').addEventListener('input', (e) => {
 $('storeBody').addEventListener('change', async (e) => {
   const t = e.target;
   if (t.dataset.f) sv.draft[+t.dataset.i][t.dataset.f] = t.value;
+  if (t.name === 'file' && t.form && t.form.id === 'invForm' && t.files[0]) return aiReadInvoice(t.form, t.files[0]);
   if (t.dataset.photo !== undefined && t.files[0]) {
     try { sv.draft[+t.dataset.photo].photo = await shrinkImage(t.files[0], 1280, 0.75); } catch (err) { return toast(err.message, true); }
     sv.formUnit = ''; renderStore(true);
