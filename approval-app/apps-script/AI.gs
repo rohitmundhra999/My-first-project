@@ -4,13 +4,13 @@
 // Nothing is written to the sheet here.
 // Script properties: GEMINI_API_KEY (required), GEMINI_MODEL (optional, default below).
 
-const AI_CFG = { MODEL: 'gemini-2.5-flash' };
+const AI_CFG = { MODELS: ['gemini-3.5-flash', 'gemini-3.1-flash-lite'] };   // 2nd one is used when the 1st is busy
 
 function readInvoice_(user, req) {
   checkFile_(req.file, ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'], STORE_CFG.MAX_FILE, 'Invoice file');
   const key = prop_('GEMINI_API_KEY', '');
   if (!key) throw appError_('SETUP', 'AI invoice reading is not set up yet. Please type the details.');
-  const model = prop_('GEMINI_MODEL', AI_CFG.MODEL);
+  const models = prop_('GEMINI_MODEL', '') ? [prop_('GEMINI_MODEL')] : AI_CFG.MODELS;
   const prompt = 'This is a purchase invoice / tax invoice / bill from an Indian vendor. Read it and return: ' +
     'invoiceNo = the invoice or bill number exactly as printed (not the PO, GSTIN, challan or order number); ' +
     'date = the invoice date as YYYY-MM-DD (Indian dates are day/month/year); ' +
@@ -25,15 +25,19 @@ function readInvoice_(user, req) {
         required: ['invoiceNo', 'date', 'amount'] }
     }
   };
-  const res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
-    { method: 'post', contentType: 'application/json', headers: { 'x-goog-api-key': key }, payload: JSON.stringify(body), muteHttpExceptions: true });
-  const code = res.getResponseCode();
+  let res, code;
+  for (let k = 0; k < models.length; k++) {
+    res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(models[k]) + ':generateContent',
+      { method: 'post', contentType: 'application/json', headers: { 'x-goog-api-key': key }, payload: JSON.stringify(body), muteHttpExceptions: true });
+    code = res.getResponseCode();
+    if (code !== 429 && code !== 503 && code !== 404) break;
+  }
   if (code === 429) throw appError_('BUSY', 'AI is busy right now. Please type the details or try again in a minute.');
   if (code !== 200) { console.warn('Gemini ' + code + ': ' + res.getContentText().slice(0, 500)); throw appError_('AI', 'AI could not read this invoice. Please type the details.'); }
   let out = {};
   try {
     const j = JSON.parse(res.getContentText());
-    out = JSON.parse(j.candidates[0].content.parts.map((p) => p.text || '').join(''));
+    out = JSON.parse(j.candidates[0].content.parts.filter((p) => !p.thought).map((p) => p.text || '').join(''));
   } catch (e) { throw appError_('AI', 'AI could not read this invoice. Please type the details.'); }
 
   const no = String(out.invoiceNo || '').trim().slice(0, 40);
