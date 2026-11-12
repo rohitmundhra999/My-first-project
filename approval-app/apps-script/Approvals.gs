@@ -67,7 +67,7 @@ function doPost(e) {
     const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_,
       reports: (u, r) => scopeReports_(u, reports_(u, r)), decisions: (u, r) => scopeReports_(u, decisions_(u, r)), testPush: testPush_,
       storeMeta: storeMeta_, storeList: storeList_, storeRaise: storeRaise_, storeReceive: storeReceive_, storeInvoice: storeInvoice_,
-      sync: sync_, makePO: makePO_ };
+      sync: sync_, makePO: makePO_, readInvoice: readInvoice_, hoReceiveList: hoReceiveList_ };
     const fn = handlers[req.action];
     if (!fn) throw appError_('BAD_REQUEST', 'Unknown action.');
     const user = previewUser_(realUser, req);
@@ -1260,7 +1260,7 @@ function storeReceive_(user, req) {
     items.forEach(it => {
       const r = sh.getRange(it.row, 1, 1, SCOL.LAST).getValues()[0];
       if (String(r[COL.ORDER - 1]).trim() !== it.orderNo) return skipped.push({ orderNo: it.orderNo, why: 'Line moved in the sheet. Refresh and try again.' });
-      checkUnit_(user, r[COL.UNIT - 1]);   // never another unit's line
+      if (!user.isHO) checkUnit_(user, r[COL.UNIT - 1]);   // never another unit's line (HO may receive for any unit)
       if (String(r[COL.APPROVAL - 1]).trim() !== 'Approved') return skipped.push({ orderNo: it.orderNo, why: 'Not approved.' });
       if (!String(r[SCOL.PO - 1]).trim()) return skipped.push({ orderNo: it.orderNo, why: 'No PO yet.' });
       if (r[SCOL.RECEIVED - 1] !== '') return skipped.push({ orderNo: it.orderNo, why: 'Already received (' + r[SCOL.RECEIVED - 1] + ').' });
