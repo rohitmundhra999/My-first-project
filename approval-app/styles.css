@@ -310,3 +310,8 @@ html, body { overflow-x: clip; }
   main { padding: 0 10px 24px; }
   .viewas { padding-top: 6px; padding-bottom: 6px; }
 }
+/* Desktop: table fits the screen, so lock the month heading row under the report tabs while the page scrolls */
+@media (min-width: 700px) {
+  .mwrap { overflow: visible; max-height: none; }
+  .matrix th { top: calc(var(--top, 56px) + var(--tabsH, 48px) + 54px); }
+}
