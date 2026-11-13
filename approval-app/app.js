@@ -699,6 +699,7 @@ function snapshotTable(title, sub, head, body, name) {
   g.fillStyle = '#fff'; g.fillRect(0, 0, width, height);
   g.fillStyle = '#111'; g.font = 'bold 18px system-ui, sans-serif'; g.fillText('Summit Procurement - ' + title, pad, 30);
   g.fillStyle = '#555'; g.font = '12px system-ui, sans-serif'; g.fillText(sub.length > 160 ? sub.slice(0, 157) + '…' : sub, pad, 52);
+  g.fillStyle = '#111'; g.font = 'bold 15px system-ui, sans-serif'; billLines.forEach((t, i) => g.fillText(t, pad, 88 + i * 22));
   const fit = (t, w) => { t = String(t); if (g.measureText(t).width <= w) return t; while (t && g.measureText(t + '…').width > w) t = t.slice(0, -1); return t + '…'; };
   [head, ...rows].forEach((r, i) => {
     const y = top + i * rowH;
@@ -1293,6 +1294,17 @@ async function exportRequirement(kind) {
   const when = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
   const sub = `${units.join(', ')} · ${ls.length} item${ls.length > 1 ? 's' : ''} · ${when}`;
   const stamp = new Date().toISOString().slice(0, 10);
+  if (!(state.hotels && state.hotels.length && state.hotels[0].length > 3)) {   // billing details of each unit (from the P.O tab)
+    try { const r = await api('sync', { want: { vendors: true } }); if (r.vendors && !r.vendors.error) { state.vendors = r.vendors.list; if (r.vendors.hotels) state.hotels = r.vendors.hotels; } } catch (e) { /* print without them */ }
+  }
+  const nz = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const hl = state.hotels || [];
+  const bill = units.map((u) => {
+    const k = nz(u) === 'headoffice' ? 'goods' : nz(u);
+    const h = hl.find((x) => nz(x[0]) === k || nz(x[1]) === k) || hl.find((x) => nz(x[0]) && k.indexOf(nz(x[0])) === 0);
+    if (!h) return `Bill to (${u}): details not found`;
+    return `Bill to (${u}): ${h[1]}${h[3] ? ', ' + h[3].replace(/\s*\n\s*/g, ', ') : ''}${h[4] ? ' · Ph ' + h[4] : ''}${h[2] ? ' · GSTIN ' + h[2] : ''}`;
+  });
   const head = ['#', 'Unit', 'Item', 'Qty', 'UOM', 'Category'];
   const body = ls.map((l, i) => [i + 1, l.unit, l.item, l.qty === '' ? '' : String(l.qty), l.uom, l.category || '']);
   if (kind === 'pdf') {
@@ -1301,12 +1313,18 @@ async function exportRequirement(kind) {
     const doc = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
     doc.setFontSize(15); doc.text('Summit Hotels and Resorts - Purchase requirement', 40, 42);
     doc.setFontSize(9); doc.setTextColor(90); doc.text(doc.splitTextToSize(sub, 515), 40, 58);
-    doc.autoTable({ startY: 72, head: [head], body, styles: { fontSize: 9, cellPadding: 4 }, headStyles: { fillColor: [30, 64, 120] },
+    doc.setFontSize(10); doc.setTextColor(20); let y = 76;
+    bill.forEach((b) => { const t = doc.splitTextToSize(b, 515); doc.text(t, 40, y); y += t.length * 12 + 4; });
+    doc.autoTable({ startY: y + 4, head: [head], body, styles: { fontSize: 9, cellPadding: 4 }, headStyles: { fillColor: [30, 64, 120] },
       columnStyles: { 0: { cellWidth: 24 }, 3: { halign: 'right' } }, margin: { left: 40, right: 40 } });
     return shareFile(doc.output('blob'), `Requirement ${stamp}.pdf`);
   }
   // Snapshot: the same table drawn as a picture (PNG)
-  const W = [40, 190, 420, 80, 80, 170], pad = 10, rowH = 34, top = 86, width = W.reduce((a, b) => a + b, 0) + pad * 2;
+  const W = [40, 190, 420, 80, 80, 170], pad = 10, rowH = 34, width = W.reduce((a, b) => a + b, 0) + pad * 2;
+  const mc = document.createElement('canvas').getContext('2d'); mc.font = 'bold 15px system-ui, sans-serif';
+  const wrap = (t, w) => { const out = []; let line = ''; String(t).split(' ').forEach((wd) => { const tr = line ? line + ' ' + wd : wd; if (mc.measureText(tr).width > w && line) { out.push(line); line = wd; } else line = tr; }); if (line) out.push(line); return out; };
+  const billLines = bill.flatMap((b) => wrap(b, width - pad * 2));
+  const top = 86 + billLines.length * 22 + (billLines.length ? 10 : 0);
   const height = top + rowH * (ls.length + 1) + pad * 2, sc = 2;
   const cv = document.createElement('canvas'); cv.width = width * sc; cv.height = height * sc;
   const g = cv.getContext('2d'); g.scale(sc, sc);
