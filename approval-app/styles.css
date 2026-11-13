@@ -315,3 +315,11 @@ html, body { overflow-x: clip; }
   .mwrap { overflow: visible; max-height: none; }
   .matrix th { top: calc(var(--top, 56px) + var(--tabsH, 48px) + 54px); }
 }
+/* No overlaps: numbers shrink/wrap inside their boxes; view-as picker never squeezed */
+.tile { overflow: hidden; }
+.tile b { font-size: clamp(14px, 4.4vw, 17px); white-space: normal; overflow-wrap: anywhere; line-height: 1.2; }
+@media (max-width: 640px) {
+  .tiles:not(.four) { grid-template-columns: 1fr 1.5fr 1fr; gap: 6px; }
+  .tile { padding: 8px 9px; }
+  .viewas select { min-width: 150px; }
+}
