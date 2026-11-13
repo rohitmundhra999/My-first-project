@@ -699,7 +699,6 @@ function snapshotTable(title, sub, head, body, name) {
   g.fillStyle = '#fff'; g.fillRect(0, 0, width, height);
   g.fillStyle = '#111'; g.font = 'bold 18px system-ui, sans-serif'; g.fillText('Summit Procurement - ' + title, pad, 30);
   g.fillStyle = '#555'; g.font = '12px system-ui, sans-serif'; g.fillText(sub.length > 160 ? sub.slice(0, 157) + '…' : sub, pad, 52);
-  g.fillStyle = '#111'; g.font = 'bold 15px system-ui, sans-serif'; billLines.forEach((t, i) => g.fillText(t, pad, 88 + i * 22));
   const fit = (t, w) => { t = String(t); if (g.measureText(t).width <= w) return t; while (t && g.measureText(t + '…').width > w) t = t.slice(0, -1); return t + '…'; };
   [head, ...rows].forEach((r, i) => {
     const y = top + i * rowH;
@@ -1331,6 +1330,7 @@ async function exportRequirement(kind) {
   g.fillStyle = '#fff'; g.fillRect(0, 0, width, height);
   g.fillStyle = '#111'; g.font = 'bold 20px system-ui, sans-serif'; g.fillText('Summit Hotels and Resorts - Purchase requirement', pad, 34);
   g.fillStyle = '#555'; g.font = '14px system-ui, sans-serif'; g.fillText(sub.length > 130 ? sub.slice(0, 127) + '…' : sub, pad, 60);
+  g.fillStyle = '#111'; g.font = 'bold 15px system-ui, sans-serif'; billLines.forEach((t, i) => g.fillText(t, pad, 88 + i * 22));
   const fit = (t, w) => { t = String(t); if (g.measureText(t).width <= w) return t; while (t && g.measureText(t + '…').width > w) t = t.slice(0, -1); return t + '…'; };
   [head, ...body].forEach((r, i) => {
     const y = top + i * rowH;
