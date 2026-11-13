@@ -278,3 +278,35 @@ form.aibusy input[name="no"], form.aibusy input[name="date"], form.aibusy input[
   .hlogo { position: static; transform: none; order: -1; flex: 0 0 100%; display: flex; justify-content: center; background: none; padding: 0 0 6px; }
   .hlogo img { height: 30px; background: #fff; border-radius: 6px; padding: 3px 8px; }
 }
+/* ===== Layout fixes 2026-11-13: tabs on one line, compact phone header, locked report headings ===== */
+/* Main tabs and sub-tabs: always one line; swipe sideways when there are many */
+.tabs, #viewStore > .seg, #viewReports > .seg, .seg { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.tabs::-webkit-scrollbar, .seg::-webkit-scrollbar { display: none; }
+.tabs button, .seg button { flex: 1 0 auto; white-space: nowrap; }
+html, body { overflow-x: clip; }
+
+/* Unit × month tables: month heading row and unit column stay locked while scrolling */
+.mwrap { overflow: auto; max-height: calc(100dvh - var(--top, 56px) - var(--tabsH, 48px) - 84px); }
+.matrix th { z-index: 3; }
+.matrix th:first-child { z-index: 4; }
+
+/* Desktop: use more of the screen for reports */
+@media (min-width: 1024px) { main { max-width: 1100px; } }
+
+/* Phone: header in one slim row so the locked top takes little space */
+@media (max-width: 640px) {
+  .bar { flex-wrap: nowrap; gap: 8px; padding: calc(6px + env(safe-area-inset-top)) 10px 6px; }
+  .hlogo { position: static; transform: none; order: -1; flex: 0 0 auto; display: block; background: none; padding: 0; }
+  .hlogo img { height: 28px; background: #fff; border-radius: 6px; padding: 2px 6px; }
+  .bar > div:not(.hlogo):not(.bar-actions) { flex: 1; min-width: 0; }
+  .bar h1 { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar .sub { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; }
+  .bar-actions { gap: 4px; flex: 0 0 auto; }
+  .bar-actions .btn { min-height: 32px; padding: 4px 8px; font-size: 12px; }
+  .tabs { padding-top: 4px; margin-bottom: 0; }
+  .tabs button { padding: 10px 12px; font-size: 14px; }
+  .seg { margin: 8px 0; }
+  .seg button { padding: 8px 10px; font-size: 13px; }
+  main { padding: 0 10px 24px; }
+  .viewas { padding-top: 6px; padding-bottom: 6px; }
+}
