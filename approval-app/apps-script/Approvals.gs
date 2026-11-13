@@ -1591,7 +1591,7 @@ function hotelList_() {
   const sh = book_().getSheetByName(PO_CFG.TEMPLATE);
   if (!sh) return [];
   return sh.getRange(PO_CFG.HOTELS).getValues().filter(r => String(r[0]).trim() && String(r[1]).trim())
-    .map(r => [String(r[0]).trim(), String(r[1]).trim(), String(r[4]).trim()]);
+    .map(r => [String(r[0]).trim(), String(r[1]).trim(), String(r[4]).trim(), String(r[2]).trim(), String(r[3]).trim()]);   // key, name, GST, address, phone
 }
 
 function hotelInfo_(unit) {
