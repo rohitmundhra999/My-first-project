@@ -278,10 +278,15 @@ function decide_(user, req) {
   } else remark = '';
 
   const done = [], skipped = [];
-  withLock_(() => {
+  (() => {   // no app-wide lock: each line has one approver, so approvers never write the same cells
     const sh = fms_();
+    // Read every line in one go (much faster than one by one).
+    const rws = items.map(it => it.row), lo = Math.min.apply(null, rws), hi = Math.max.apply(null, rws);
+    const blk = hi - lo < 3000 ? { lo: lo, v: sh.getRange(lo, 1, hi - lo + 1, COL.APPR_QTY).getValues(),
+      f: sh.getRange(lo, COL.ACTUAL, hi - lo + 1, COL.APPR_QTY - COL.ACTUAL + 1).getFormulas() } : null;
+    const plan = [];
     items.forEach(it => {
-      const row = sh.getRange(it.row, 1, 1, COL.APPR_QTY).getValues()[0];
+      const row = blk ? blk.v[it.row - blk.lo] : sh.getRange(it.row, 1, 1, COL.APPR_QTY).getValues()[0];
       const current = String(row[COL.APPROVAL - 1]).trim();
       if (String(row[COL.ORDER - 1]).trim() !== it.orderNo) return skipped.push({ orderNo: it.orderNo, why: 'Line moved in the sheet. Refresh and try again.' });
       if (!same_(row[COL.APPROVER - 1], user.name)) return skipped.push({ orderNo: it.orderNo, why: 'This line is assigned to ' + (String(row[COL.APPROVER - 1]).trim() || 'nobody') + ', not you.' });
@@ -291,28 +296,36 @@ function decide_(user, req) {
       if (qty === null) qty = Number(row[COL.QTY - 1]) || null;
       if (decision === 'Approved' && !(qty > 0)) return skipped.push({ orderNo: it.orderNo, why: 'Enter a quantity above 0.' });
 
-      // Write J-N together; if the sheet refuses (e.g. a drop-down rule), put the line back exactly as it was and skip it,
-      // so a line is never left half saved and the other lines still go through.
       const rng = sh.getRange(it.row, COL.ACTUAL, 1, COL.APPR_QTY - COL.ACTUAL + 1);   // J..N
-      const before = rng.getFormulas()[0].map((f, c) => f || row[COL.ACTUAL - 1 + c]);
+      const fm = blk ? blk.f[it.row - blk.lo] : rng.getFormulas()[0];
+      const before = fm.map((f, c) => f || row[COL.ACTUAL - 1 + c]);
       const after = before.slice();
       after[0] = new Date(); after[COL.APPROVAL - COL.ACTUAL] = decision;
       after[COL.APPROVED_BY - COL.ACTUAL] = user.name; after[COL.APPR_QTY - COL.ACTUAL] = qty === null ? '' : qty;
-      try { rng.setValues([after]); }
-      catch (e) {
-        try { rng.setValues([before]); } catch (e2) { console.error('Could not restore row ' + it.row + ': ' + e2); }
-        return skipped.push({ orderNo: it.orderNo, why: 'The sheet did not accept it (' + String(e.message || e).slice(0, 120) + ')' });
-      }
-      done.push({ row: it.row, orderNo: it.orderNo, qty: qty, r: row });
+      plan.push({ rng: rng, before: before, after: after, d: { row: it.row, orderNo: it.orderNo, qty: qty, r: row } });
     });
+    // Write all lines together. If the sheet refuses any (e.g. a drop-down rule), put them all back exactly as they
+    // were, then try line by line so only the refused ones are skipped: a line is never left half saved.
+    try { plan.forEach(p => p.rng.setValues([p.after])); SpreadsheetApp.flush(); plan.forEach(p => done.push(p.d)); }
+    catch (e) {
+      plan.forEach(p => { try { p.rng.setValues([p.before]); } catch (e2) { /* restored below */ } });
+      try { SpreadsheetApp.flush(); } catch (e3) { console.error('Restore failed: ' + e3); }
+      plan.forEach(p => {
+        try { p.rng.setValues([p.after]); SpreadsheetApp.flush(); done.push(p.d); }
+        catch (e4) {
+          try { p.rng.setValues([p.before]); SpreadsheetApp.flush(); } catch (e5) { console.error('Could not restore row ' + p.d.row + ': ' + e5); }
+          skipped.push({ orderNo: p.d.orderNo, why: 'The sheet did not accept it (' + String(e4.message || e4).slice(0, 120) + ')' });
+        }
+      });
+    }
     if (done.length) log_(user, decision.toUpperCase(), done.map(d => d.orderNo + (d.qty !== null ? ' x' + d.qty : '')).join(', '), remark);
     if (done.length && remark) {
       const now = new Date();
       const rs = tab_(CFG.REMARKS, REMARK_HEADER);
-      rs.getRange(rs.getLastRow() + 1, 1, done.length, REMARK_HEADER.length).setValues(done.map(d =>
-        [now, d.orderNo, d.row, String(d.r[COL.UNIT - 1]).trim(), String(d.r[COL.ITEM - 1]).trim(), remark, user.name, user.email]));
+      const add = done.map(d => [now, d.orderNo, d.row, String(d.r[COL.UNIT - 1]).trim(), String(d.r[COL.ITEM - 1]).trim(), remark, user.name, user.email]);
+      withLock_(() => { rs.getRange(rs.getLastRow() + 1, 1, add.length, REMARK_HEADER.length).setValues(add); SpreadsheetApp.flush(); });   // short lock: new rows only
     }
-  });
+  })();
   try { patchDecisions_(done, decision, user, remark); } catch (e) { console.warn('Decision report patch failed: ' + e); }
   try { patchAfterDecide_(done, decision, user, remark); } catch (e) { console.warn('Quick update failed: ' + e); scheduleRefresh_(); }
   const qtyByRow = {};
@@ -623,14 +636,29 @@ function tab_(name, header) {
   if (!sh) { sh = ss.insertSheet(name); sh.appendRow(header); sh.setFrozenRows(1); sh.getRange(1, 1, 1, header.length).setFontWeight('bold'); }
   return sh;
 }
+// Log lines written while the lock is held are kept here and written just after it is released.
+let LOG_Q_ = null;
 function log_(user, action, lines, note) {
+  if (LOG_Q_) { LOG_Q_.push([user, action, lines, note]); return; }
+  logNow_(user, action, lines, note);
+}
+function logNow_(user, action, lines, note) {
   if (user.previewBy) note = (note ? note + ' | ' : '') + 'done by ' + user.previewBy + ' acting as this user (trial)';
   tab_(CFG.LOG, ['Time', 'Email', 'Name', 'Action', 'Lines', 'Note']).appendRow([new Date(), user.email, user.name, action, lines, note]);
 }
 function withLock_(fn) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(20000)) throw appError_('BUSY', 'The sheet is busy. Please try again in a moment.');
-  try { return fn(); } finally { lock.releaseLock(); }
+  const outer = LOG_Q_ === null;
+  if (outer) LOG_Q_ = [];
+  try { return fn(); }
+  finally {
+    lock.releaseLock();   // others may go on now; the log is written after
+    if (outer) {
+      const q = LOG_Q_; LOG_Q_ = null;
+      q.forEach(a => { try { logNow_(a[0], a[1], a[2], a[3]); } catch (e) { console.warn('Log failed: ' + e); } });
+    }
+  }
 }
 
 // ======================= notifications =======================
@@ -1253,10 +1281,10 @@ function storeRaise_(user, req) {
     });
     sh.getRange(at, 1, values.length, values[0].length).setValues(values);
     SpreadsheetApp.flush();
-    // FMS picks the new FORMDATA rows up by itself: find them there to learn their FMS row and real order number
-    try { patchAfterRaise_(unit, clean, made); } catch (e) { console.warn('Quick update failed: ' + e); }
-    log_(user, 'REQUEST', made.map(m => m.orderNo).join(', '), unit + ': ' + made.map(m => m.item + ' x' + m.qty + ' ' + m.uom).join('; '));
   });
+  // FMS picks the new FORMDATA rows up by itself: find them there to learn their FMS row and real order number (after the lock)
+  try { patchAfterRaise_(unit, clean, made); } catch (e) { console.warn('Quick update failed: ' + e); }
+  log_(user, 'REQUEST', made.map(m => m.orderNo).join(', '), unit + ': ' + made.map(m => m.item + ' x' + m.qty + ' ' + m.uom).join('; '));
   scheduleRefresh_();   // full re-read + "new requirement" alert to HO, in the background
   return { raised: made.length, unit: unit, lines: made };
 }
@@ -1265,10 +1293,12 @@ function storeRaise_(user, req) {
 function storeReceive_(user, req) {
   const items = cleanItems_(req.items);
   const done = [], skipped = [], got = [];
-  withLock_(() => {
+  (() => {   // no app-wide lock: only this line's "received" cell is written
     const sh = fms_();
+    const rws = items.map(it => it.row), lo = Math.min.apply(null, rws), hi = Math.max.apply(null, rws);
+    const blk = hi - lo < 3000 ? sh.getRange(lo, 1, hi - lo + 1, SCOL.LAST).getValues() : null;   // one read for all lines
     items.forEach(it => {
-      const r = sh.getRange(it.row, 1, 1, SCOL.LAST).getValues()[0];
+      const r = blk ? blk[it.row - lo] : sh.getRange(it.row, 1, 1, SCOL.LAST).getValues()[0];
       if (String(r[COL.ORDER - 1]).trim() !== it.orderNo) return skipped.push({ orderNo: it.orderNo, why: 'Line moved in the sheet. Refresh and try again.' });
       if (!user.isHO) checkUnit_(user, r[COL.UNIT - 1]);   // never another unit's line (HO may receive for any unit)
       if (String(r[COL.APPROVAL - 1]).trim() !== 'Approved') return skipped.push({ orderNo: it.orderNo, why: 'Not approved.' });
@@ -1280,7 +1310,7 @@ function storeReceive_(user, req) {
       got.push({ row: it.row, qty: it.qty, unit: String(r[COL.UNIT - 1]).trim() });
     });
     if (done.length) log_(user, 'RECEIVED', done.join(', '), '');
-  });
+  })();
   if (got.length) {
     try { got.forEach(g => patchStore_(g.unit, ls => ls.forEach(l => { if (l.row === g.row) l.rcv = g.qty; }))); } catch (e) { console.warn(e); }
     scheduleRefresh_();
