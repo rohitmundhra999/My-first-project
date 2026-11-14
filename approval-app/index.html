@@ -10,7 +10,7 @@
 <link rel="apple-touch-icon" href="icon-192.png?v=2">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Summit Procurement">
-<link rel="stylesheet" href="styles.css?v=20261114c">
+<link rel="stylesheet" href="styles.css?v=20261114d">
 <script src="config.js?v=20261113b"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
@@ -193,6 +193,7 @@
         <button data-rtype="ip">Invoice pending</button>
         <button data-rtype="gs">Status of goods</button>
         <button data-rtype="dec">Approval report</button>
+        <button data-rtype="ven" id="rtVen" hidden>Vendors</button>
       </div>
       <div id="poReport">
       <div class="filters">
@@ -293,6 +294,23 @@
       </div>
       <p class="sub asof" id="gsAsOf"></p>
     </div>
+    <div id="viewVendors" hidden>
+      <div class="filters">
+        <select id="vSel" aria-label="Vendor"></select>
+        <input id="vSearch" type="search" placeholder="Search vendor, address, phone or email" aria-label="Search vendor">
+      </div>
+      <div class="rbar"><span id="vTotal" class="sub"></span><button id="vClear" class="btn sm ghost">Clear filters</button></div>
+      <div id="vBody"><p class="empty">Loading vendors…</p></div>
+      <div class="dl" aria-label="Download this report">
+        <span class="sub">Download</span>
+        <button class="btn sm" data-dl="ven" data-fmt="xlsx">Excel</button>
+        <button class="btn sm" data-dl="ven" data-fmt="pdf">PDF</button>
+        <span class="sub">Share</span>
+        <button class="btn sm" data-share="ven" data-fmt="pdf">PDF</button>
+        <button class="btn sm" data-share="ven" data-fmt="xlsx">Excel</button>
+        <button class="btn sm" data-share="ven" data-fmt="png">Snapshot</button>
+      </div>
+    </div>
     </div>
   </section>
 </main>
@@ -311,6 +329,6 @@
 </div>
 
 <div id="toast" class="toast" role="status" hidden></div>
-<script type="module" src="app.js?v=20261114h"></script>
+<script type="module" src="app.js?v=20261114i"></script>
 </body>
 </html>

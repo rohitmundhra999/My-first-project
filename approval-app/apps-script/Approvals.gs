@@ -67,7 +67,7 @@ function doPost(e) {
     const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_,
       reports: (u, r) => scopeReports_(u, reports_(u, r)), decisions: (u, r) => scopeReports_(u, decisions_(u, r)), testPush: testPush_,
       storeMeta: storeMeta_, storeList: storeList_, storeRaise: storeRaise_, storeReceive: storeReceive_, storeInvoice: storeInvoice_,
-      sync: sync_, makePO: makePO_, readInvoice: readInvoice_, hoReceiveList: hoReceiveList_, rateList: rateList_, rateCompare: rateCompare_ };
+      sync: sync_, makePO: makePO_, readInvoice: readInvoice_, hoReceiveList: hoReceiveList_, rateList: rateList_, rateCompare: rateCompare_, vendorList: vendorList_, vendorSave: vendorSave_ };
     const fn = handlers[req.action];
     if (!fn) throw appError_('BAD_REQUEST', 'Unknown action.');
     const user = previewUser_(realUser, req);
@@ -186,7 +186,7 @@ function pack_(list) {
 // another user sees it. Preview is READ-ONLY: nothing can be assigned, decided or registered while
 // previewing, so the sheet and the APP LOG always show the real person who acted.
 
-const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO'];
+const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO', 'vendorSave'];
 
 function isAdmin_(u) {
   if (u.isAdmin) return true;
@@ -1580,7 +1580,7 @@ function makePO_(user, req) {
       const grand = Math.round((subtotal - discountAmt) * 100) / 100;
     const hotel = hotelInfo_(req.shipTo || unit);
     const billToHotel = hotelInfo_(req.billTo || unit);
-    const link = poPdf_({ poNo: poNo, date: now, unit: unit, hotel: hotel, billToHotel: billToHotel, vendor: vendor, days: days, lines: lines, subtotal: subtotal, discountAmt: discountAmt, total: grand, note: note, terms: terms, by: user.name });
+    const link = poPdf_({ poNo: poNo, date: now, unit: unit, hotel: hotel, billToHotel: billToHotel, vendor: vendor, vendorEmail: vendorEmailOf_(vendor[0]), days: days, lines: lines, subtotal: subtotal, discountAmt: discountAmt, total: grand, note: note, terms: terms, by: user.name });
 
     if (vendor[3] === true) {   // new vendor: add it to VENDORS like the vendor form does
       const vsh = book_().getSheetByName(PO_CFG.VENDORS);
@@ -1658,7 +1658,7 @@ function poPdf_(p) {
     put('J9', 'SUMMIT HOTELS AND RESORTS');
     put('J10', PO_CFG.COMPANY_ADDR);
     put('P12', p.hotel.name); put('P13', p.hotel.address);
-    put('J15', p.vendor[0]); put('J16', String(p.vendor[1] || '').toUpperCase()); put('J17', p.vendor[2] ? '(M) ' + p.vendor[2] : '');
+    put('J15', p.vendor[0]); put('J16', String(p.vendor[1] || '').toUpperCase()); put('J17', p.vendor[2] ? '(M) ' + p.vendor[2] : ''); put('J18', p.vendorEmail ? 'Email: ' + p.vendorEmail : '');
     put('P16', p.billToHotel.name); put('P17', p.billToHotel.address);
     put('P21', p.billToHotel.gst ? 'GST - ' + p.billToHotel.gst : '');
     put('M19', p.days);

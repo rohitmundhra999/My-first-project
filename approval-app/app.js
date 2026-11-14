@@ -439,7 +439,12 @@ function renderReports() {
   lockStoreUnit(state.rep);
   const R = state.reports, f = state.rep;
   document.querySelectorAll('[data-rtype]').forEach((b) => b.classList.toggle('on', b.dataset.rtype === f.type));
-  $('poReport').hidden = f.type === 'dec' || f.type === 'gs'; $('viewDecisions').hidden = f.type !== 'dec'; $('viewGoodsRep').hidden = f.type !== 'gs';
+  const venOk = canVendors();
+  $('rtVen').hidden = !venOk;
+  if (f.type === 'ven' && !venOk) f.type = 'nr';
+  $('poReport').hidden = f.type === 'dec' || f.type === 'gs' || f.type === 'ven'; $('viewDecisions').hidden = f.type !== 'dec'; $('viewGoodsRep').hidden = f.type !== 'gs';
+  $('viewVendors').hidden = f.type !== 'ven';
+  if (f.type === 'ven') return renderVendors();
   if (f.type === 'dec') return renderDecisions();
   if (f.type === 'gs') return renderGoodsRep();
   document.querySelectorAll('[data-rview]').forEach((b) => b.classList.toggle('on', b.dataset.rview === f.view));
@@ -622,6 +627,16 @@ function exportData(which) {
       head: ['#', 'Order No', 'Requested', 'Decided', 'Unit', 'Cluster', 'Item', 'Qty asked', 'Qty approved', 'UOM', 'Status', 'Approver', 'Reason for rejection'],
       body: rows.map((l, i) => [i + 1, l.o, fmtDate(l.d), decDate(l), l.u, l.c, l.it, l.q, l.aq, l.uom, l.s, l.by, l.rm]),
       pdfCols: [0, 1, 2, 3, 4, 6, 7, 8, 10, 11, 12],
+    };
+  }
+  if (which === 'ven') {
+    const rows = vendorRows();
+    return {
+      title: 'Vendors', file: `Vendors ${stamp}`, money: -1,
+      filters: filterText([['Vendor', VF.sel], ['Search', VF.q.trim()]]),
+      head: ['#', 'Vendor', 'Address', 'Phone', 'Email', 'Deals in', 'Payment cycle'],
+      body: rows.map((v, i) => [i + 1, v.name, v.address, v.phone, v.email, v.deals, v.cycle]),
+      pdfCols: [0, 1, 2, 3, 4, 5, 6],
     };
   }
   if (which === 'cr') {
@@ -2165,6 +2180,67 @@ document.querySelectorAll('[data-rtype]').forEach((b) => (b.onclick = () => {
   state.rep.type = b.dataset.rtype; state.rep.unit = ''; renderReports();
   if ((b.dataset.rtype === 'dec' && !state.dec) || (b.dataset.rtype === 'gs' && !state.goods)) refresh();
 }));
+
+// ---------- HO: Vendors report (details from VENDORS; address, phone and email can be edited) ----------
+const canVendors = () => !!state.me && !$('viewReports').classList.contains('instore') && (state.me.user.isHO || (!!state.me.admin && !state.viewAs));
+const VF = { sel: '', q: '', edit: '' };
+async function loadVendors() {
+  try { const r = await api('vendorList'); state.vlist = r.list; } catch (e) { $('vBody').innerHTML = ''; return handleError(e); }
+  if (state.rep.type === 'ven') renderVendors();
+}
+function vendorRows() {
+  const q = VF.q.trim().toLowerCase(), words = q ? q.split(/\s+/) : [];
+  return (state.vlist || []).filter((v) => (!VF.sel || v.name === VF.sel) &&
+    words.every((w) => [v.name, v.address, v.phone, v.email, v.deals].join(' ').toLowerCase().includes(w)));
+}
+function renderVendors() {
+  if (!state.vlist) { $('vBody').innerHTML = '<p class="empty">Loading vendors…</p>'; if (!VF.loading) { VF.loading = true; loadVendors().finally(() => (VF.loading = false)); } return; }
+  fillSelect('vSel', `All vendors (${state.vlist.length})`, state.vlist.map((v) => [v.name, v.name]), VF.sel);
+  if ($('vSearch').value !== VF.q) $('vSearch').value = VF.q;
+  const rows = vendorRows(), ro = readOnly();
+  $('vTotal').textContent = `${rows.length} vendor${rows.length === 1 ? '' : 's'}`;
+  const show = rows.slice(0, 200);
+  $('vBody').innerHTML = rows.length ? show.map((v) => {
+    const open = VF.edit === v.name && !ro;
+    const tel = v.phone ? `<a href="tel:${esc(v.phone.split(/[,\/]/)[0].replace(/[^0-9+]/g, ''))}">${esc(v.phone)}</a>` : '<span class="sub">not given</span>';
+    return `<article class="card">
+      <div class="top"><h3>${esc(v.name)}</h3>${ro || open ? '' : `<button type="button" class="btn sm" data-vedit="${esc(v.name)}">Edit</button>`}</div>
+      ${open ? `<form class="grid2" id="vForm" data-vname="${esc(v.name)}">
+        <label class="field full">Address <input name="address" value="${esc(v.address)}" maxlength="200" autocomplete="off"></label>
+        <label class="field">Phone <input name="phone" value="${esc(v.phone)}" inputmode="tel" maxlength="40" autocomplete="off"></label>
+        <label class="field">Email <input name="email" type="email" value="${esc(v.email)}" maxlength="100" autocomplete="off" placeholder="vendor@example.com"></label>
+        <div class="formfoot field full"><button type="button" class="btn ghost" data-vcancel>Cancel</button><button type="submit" class="btn primary">Save</button></div>
+      </form>` : `<div class="sub">📍 ${v.address ? esc(v.address) : 'Address not given'}</div>
+      <div class="sub">📞 ${tel} · ✉️ ${v.email ? `<a href="mailto:${esc(v.email)}">${esc(v.email)}</a>` : '<span>Email not added</span>'}</div>
+      ${v.deals || v.cycle ? `<div class="sub">${v.deals ? 'Deals in: ' + esc(v.deals) : ''}${v.deals && v.cycle ? ' · ' : ''}${v.cycle ? 'Payment cycle: ' + esc(v.cycle) : ''}</div>` : ''}`}
+    </article>`;
+  }).join('') + (rows.length > show.length ? `<p class="sub">Showing the first ${show.length}. Search or pick a vendor to see the rest.</p>` : '')
+    : '<p class="empty">No vendor matches.</p>';
+}
+$('vSel').onchange = (e) => { VF.sel = e.target.value; VF.edit = ''; renderVendors(); };
+$('vSearch').oninput = (e) => { VF.q = e.target.value; renderVendors(); };
+$('vClear').onclick = () => { VF.sel = ''; VF.q = ''; VF.edit = ''; renderVendors(); };
+$('vBody').addEventListener('click', (e) => {
+  const ed = e.target.closest('[data-vedit]');
+  if (ed) { VF.edit = ed.dataset.vedit; renderVendors(); const f = $('vForm'); if (f) f.address.focus(); return; }
+  if (e.target.closest('[data-vcancel]')) { VF.edit = ''; renderVendors(); }
+});
+$('vBody').addEventListener('submit', async (e) => {
+  if (e.target.id !== 'vForm') return;
+  e.preventDefault();
+  const f = e.target, name = f.dataset.vname;
+  const data = { vendor: name, address: f.address.value.trim(), phone: f.phone.value.trim(), email: f.email.value.trim() };
+  if (data.email && !/^[^\s@,;]+@[^\s@,;]+\.[a-z]{2,}$/i.test(data.email)) return toast('Enter a valid email address.', true);
+  const btn = f.querySelector('[type=submit]'); btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const r = await api('vendorSave', data);
+    const v = (state.vlist || []).find((x) => x.name === name);
+    if (v) Object.assign(v, { address: r.vendor.address, phone: r.vendor.phone, email: r.vendor.email });
+    state.vendors = null;   // Make PO picks up the new details
+    VF.edit = ''; toast(`${name} saved. New POs will show these details.`);
+  } catch (err) { handleError(err); }
+  renderVendors();
+});
 document.querySelectorAll('[data-rview]').forEach((b) => (b.onclick = () => { state.rep.view = b.dataset.rview; renderReports(); }));
 [['fCluster', 'cluster'], ['fUnit', 'unit'], ['fVendor', 'vendor'], ['fMonth', 'month'], ['fAge', 'age'], ['fSort', 'sort']].forEach(([id, k]) =>
   ($(id).onchange = (e) => { state.rep[k] = e.target.value; if (k === 'cluster') state.rep.unit = ''; renderReports(); }));
