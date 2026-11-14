@@ -18,12 +18,16 @@ function invoiceReportBuild_() {
     });
   }
   const pu = poUnits_();   // PO -> unit from FMS (P.Os PROPERTY is often empty)
+  const now = new Date(), fyStart = new Date(now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1, 3, 1);
+  const when = v => { if (v instanceof Date) return v; const m = String(v || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? new Date(+m[3], +m[2] - 1, +m[1]) : null; };
   const rows = [], is = b.getSheetByName(STORE_CFG.INVOICES);
   if (is) {
     const last = lastFilled_(is, 1), first = Math.max(2, last - 4000 + 1);
     if (last >= 2) is.getRange(first, 1, last - first + 1, 6).getValues().forEach(r => {
       const k = String(r[0]).trim().toUpperCase();
       if (!k) return;
+      const w = when(r[2]) || when(r[5]);   // uploaded on, else invoice date
+      if (!w || w < fyStart) return;        // only this financial year (from 1 April)
       const p = po[k] || {};
       rows.push({ po: String(r[0]).trim(), il: url(r[1]), up: fd(r[2]), amt: Number(String(r[3]).replace(/[^0-9.]/g, '')) || 0,
         inv: String(r[4]).trim(), idt: fd(r[5]), v: p.v || '', u: pu[k] || p.u || '', pd: p.d || '', pt: p.t || 0, pl: p.l || '', pn: p.n || 0 });
