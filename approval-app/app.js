@@ -699,7 +699,92 @@ function exportData(which) {
   };
 }
 
+// Statement check report: professional, unit-wise (Excel: Summary sheet + one sheet per unit; PDF: summary page + one section per unit)
+async function stmtReport(fmt, share) {
+  const units = stmtUnits(), S0 = IF.stmt;
+  if (!units.length) return toast('Nothing to download.', true);
+  toast(fmt === 'xlsx' ? 'Preparing Excel…' : 'Preparing PDF…');
+  try { await loadLibs(fmt); } catch (e) { return toast(e.message, true); }
+  const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+  const dt = (x) => (x ? fmtDate(x) : '');
+  const rs = (v) => 'Rs ' + Number(v || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+  const name = (S) => S.label || S.unit || 'All units';
+  const sections = (S) => [
+    ['Amount differs', S.diff.map((x) => [x.s.ref, dt(x.s.date), x.s.amt, x.o.inv, x.o.amt, x.d, x.o.po, 'Statement amount is different from our invoice'])],
+    ['On vendor statement - invoice not uploaded with us', S.missing.map((x) => { const p = x.po[0];
+      return [x.s.ref || '(no number)', dt(x.s.date), x.s.amt, '', '', p && p.byNo ? p.diff : '', x.po.map((q) => q.po).join(', '),
+        !p ? 'No PO found with this amount or PO number' : p.exact ? 'PO raised for the same amount, invoice not uploaded'
+          : p.byNo ? 'PO number is on the statement; PO amount ' + rs(p.t) + ' differs, invoice not uploaded' : 'PO with a close amount (' + rs(p.t) + '), invoice not uploaded']; })],
+    ['In our system - not in vendor statement', S.notInStmt.map((o) => ['', '', '', o.inv, o.amt, '', o.po, 'Vendor has not shown this invoice in the statement'])],
+    ['Matched', S.matched.map((x) => [x.s.ref, dt(x.s.date), x.s.amt, x.o.inv, x.o.amt, 0, x.o.po, ''])],
+    ['Payments / credit notes on vendor statement', S.money.map((m) => [m.ref || '', dt(m.date), m.amt, '', '', '', '', m.kind === 'payment' ? 'Payment received by vendor' : m.kind === 'credit' ? 'Credit note' : 'Other entry'])],
+  ].filter((s) => s[1].length);
+  const head = ['Statement bill no.', 'Bill date', 'Statement amount', 'Our invoice no.', 'Our amount', 'Difference', 'PO no.', 'Remarks'];
+  const sumHead = ['Unit', 'Statement period', 'Bills on statement', 'Our invoices', 'Difference', 'Matched', 'Amount differs', 'Not uploaded', 'Not in statement', 'Payments', 'Closing balance'];
+  const sumRow = (S) => [name(S), (dt(S.from) || '-') + ' to ' + (dt(S.to) || '-'), r2(S.totals.stmtBills), r2(S.totals.ourBills), r2(S.totals.stmtBills - S.totals.ourBills),
+    S.matched.length, S.diff.length, S.missing.length, S.notInStmt.length, r2(S.totals.payments), r2(S.closing)];
+  const sums = units.map(sumRow);
+  const total = ['TOTAL', ''].concat([2, 3, 4, 5, 6, 7, 8, 9, 10].map((i) => r2(sums.reduce((t, x) => t + Number(x[i] || 0), 0))));
+  const title = 'Vendor statement reconciliation - ' + S0.vendor, stamp = new Date().toLocaleString('en-IN');
+  const file = ('Statement check ' + S0.vendor + (S0.unit ? ' ' + S0.unit : '') + ' ' + new Date().toISOString().slice(0, 10)).replace(/[\\/:*?"<>|]+/g, ' ');
+  if (fmt === 'xlsx') {
+    const XLSX = window.XLSX, wb = XLSX.utils.book_new();
+    const sum = [['Summit Hotels and Resorts'], [title], ['Generated on ' + stamp + (S0.unit ? '  |  Unit: ' + S0.unit : '')], [], sumHead].concat(sums);
+    if (units.length > 1) sum.push(total);
+    const ws = XLSX.utils.aoa_to_sheet(sum);
+    ws['!cols'] = sumHead.map((h, i) => ({ wch: i === 0 ? 30 : i === 1 ? 26 : 16 }));
+    ws['!merges'] = [0, 1, 2].map((r) => ({ s: { r: r, c: 0 }, e: { r: r, c: sumHead.length - 1 } }));
+    XLSX.utils.book_append_sheet(wb, ws, 'Summary');
+    const used = {};
+    units.forEach((S) => {
+      const x = sumRow(S);
+      const aoa = [['Summit Hotels and Resorts'], [title], ['Unit: ' + name(S)], ['Statement period: ' + x[1] + (S.closing ? '   |   Closing balance as per vendor: ' + rs(S.closing) : '')], [],
+        ['Bills on statement', x[2], '', 'Our invoices', x[3], '', 'Difference', x[4]], []];
+      sections(S).forEach((s) => { aoa.push([s[0].toUpperCase() + ' (' + s[1].length + ')']); aoa.push(head); s[1].forEach((row) => aoa.push(row)); aoa.push([]); });
+      const w = XLSX.utils.aoa_to_sheet(aoa);
+      w['!cols'] = [22, 12, 17, 22, 14, 12, 22, 60].map((wch) => ({ wch: wch }));
+      w['!merges'] = [0, 1, 2, 3].map((r) => ({ s: { r: r, c: 0 }, e: { r: r, c: 7 } }));
+      let sn = name(S).replace(/[\\/?*[\]:]/g, ' ').trim().slice(0, 28) || 'Unit';
+      while (used[sn]) sn = sn.slice(0, 25) + ' ' + (Object.keys(used).length + 1);
+      used[sn] = 1;
+      XLSX.utils.book_append_sheet(wb, w, sn);
+    });
+    if (share) return shareFile(new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), file + '.xlsx');
+    return XLSX.writeFile(wb, file + '.xlsx');
+  }
+  const { jsPDF } = window.jspdf, doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+  const M = [128, 0, 32], W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  const band = () => { doc.setFillColor(M[0], M[1], M[2]); doc.rect(0, 0, W, 44, 'F'); doc.setTextColor(255); doc.setFontSize(14); doc.text('Summit Hotels and Resorts', 30, 20);
+    doc.setFontSize(10); doc.text(title, 30, 35); doc.setFontSize(8); doc.text('Generated on ' + stamp, W - 30, 35, { align: 'right' }); doc.setTextColor(0); };
+  const money = [2, 3, 4, 9, 10];
+  band();
+  doc.setFontSize(12); doc.text('Summary by unit' + (S0.unit ? ' (' + S0.unit + ')' : ''), 30, 66);
+  doc.autoTable({ startY: 74, head: [sumHead], body: sums.concat(units.length > 1 ? [total] : []).map((row) => row.map((v, i) => (money.indexOf(i) >= 0 ? rs(v) : String(v)))),
+    theme: 'grid', headStyles: { fillColor: M, fontSize: 8, halign: 'center' }, styles: { fontSize: 8, cellPadding: 4 }, margin: { left: 30, right: 30, top: 54 },
+    columnStyles: { 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'center' }, 6: { halign: 'center' }, 7: { halign: 'center' }, 8: { halign: 'center' }, 9: { halign: 'right' }, 10: { halign: 'right' } },
+    didParseCell: (c) => { if (c.section === 'body' && c.row.raw[0] === 'TOTAL') c.cell.styles.fontStyle = 'bold'; }, didDrawPage: band });
+  units.forEach((S) => {
+    const x = sumRow(S);
+    doc.addPage(); band();
+    doc.setFontSize(13); doc.setTextColor(M[0], M[1], M[2]); doc.text('Unit: ' + name(S), 30, 66); doc.setTextColor(60); doc.setFontSize(9);
+    doc.text('Period ' + x[1] + '   |   Bills on statement ' + rs(x[2]) + '   |   Our invoices ' + rs(x[3]) + '   |   Difference ' + rs(x[4]) + (S.closing ? '   |   Closing balance ' + rs(S.closing) : ''), 30, 82);
+    doc.setTextColor(0);
+    const body = [];
+    sections(S).forEach((s) => {
+      body.push([{ content: s[0] + ' (' + s[1].length + ')', colSpan: 8, styles: { fillColor: [245, 228, 232], textColor: M, fontStyle: 'bold' } }]);
+      s[1].forEach((row) => body.push(row.map((v, i) => (i === 2 || i === 4 || i === 5 ? (v === '' ? '' : rs(v)) : String(v == null ? '' : v)))));
+    });
+    doc.autoTable({ startY: 92, head: [head], body: body, theme: 'grid', headStyles: { fillColor: M, fontSize: 8 }, styles: { fontSize: 7.5, cellPadding: 3, valign: 'middle' },
+      columnStyles: { 2: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' }, 7: { cellWidth: 220 } }, margin: { left: 30, right: 30, top: 54 }, didDrawPage: band });
+  });
+  const n = doc.getNumberOfPages();
+  for (let i = 1; i <= n; i++) { doc.setPage(i); doc.setFontSize(8); doc.setTextColor(120); doc.text('Page ' + i + ' of ' + n, W - 30, H - 16, { align: 'right' }); }
+  if (share) return shareFile(doc.output('blob'), file + '.pdf');
+  doc.save(file + '.pdf');
+}
+
 async function download(which, fmt, share) {
+  if (which === 'stm' && fmt !== 'png') return stmtReport(fmt, share);
   const d = exportData(which);
   if (!d.body.length) return toast('Nothing to ' + (share ? 'share' : 'download') + ': no lines match these filters.', true);
   toast(`Preparing ${fmt === 'xlsx' ? 'Excel' : fmt === 'png' ? 'snapshot' : 'PDF'}…`);
@@ -2368,7 +2453,7 @@ function stmtRows() {   // one list for the screen, Excel and PDF
   stmtUnits().forEach((S) => { const n0 = out.length;
   S.diff.forEach((x) => out.push(['Amount differs', x.s.ref, x.s.date, x.s.amt, x.o.inv, x.o.amt, x.d, x.o.po, '']));
   S.missing.forEach((x) => out.push([x.po.length ? (x.po[0].exact ? 'Not uploaded – PO raised' : x.po[0].byNo ? 'Not uploaded – PO no. on statement, amount differs' : 'Not uploaded – PO with close amount') : 'Not in our records', x.s.ref, x.s.date, x.s.amt, '', '', x.po.length && x.po[0].byNo ? x.po[0].diff : '', x.po.map((p) => p.po).join(', '),
-    (x.po.length ? x.po.map((p) => `PO ${p.po}${p.byNo ? ' (PO no. written on statement)' : ''} dated ${p.d ? fmtDate(p.d) : '-'} for ${inr(p.t)}${p.byNo ? `, statement ${inr(x.s.amt)}, difference ${inr(p.diff)}` : ''}`).join('; ') + ' – invoice not uploaded' : 'No invoice and no PO with this amount or PO number') + (x.s.f ? ` [${x.s.f}]` : '')]));
+    (x.po.length ? x.po.map((p) => `PO ${p.po}${p.byNo ? ' (PO no. written on statement)' : ''} dated ${p.d ? fmtDate(p.d) : '-'} for ${inr(p.t)}${p.byNo ? `, statement ${inr(x.s.amt)}, difference ${inr(p.diff)}` : ''}`).join('; ') + ' – invoice not uploaded' : 'No invoice and no PO with this amount or PO number')]));
   S.notInStmt.forEach((o) => out.push(['Not in vendor statement', '', '', '', o.inv, o.amt, '', o.po, 'We have this invoice; the vendor has not shown it']));
   S.matched.forEach((x) => out.push(['Matched', x.s.ref, x.s.date, x.s.amt, x.o.inv, x.o.amt, 0, x.o.po, '']));
   S.money.forEach((m) => out.push([m.kind === 'payment' ? 'Payment (statement)' : m.kind === 'credit' ? 'Credit note (statement)' : 'Other (statement)', m.ref, m.date, m.amt, '', '', '', '', '']));
@@ -2396,7 +2481,7 @@ function renderStmt() {
     <p class="sub">✅ ${S.matched.length} matched · ⚠️ ${S.diff.length} amount differs · ❌ ${S.missing.length} on statement but not uploaded · ❌ ${S.notInStmt.length} not in statement</p>
     ${S.diff.length ? '<h4>⚠️ Amount differs</h4>' + S.diff.map((x) => line('warn', `Bill ${esc(x.s.ref)} · ${d(x.s.date)}`,
       `Statement ${inr(x.s.amt)} · our invoice ${esc(x.o.inv)} ${inr(x.o.amt)} · difference <b>${inr(x.d)}</b> · PO ${esc(x.o.po)}`)).join('') : ''}
-    ${S.missing.length ? '<h4>❌ On the statement but not uploaded with us</h4>' + S.missing.map((x) => line('bad', `Bill ${esc(x.s.ref || '(no number)')}${x.s.f ? ' · ' + esc(x.s.f) : ''} · ${d(x.s.date)} · ${inr(x.s.amt)}`,
+    ${S.missing.length ? '<h4>❌ On the statement but not uploaded with us</h4>' + S.missing.map((x) => line('bad', `Bill ${esc(x.s.ref || '(no number)')} · ${d(x.s.date)} · ${inr(x.s.amt)}`,
       x.po.length ? x.po.map((p) => `${p.exact ? '📄 PO raised for the same amount' : p.byNo ? '📄 PO number written on the statement – amount differs by ' + inr(p.diff) : '📄 PO with a close amount'}: <b>${esc(p.po)}</b> dated ${d(p.d)} for ${inr(p.t)} – <b>invoice not uploaded</b>${p.l ? ` · <a href="${esc(p.l)}" target="_blank" rel="noopener">View PO</a>` : ''}`).join('<br>')
         : 'No invoice uploaded and <b>no PO found with this amount or PO number</b> for this vendor.')).join('') : ''}
     ${S.notInStmt.length ? '<h4>❌ We have it, but it is not in the vendor statement</h4>' + S.notInStmt.map((o) => line('bad', `Invoice ${esc(o.inv || '(no number)')} · ${d(o.d)} · ${inr(o.amt)}`,
