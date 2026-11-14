@@ -17,7 +17,7 @@ function invoiceReportBuild_() {
       if (!p.t) p.t = Number(String(r[6]).replace(/[^0-9.]/g, '')) || 0; if (!p.u && !/^#/.test(String(r[7]))) p.u = String(r[7]).trim();
     });
   }
-  const pu = poUnits_();   // PO -> unit from FMS (P.Os PROPERTY is often empty)
+  const pu = poUnits_();   // PO -> unit, only POs of FMS lines dated from REPORT_FROM
   const now = new Date(), fyStart = new Date(now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1, 3, 1);
   const when = v => { if (v instanceof Date) return v; const m = String(v || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? new Date(+m[3], +m[2] - 1, +m[1]) : null; };
   const rows = [], is = b.getSheetByName(STORE_CFG.INVOICES);
@@ -26,8 +26,7 @@ function invoiceReportBuild_() {
     if (last >= 2) is.getRange(first, 1, last - first + 1, 6).getValues().forEach(r => {
       const k = String(r[0]).trim().toUpperCase();
       if (!k) return;
-      const w = when(r[2]) || when(r[5]);   // uploaded on, else invoice date
-      if (!w || w < fyStart) return;        // only this financial year (from 1 April)
+      if (!pu[k]) return;   // same rule as Material not received / Invoice pending: PO of FMS lines from REPORT_FROM (1 April 2026)
       const p = po[k] || {};
       rows.push({ po: String(r[0]).trim(), il: url(r[1]), up: fd(r[2]), amt: Number(String(r[3]).replace(/[^0-9.]/g, '')) || 0,
         inv: String(r[4]).trim(), idt: fd(r[5]), v: p.v || '', u: pu[k] || p.u || '', pd: p.d || '', pt: p.t || 0, pl: p.l || '', pn: p.n || 0 });
@@ -68,7 +67,9 @@ function invoiceRepPatch_(po, link, amount, invNo, invDate) {
         pt: Number(String(x[6]).replace(/[^0-9.]/g, '')) || 0, pl: /^https?:\/\//.test(String(x[2])) ? String(x[2]).trim() : '', pn: hits.length };
     }
   }
-  if (!f.u || /^#/.test(f.u)) f.u = poUnits_()[k] || '';
+  const pu = poUnits_();
+  if (!pu[k]) return;   // a PO from before REPORT_FROM: not in this report
+  if (!f.u || /^#/.test(f.u)) f.u = pu[k];
   c.rows.unshift(Object.assign({ po: po, il: link, up: Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), amt: amount, inv: invNo, idt: invDate }, f));
   if (f.v && !(c.vendors || (c.vendors = {}))[f.v]) {
     const v = vendorList_({ isHO: true }).list.find(x => x.name.toLowerCase() === f.v.toLowerCase());
@@ -82,6 +83,18 @@ function poUnits_() {
   const sh = fms_(), n = sh.getLastRow() - CFG.FIRST_ROW + 1, out = {};
   if (n < 1) return out;
   const u = sh.getRange(CFG.FIRST_ROW, COL.UNIT, n, 1).getValues(), p = sh.getRange(CFG.FIRST_ROW, SCOL.PO, n, 1).getValues();
-  p.forEach((x, i) => { const k = String(x[0]).trim().toUpperCase(); if (k && !out[k]) out[k] = String(u[i][0]).trim(); });
+  const st = sh.getRange(CFG.FIRST_ROW, COL.TS, n, 1).getDisplayValues();   // dd-mm(hh:mm), as the other reports read it
+  const fromKey = REPORT_FROM.y * 10000 + REPORT_FROM.m * 100 + REPORT_FROM.d;
+  let year = CFG.START_YEAR, prevMonth = 1;
+  p.forEach((x, i) => {
+    const m = String(st[i][0]).match(/^(\d{1,2})-(\d{1,2})/);
+    if (!m) return;
+    const day = +m[1], mon = +m[2];
+    if (prevMonth - mon >= 6) year++;   // a new year started (same as reports_)
+    prevMonth = mon;
+    if (year * 10000 + mon * 100 + day < fromKey) return;
+    const k = String(x[0]).trim().toUpperCase();
+    if (k && !out[k]) out[k] = String(u[i][0]).trim();
+  });
   return out;
 }
