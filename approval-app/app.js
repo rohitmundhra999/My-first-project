@@ -710,13 +710,13 @@ async function stmtReport(fmt, share) {
   const rs = (v) => 'Rs ' + Number(v || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
   const name = (S) => S.label || S.unit || 'All units';
   const sections = (S) => [
-    ['Amount differs', S.diff.map((x) => [x.s.ref, dt(x.s.date), x.s.amt, x.o.inv, x.o.amt, x.d, x.o.po, 'Statement amount is different from our invoice'])],
+    ['Amount differs', S.diff.map((x) => [x.s.ref, dt(x.s.date), x.s.amt, x.o.inv, x.o.amt, x.d, x.o.po, x.note || 'Statement amount is different from our invoice'])],
     ['On vendor statement - invoice not uploaded with us', S.missing.map((x) => { const p = x.po[0];
       return [x.s.ref || '(no number)', dt(x.s.date), x.s.amt, '', '', p && p.byNo ? p.diff : '', x.po.map((q) => q.po).join(', '),
         !p ? 'No PO found with this amount or PO number' : p.exact ? 'PO raised for the same amount, invoice not uploaded'
           : p.byNo ? 'PO number is on the statement; PO amount ' + rs(p.t) + ' differs, invoice not uploaded' : 'PO with a close amount (' + rs(p.t) + '), invoice not uploaded']; })],
     ['In our system - not in vendor statement', S.notInStmt.map((o) => ['', '', '', o.inv, o.amt, '', o.po, 'Vendor has not shown this invoice in the statement'])],
-    ['Matched', S.matched.map((x) => [x.s.ref, dt(x.s.date), x.s.amt, x.o.inv, x.o.amt, 0, x.o.po, (x.how === 'amount' ? 'Matched by amount and date - our invoice no. is entered as "' + x.o.inv + '"' : '')])],
+    ['Matched', S.matched.map((x) => [x.s.ref, dt(x.s.date), x.s.amt, x.o.inv, x.o.amt, 0, x.o.po, x.note || (x.how === 'amount' ? 'Matched by amount and date - our invoice no. is entered as "' + x.o.inv + '"' : '')])],
     ['Payments / credit notes on vendor statement', S.money.map((m) => [m.ref || '', dt(m.date), m.amt, '', '', '', '', m.kind === 'payment' ? 'Payment received by vendor' : m.kind === 'credit' ? 'Credit note' : 'Other entry'])],
   ].filter((s) => s[1].length);
   const head = ['Statement bill no.', 'Bill date', 'Statement amount', 'Our invoice no.', 'Our amount', 'Difference', 'PO no.', 'Remarks'];
@@ -2451,11 +2451,11 @@ function stmtUnits() {
 function stmtRows() {   // one list for the screen, Excel and PDF
   const out = [];
   stmtUnits().forEach((S) => { const n0 = out.length;
-  S.diff.forEach((x) => out.push(['Amount differs', x.s.ref, x.s.date, x.s.amt, x.o.inv, x.o.amt, x.d, x.o.po, '']));
+  S.diff.forEach((x) => out.push(['Amount differs', x.s.ref, x.s.date, x.s.amt, x.o.inv, x.o.amt, x.d, x.o.po, x.note || '']));
   S.missing.forEach((x) => out.push([x.po.length ? (x.po[0].exact ? 'Not uploaded – PO raised' : x.po[0].byNo ? 'Not uploaded – PO no. on statement, amount differs' : 'Not uploaded – PO with close amount') : 'Not in our records', x.s.ref, x.s.date, x.s.amt, '', '', x.po.length && x.po[0].byNo ? x.po[0].diff : '', x.po.map((p) => p.po).join(', '),
     (x.po.length ? x.po.map((p) => `PO ${p.po}${p.byNo ? ' (PO no. written on statement)' : ''} dated ${p.d ? fmtDate(p.d) : '-'} for ${inr(p.t)}${p.byNo ? `, statement ${inr(x.s.amt)}, difference ${inr(p.diff)}` : ''}`).join('; ') + ' – invoice not uploaded' : 'No invoice and no PO with this amount or PO number')]));
   S.notInStmt.forEach((o) => out.push(['Not in vendor statement', '', '', '', o.inv, o.amt, '', o.po, 'We have this invoice; the vendor has not shown it']));
-  S.matched.forEach((x) => out.push(['Matched', x.s.ref, x.s.date, x.s.amt, x.o.inv, x.o.amt, 0, x.o.po, (x.how === 'amount' ? 'Matched by amount and date - our invoice no. is entered as "' + x.o.inv + '"' : '')]));
+  S.matched.forEach((x) => out.push(['Matched', x.s.ref, x.s.date, x.s.amt, x.o.inv, x.o.amt, 0, x.o.po, x.note || (x.how === 'amount' ? 'Matched by amount and date - our invoice no. is entered as "' + x.o.inv + '"' : '')]));
   S.money.forEach((m) => out.push([m.kind === 'payment' ? 'Payment (statement)' : m.kind === 'credit' ? 'Credit note (statement)' : 'Other (statement)', m.ref, m.date, m.amt, '', '', '', '', '']));
   for (let k = n0; k < out.length; k++) out[k][9] = S.label || S.unit || '';
   });
@@ -2480,13 +2480,13 @@ function renderStmt() {
     </div>
     <p class="sub">✅ ${S.matched.length} matched · ⚠️ ${S.diff.length} amount differs · ❌ ${S.missing.length} on statement but not uploaded · ❌ ${S.notInStmt.length} not in statement</p>
     ${S.diff.length ? '<h4>⚠️ Amount differs</h4>' + S.diff.map((x) => line('warn', `Bill ${esc(x.s.ref)} · ${d(x.s.date)}`,
-      `Statement ${inr(x.s.amt)} · our invoice ${esc(x.o.inv)} ${inr(x.o.amt)} · difference <b>${inr(x.d)}</b> · PO ${esc(x.o.po)}`)).join('') : ''}
+      `Statement ${inr(x.s.amt)} · our invoice ${esc(x.o.inv)} ${inr(x.o.amt)} · difference <b>${inr(x.d)}</b> · PO ${esc(x.o.po)}${x.note ? '<br><b>Remark:</b> ' + esc(x.note) : ''}`)).join('') : ''}
     ${S.missing.length ? '<h4>❌ On the statement but not uploaded with us</h4>' + S.missing.map((x) => line('bad', `Bill ${esc(x.s.ref || '(no number)')} · ${d(x.s.date)} · ${inr(x.s.amt)}`,
       x.po.length ? x.po.map((p) => `${p.exact ? '📄 PO raised for the same amount' : p.byNo ? '📄 PO number written on the statement – amount differs by ' + inr(p.diff) : '📄 PO with a close amount'}: <b>${esc(p.po)}</b> dated ${d(p.d)} for ${inr(p.t)} – <b>invoice not uploaded</b>${p.l ? ` · <a href="${esc(p.l)}" target="_blank" rel="noopener">View PO</a>` : ''}`).join('<br>')
         : 'No invoice uploaded and <b>no PO found with this amount or PO number</b> for this vendor.')).join('') : ''}
     ${S.notInStmt.length ? '<h4>❌ We have it, but it is not in the vendor statement</h4>' + S.notInStmt.map((o) => line('bad', `Invoice ${esc(o.inv || '(no number)')} · ${d(o.d)} · ${inr(o.amt)}`,
       `PO ${esc(o.po)}${o.il ? ` · <a href="${esc(o.il)}" target="_blank" rel="noopener">View invoice</a>` : ''}`)).join('') : ''}
-    ${S.matched.length ? `<details><summary><b class="ok">✅ Matched (${S.matched.length})</b></summary>` + S.matched.map((x) => line('ok', `Bill ${esc(x.s.ref)} · ${d(x.s.date)} · ${inr(x.s.amt)}`, `Our invoice ${esc(x.o.inv)} · PO ${esc(x.o.po)}${x.how === 'amount' ? ' · <i>matched by amount and date (our invoice no. is entered differently)</i>' : ''}`)).join('') + '</details>' : ''}
+    ${S.matched.length ? `<details><summary><b class="ok">✅ Matched (${S.matched.length})</b></summary>` + S.matched.map((x) => line('ok', `Bill ${esc(x.s.ref)} · ${d(x.s.date)} · ${inr(x.s.amt)}`, `Our invoice ${esc(x.o.inv)} · PO ${esc(x.o.po)}${x.note ? '<br><b>Remark:</b> ' + esc(x.note) : x.how === 'amount' ? ' · <i>matched by amount and date (our invoice no. is entered differently)</i>' : ''}`)).join('') + '</details>' : ''}
     ${S.money.length ? `<details><summary><b>Payments and credit notes on the statement (${S.money.length})</b></summary>` + S.money.map((m) => line('', `${esc(m.kind)} · ${esc(m.ref || '')} · ${d(m.date)}`, inr(m.amt))).join('') + '</details>' : ''}
     ${ui < list.length - 1 ? '' : `<div class="dl"><span class="sub">This check${list.length > 1 ? ' (all units shown)' : ''}</span>
       <button class="btn sm" data-dl="stm" data-fmt="xlsx">Excel</button><button class="btn sm" data-dl="stm" data-fmt="pdf">PDF</button>
