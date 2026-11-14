@@ -134,6 +134,9 @@ function startRateBackfill() {
 }
 
 function rateBackfill() {
+  // Stopped for good (14 Nov 2026, owner's request): no more AI reading of old POs into ITEM RATES.
+  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'rateBackfill').forEach(t => ScriptApp.deleteTrigger(t));
+  return;
   const c = CacheService.getScriptCache();
   if (c.get('rate_bf_running')) return;   // (no script lock: the app's saves must never wait for this)
   c.put('rate_bf_running', '1', 330);
