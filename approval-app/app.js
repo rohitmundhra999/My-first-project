@@ -1983,7 +1983,8 @@ function renderPO(force) {
   const done = state.poDone?.making ? `<div class="done-msg">Making PO for ${esc(state.poDone.unit)} · ${esc(state.poDone.vendor)} · ${state.poDone.lines} line${state.poDone.lines > 1 ? 's' : ''} · ${money(state.poDone.total)}… You can start the next PO.</div>`
     : state.poDone ? `<div class="done-msg">PO <b>${esc(state.poDone.poNo)}</b> made for ${esc(state.poDone.unit)} · ${esc(state.poDone.vendor)} ·
     ${state.poDone.lines} line${state.poDone.lines > 1 ? 's' : ''} · ${money(state.poDone.total)}.
-    <a href="${esc(state.poDone.link)}" target="_blank" rel="noopener">Open the PO (PDF)</a>. It is in FMS (PO no, amount, vendor) and in the hotel's “Receive” list.</div>` : '';
+    <a href="${esc(state.poDone.link)}" target="_blank" rel="noopener">Open the PO (PDF)</a>. It is in FMS (PO no, amount, vendor) and in the hotel's “Receive” list.
+    ${state.poDone.link ? `<div class="filelinks" style="margin-top:8px"><button type="button" class="btn sm primary" data-fshare="${esc(state.poDone.link)}" data-fname="PO ${esc(state.poDone.poNo)}">Share PO (WhatsApp, email…)</button><button type="button" class="btn sm" data-fdl="${esc(state.poDone.link)}" data-fname="PO ${esc(state.poDone.poNo)}">Download PO</button></div>` : ''}</div>` : '';
   const lines = (state.po.lines || []).filter((l) => l.u === state.poUnit);
   if (!lines.length) { body.innerHTML = done + '<p class="empty">No approved lines waiting for a PO.</p>'; return; }
   [...state.poSel].forEach((k) => { if (!lines.some((l) => poKey(l) === k)) state.poSel.delete(k); });
