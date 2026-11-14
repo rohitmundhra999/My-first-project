@@ -1004,6 +1004,8 @@ function renderRates() {
       return `<article class="card">
         <div class="top"><h3>${esc(D.names[k])}</h3><span class="amt">${inr(l[6])}${l[5] ? ' / ' + esc(l[5]) : ''}</span></div>
         <div class="sub"><b>GST ${l[7] === '' ? 'not known' : esc(l[7]) + '%'}</b> · last bought ${fmtDate(l[0])} from ${esc(l[3] || '-')} · ${esc(l[2])} · PO ${esc(l[1])}</div>
+        <div class="filelinks">${(([po, inv]) => (po ? `<a class="btn sm" href="${esc(po)}" target="_blank" rel="noopener">View PO</a>` : '<span class="btn sm" aria-disabled="true" style="opacity:.45">No PO file</span>')
+          + (inv ? `<a class="btn sm" href="${esc(inv)}" target="_blank" rel="noopener">View invoice</a>` : '<span class="btn sm" aria-disabled="true" style="opacity:.45">No invoice yet</span>'))((D.lk || {})[String(l[1]).trim().toUpperCase()] || [])}</div>
         ${h.length > 1 ? `<details><summary class="sub">Earlier rates (${h.length - 1})</summary>${h.slice(1).map((x) => `<div class="sub">${inr(x[6])} · GST ${x[7] === '' ? '-' : esc(x[7]) + '%'} · ${fmtDate(x[0])} · ${esc(x[3] || '-')} · ${esc(x[2])}</div>`).join('')}</details>` : ''}
       </article>`;
     }).join('') : '<p class="empty">No past purchase found for this item.</p>';

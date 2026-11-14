@@ -54,7 +54,15 @@ function rateIndex_() {
 function rateList_(user) {
   if (!user.isHO) throw appError_('FORBIDDEN', 'Only HO can see this.');
   const d = rateIndex_(), st = rateBfStatus_();
-  return { idx: d.idx, names: d.names, asOf: d.asOf, count: d.count, backfill: st };
+  // PO number -> [PO file link, invoice link], for the POs shown in Check rates (View PO / View invoice)
+  const pol = poLinks_(), ivx = invoiceIndex_(), lk = {};
+  Object.keys(d.idx).forEach(k => d.idx[k].forEach(x => {
+    const p = String(x[1]).trim().toUpperCase();
+    if (!p || lk[p]) return;
+    const a = pol[p] || '', b = (ivx[p] && ivx[p].l) || '';
+    if (a || b) lk[p] = [a, b];
+  }));
+  return { idx: d.idx, names: d.names, asOf: d.asOf, count: d.count, backfill: st, lk: lk };
 }
 
 /** Gemini call with a JSON schema; tries the models in order when one is busy. */
