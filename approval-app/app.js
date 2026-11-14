@@ -397,7 +397,6 @@ function render() {
     const inP = (l) => !state.pUnit || l.unit === state.pUnit;
     const pend = state.mine.pending.filter(inP), hold = state.mine.onHold.filter(inP);
     $('pAllWrap').hidden = !pend.length && !hold.length;
-    $('pUnit').hidden = pUnits.length < 2;
     $('listPending').innerHTML = groupHtml(pend, 'approve', state.pUnit ? 'Nothing waiting for you in this unit.' : 'All done. Nothing waiting for you.');
     $('pAll').checked = pend.length > 0 && pend.every((l) => state.sel.has(key(l)));
     $('holdTitle').hidden = !hold.length;
