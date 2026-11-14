@@ -636,9 +636,9 @@ function exportData(which) {
     return {
       title: `Statement check – ${S.vendor || ''}`, file: `Statement check ${S.vendor || ''} ${stamp}`.replace(/\s+/g, ' '), money: 4,
       filters: `Period ${S.from ? fmtDate(S.from) : '-'} to ${S.to ? fmtDate(S.to) : '-'} · statement bills ${inr((S.totals || {}).stmtBills || 0)} · our invoices ${inr((S.totals || {}).ourBills || 0)}`,
-      head: ['#', 'Result', 'Statement bill', 'Bill date', 'Statement amount', 'Our invoice', 'Our amount', 'Difference', 'PO', 'Note'],
-      body: stmtRows().map((r, i) => [i + 1, r[0], r[1], r[2] ? fmtDate(r[2]) : '', r[3], r[4], r[5], r[6], r[7], r[8]]),
-      pdfCols: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+      head: ['#', 'Unit', 'Result', 'Statement bill', 'Bill date', 'Statement amount', 'Our invoice', 'Our amount', 'Difference', 'PO', 'Note'],
+      body: stmtRows().map((r, i) => [i + 1, r[9], r[0], r[1], r[2] ? fmtDate(r[2]) : '', r[3], r[4], r[5], r[6], r[7], r[8]]),
+      pdfCols: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     };
   }
   if (which === 'inv') {
@@ -2330,40 +2330,50 @@ async function stmtPart(file) {
   const f = await fileForUpload(file); return { file: { type: f.type, data: f.data } };
 }
 $('iStmtFile').onchange = async (e) => {
-  const file = e.target.files[0]; e.target.value = '';
-  if (!file) return;
+  const picked = [...e.target.files]; e.target.value = '';
+  if (!picked.length) return;
   if (!IF.vendor) return toast('First pick the vendor in the vendor box, then upload the statement.', true);
-  IF.stmt = { busy: `Reading ${file.name} with AI and matching with ${IF.vendor}'s invoices… this can take up to a minute.` }; renderStmt();
+  const label = picked.length === 1 ? picked[0].name : picked.length + ' files';
+  IF.stmt = { busy: `Reading ${label} with AI and matching with ${IF.vendor}'s invoices${IF.unit ? ' for ' + IF.unit : ' unit-wise'}… this can take a few minutes.` }; renderStmt();
   try {
-    let payload;
-    if (/\.zip$/i.test(file.name) || /zip/.test(file.type)) {   // a zip with many statements (e.g. one per unit): open it and check every file
-      await loadLibs('xlsx');
-      const z = window.XLSX.CFB.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' }), files = [];
-      for (let i = 0; i < z.FileIndex.length; i++) {
-        const fi = z.FileIndex[i], path = String(z.FullPaths[i] || ''), name = path.split('/').pop();
-        if (fi.type !== 2 || !fi.content || !fi.content.length || /__MACOSX|\/\./.test(path) || /^\./.test(name) || !stmtMime(name)) continue;
-        files.push(Object.assign({ name: name }, await stmtPart(new File([fi.content], name, { type: stmtMime(name) }))));
-      }
-      if (!files.length) throw new Error('No PDF, photo or Excel statement found inside the zip file.');
-      if (files.length > 30) throw new Error('Too many files in the zip (max 30).');
-      IF.stmt = { busy: `Reading ${files.length} statements from ${file.name} with AI and matching with ${IF.vendor}'s invoices… this can take a few minutes.` }; renderStmt();
-      payload = { files: files };
-    } else payload = await stmtPart(file);
-    IF.stmt = await api('statementCheck', Object.assign({ vendor: IF.vendor }, payload));
-    IF.stmt.file = file.name;
+    const files = [];   // many files can be picked at once; a zip is opened and every file inside is checked
+    for (const file of picked) {
+      if (/\.zip$/i.test(file.name) || /zip/.test(file.type)) {
+        await loadLibs('xlsx');
+        const z = window.XLSX.CFB.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' });
+        for (let i = 0; i < z.FileIndex.length; i++) {
+          const fi = z.FileIndex[i], path = String(z.FullPaths[i] || ''), name = path.split('/').pop();
+          if (fi.type !== 2 || !fi.content || !fi.content.length || /__MACOSX|\/\./.test(path) || /^\./.test(name) || !stmtMime(name)) continue;
+          files.push(Object.assign({ name: name }, await stmtPart(new File([fi.content], name, { type: stmtMime(name) }))));
+        }
+      } else files.push(Object.assign({ name: file.name }, await stmtPart(file)));
+    }
+    if (!files.length) throw new Error('No PDF, photo or Excel statement found.');
+    if (files.length > 40) throw new Error('Too many files (max 40 at a time).');
+    IF.stmt = await api('statementCheck', { vendor: IF.vendor, unit: IF.unit || '', files: files });
+    IF.stmt.file = label;
     if (IF.stmt.failed && IF.stmt.failed.length) toast(`AI could not read: ${IF.stmt.failed.join(', ')}. Please try those again later.`, true);
   } catch (err) { IF.stmt = null; renderStmt(); return handleError(err); }
   renderStmt();
 };
+// the units to show: all units of the check, or only the unit picked in the Unit box
+function stmtUnits() {
+  const S = IF.stmt;
+  if (!S || S.busy) return [];
+  const all = S.units && S.units.length ? S.units : [S];
+  return IF.unit ? all.filter((x) => x.unit === IF.unit) : all;
+}
 function stmtRows() {   // one list for the screen, Excel and PDF
-  const S = IF.stmt, out = [];
-  if (!S || S.busy) return out;
+  const out = [];
+  stmtUnits().forEach((S) => { const n0 = out.length;
   S.diff.forEach((x) => out.push(['Amount differs', x.s.ref, x.s.date, x.s.amt, x.o.inv, x.o.amt, x.d, x.o.po, '']));
   S.missing.forEach((x) => out.push([x.po.length ? (x.po[0].exact ? 'Not uploaded – PO raised' : x.po[0].byNo ? 'Not uploaded – PO no. on statement, amount differs' : 'Not uploaded – PO with close amount') : 'Not in our records', x.s.ref, x.s.date, x.s.amt, '', '', x.po.length && x.po[0].byNo ? x.po[0].diff : '', x.po.map((p) => p.po).join(', '),
     (x.po.length ? x.po.map((p) => `PO ${p.po}${p.byNo ? ' (PO no. written on statement)' : ''} dated ${p.d ? fmtDate(p.d) : '-'} for ${inr(p.t)}${p.byNo ? `, statement ${inr(x.s.amt)}, difference ${inr(p.diff)}` : ''}`).join('; ') + ' – invoice not uploaded' : 'No invoice and no PO with this amount or PO number') + (x.s.f ? ` [${x.s.f}]` : '')]));
   S.notInStmt.forEach((o) => out.push(['Not in vendor statement', '', '', '', o.inv, o.amt, '', o.po, 'We have this invoice; the vendor has not shown it']));
   S.matched.forEach((x) => out.push(['Matched', x.s.ref, x.s.date, x.s.amt, x.o.inv, x.o.amt, 0, x.o.po, '']));
   S.money.forEach((m) => out.push([m.kind === 'payment' ? 'Payment (statement)' : m.kind === 'credit' ? 'Credit note (statement)' : 'Other (statement)', m.ref, m.date, m.amt, '', '', '', '', '']));
+  for (let k = n0; k < out.length; k++) out[k][9] = S.label || S.unit || '';
+  });
   return out;
 }
 function renderStmt() {
@@ -2372,9 +2382,10 @@ function renderStmt() {
   if (S.busy) { box.innerHTML = `<p class="empty">${esc(S.busy)}</p>`; return; }
   const d = (x) => (x ? fmtDate(x) : '-');
   const line = (cls, title, body) => `<div class="sl"><b class="${cls}">${title}</b><br>${body}</div>`;
-  const T = S.totals;
-  box.innerHTML = `<section class="stmt card">
-    <div class="top"><h3>Statement check · ${esc(S.vendor)}</h3><button type="button" class="btn sm ghost" id="iStmtClose">Close</button></div>
+  const list = stmtUnits();
+  if (!list.length) { box.innerHTML = `<p class="empty">No statement lines for ${esc(IF.unit)} in this check.</p>`; return; }
+  box.innerHTML = list.map((S, ui) => { const T = S.totals; return `<section class="stmt card">
+    <div class="top"><h3>Statement check · ${esc(S.vendor)}${S.label ? ' · ' + esc(S.label) : ''}</h3>${ui ? '' : '<button type="button" class="btn sm ghost" id="iStmtClose">Close</button>'}</div>
     <div class="sub">${esc(S.file || '')} · period ${d(S.from)} to ${d(S.to)}${S.closing ? ' · closing balance ' + inr(S.closing) : ''}</div>
     <div class="sum">
       <div><span class="sub">Bills on statement</span><br><b>${inr(T.stmtBills)}</b></div>
@@ -2392,14 +2403,14 @@ function renderStmt() {
       `PO ${esc(o.po)}${o.il ? ` · <a href="${esc(o.il)}" target="_blank" rel="noopener">View invoice</a>` : ''}`)).join('') : ''}
     ${S.matched.length ? `<details><summary><b class="ok">✅ Matched (${S.matched.length})</b></summary>` + S.matched.map((x) => line('ok', `Bill ${esc(x.s.ref)} · ${d(x.s.date)} · ${inr(x.s.amt)}`, `Our invoice ${esc(x.o.inv)} · PO ${esc(x.o.po)}`)).join('') + '</details>' : ''}
     ${S.money.length ? `<details><summary><b>Payments and credit notes on the statement (${S.money.length})</b></summary>` + S.money.map((m) => line('', `${esc(m.kind)} · ${esc(m.ref || '')} · ${d(m.date)}`, inr(m.amt))).join('') + '</details>' : ''}
-    <div class="dl"><span class="sub">This check</span>
+    ${ui < list.length - 1 ? '' : `<div class="dl"><span class="sub">This check${list.length > 1 ? ' (all units shown)' : ''}</span>
       <button class="btn sm" data-dl="stm" data-fmt="xlsx">Excel</button><button class="btn sm" data-dl="stm" data-fmt="pdf">PDF</button>
-      <button class="btn sm" data-share="stm" data-fmt="pdf">Share PDF</button></div>
-  </section>`;
+      <button class="btn sm" data-share="stm" data-fmt="pdf">Share PDF</button></div>`}
+  </section>`; }).join('');
   $('iStmtClose').onclick = () => { IF.stmt = null; renderStmt(); };
 }
 $('iSug').addEventListener('pointerdown', (e) => { const b = e.target.closest('[data-vpick]'); if (b) { e.preventDefault(); pickIVendor(b.dataset.vpick); } });
-$('iUnit').onchange = (e) => { IF.unit = e.target.value; renderInvoices(); };
+$('iUnit').onchange = (e) => { IF.unit = e.target.value; renderInvoices(); renderStmt(); };
 $('iSearch').oninput = (e) => { IF.q = e.target.value; renderInvoices(); };
 $('iClear').onclick = () => { $('iSug').hidden = true; IF.stmt = null; renderStmt(); IF.vendor = ''; IF.vtext = ''; IF.unit = ''; IF.q = ''; renderInvoices(); };
 $('vSel').onchange = (e) => { VF.sel = e.target.value; VF.edit = ''; renderVendors(); };
