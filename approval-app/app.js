@@ -635,7 +635,7 @@ function exportData(which) {
     const rows = invoiceRows();
     return {
       title: 'Invoices', file: `Invoices ${stamp}`, money: 5,
-      filters: filterText([['Vendor', IF.vendor], ['Unit', IF.unit], ['Search', IF.q.trim()]]),
+      filters: filterText([['Vendor', IF.vendor || IF.vtext.trim()], ['Unit', IF.unit], ['Search', IF.q.trim()]]),
       head: ['#', 'Vendor', 'Invoice No', 'Invoice date', 'Uploaded', 'Invoice amount', 'PO No', 'PO date', 'Unit', 'PO amount', 'Invoice link', 'PO link'],
       body: rows.map((r, i) => [i + 1, r.v, r.inv, r.idt ? fmtDate(r.idt) : '', r.up ? fmtDate(r.up) : '', r.amt, r.po, r.pd ? fmtDate(r.pd) : '', r.u, r.pt, r.il, r.pl]),
       pdfCols: [0, 1, 2, 3, 5, 6, 7, 8, 9],
@@ -2232,14 +2232,15 @@ function renderVendors() {
     : '<p class="empty">No vendor matches.</p>';
 }
 // ---------- HO: Invoices report (each uploaded invoice with its PO; view / download / share both) ----------
-const IF = { vendor: '', unit: '', q: '' };
+const IF = { vendor: '', vtext: '', unit: '', q: '' };
 async function loadInvoices(fresh) {
   try { state.irep = await api('invoiceReport', fresh ? { fresh: true } : {}); } catch (e) { $('iBody').innerHTML = ''; return handleError(e); }
   if (state.rep.type === 'inv') renderInvoices();
 }
 function invoiceRows() {
   const words = IF.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  return ((state.irep && state.irep.rows) || []).filter((r) => (!IF.vendor || r.v === IF.vendor) && (!IF.unit || r.u === IF.unit) &&
+  const vt = IF.vtext.trim().toLowerCase();   // vendor box: exact pick, or the part typed so far
+  return ((state.irep && state.irep.rows) || []).filter((r) => (IF.vendor ? r.v === IF.vendor : !vt || r.v.toLowerCase().includes(vt)) && (!IF.unit || r.u === IF.unit) &&
     words.every((w) => [r.inv, r.po, r.v, r.u].join(' ').toLowerCase().includes(w)));
 }
 function fileBtns(link, label, name) {
@@ -2253,7 +2254,9 @@ function renderInvoices() {
   const all = state.irep.rows, V = state.irep.vendors || {};
   const vendors = [...new Set(all.map((r) => r.v).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   const units = [...new Set(all.map((r) => r.u).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  IF.vendor = fillSelect('iVendor', `All vendors (${vendors.length})`, vendors.map((v) => [v, v]), IF.vendor);
+  if (IF.vlen !== vendors.length) { IF.vlen = vendors.length; $('iVendors').innerHTML = vendors.map((v) => `<option value="${esc(v)}">`).join(''); $('iVendor').placeholder = `All vendors (${vendors.length}) – type to search`; }
+  if ($('iVendor').value !== IF.vtext) $('iVendor').value = IF.vtext;
+  $('iVendor').classList.toggle('on-filter', !!IF.vtext);
   IF.unit = fillSelect('iUnit', 'All units', units.map((u) => [u, u]), IF.unit);
   if ($('iSearch').value !== IF.q) $('iSearch').value = IF.q;
   const rows = invoiceRows(), show = rows.slice(0, 150);
@@ -2272,10 +2275,15 @@ function renderInvoices() {
   }).join('') + (rows.length > show.length ? `<p class="sub">Showing the latest ${show.length}. Pick a vendor or unit, or search, to see others.</p>` : '')
     : '<p class="empty">No invoice matches.</p>';
 }
-$('iVendor').onchange = (e) => { IF.vendor = e.target.value; renderInvoices(); };
+$('iVendor').oninput = (e) => {
+  IF.vtext = e.target.value;
+  const hit = ((state.irep && state.irep.rows) || []).find((r) => r.v && r.v.toLowerCase() === IF.vtext.trim().toLowerCase());
+  IF.vendor = hit ? hit.v : '';
+  renderInvoices();
+};
 $('iUnit').onchange = (e) => { IF.unit = e.target.value; renderInvoices(); };
 $('iSearch').oninput = (e) => { IF.q = e.target.value; renderInvoices(); };
-$('iClear').onclick = () => { IF.vendor = ''; IF.unit = ''; IF.q = ''; renderInvoices(); };
+$('iClear').onclick = () => { IF.vendor = ''; IF.vtext = ''; IF.unit = ''; IF.q = ''; renderInvoices(); };
 $('vSel').onchange = (e) => { VF.sel = e.target.value; VF.edit = ''; renderVendors(); };
 $('vSearch').oninput = (e) => { VF.q = e.target.value; renderVendors(); };
 $('vClear').onclick = () => { VF.sel = ''; VF.q = ''; VF.edit = ''; renderVendors(); };

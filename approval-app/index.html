@@ -297,7 +297,8 @@
     </div>
     <div id="viewInvoices" hidden>
       <div class="filters">
-        <select id="iVendor" aria-label="Vendor"></select>
+        <input id="iVendor" type="search" list="iVendors" placeholder="All vendors – type to search" aria-label="Vendor" autocomplete="off">
+        <datalist id="iVendors"></datalist>
         <select id="iUnit" aria-label="Unit"></select>
         <input id="iSearch" type="search" placeholder="Search invoice no, PO no, vendor or unit" aria-label="Search invoice">
       </div>
@@ -348,6 +349,6 @@
 </div>
 
 <div id="toast" class="toast" role="status" hidden></div>
-<script type="module" src="app.js?v=20261114k"></script>
+<script type="module" src="app.js?v=20261114l"></script>
 </body>
 </html>
