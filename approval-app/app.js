@@ -715,16 +715,17 @@ async function stmtReport(fmt, share) {
       return [x.s.ref || '(no number)', dt(x.s.date), x.s.amt, '', '', p && p.byNo ? p.diff : '', x.po.map((q) => q.po).join(', '),
         !p ? 'No PO found with this amount or PO number' : p.exact ? 'PO raised for the same amount, invoice not uploaded'
           : p.byNo ? 'PO number is on the statement; PO amount ' + rs(p.t) + ' differs, invoice not uploaded' : 'PO with a close amount (' + rs(p.t) + '), invoice not uploaded']; })],
+    ['Booked by us in a different unit', (S.cross || []).map((x) => [x.s.ref || '(no number)', dt(x.s.date), x.s.amt, x.o.inv, x.o.amt, x.d, x.o.po, x.note])],
     ['In our system - not in vendor statement', S.notInStmt.map((o) => ['', '', '', o.inv, o.amt, '', o.po, 'Vendor has not shown this invoice in the statement'])],
     ['Matched', S.matched.map((x) => [x.s.ref, dt(x.s.date), x.s.amt, x.o.inv, x.o.amt, 0, x.o.po, x.note || (x.how === 'amount' ? 'Matched by amount and date - our invoice no. is entered as "' + x.o.inv + '"' : '')])],
     ['Payments / credit notes on vendor statement', S.money.map((m) => [m.ref || '', dt(m.date), m.amt, '', '', '', '', m.kind === 'payment' ? 'Payment received by vendor' : m.kind === 'credit' ? 'Credit note' : 'Other entry'])],
   ].filter((s) => s[1].length);
   const head = ['Statement bill no.', 'Bill date', 'Statement amount', 'Our invoice no.', 'Our amount', 'Difference', 'PO no.', 'Remarks'];
-  const sumHead = ['Unit', 'Statement period', 'Bills on statement', 'Our invoices', 'Difference', 'Matched', 'Amount differs', 'Not uploaded', 'Not in statement', 'Payments', 'Closing balance'];
+  const sumHead = ['Unit', 'Statement period', 'Bills on statement', 'Our invoices', 'Difference', 'Matched', 'Amount differs', 'Not uploaded', 'Not in statement', 'Payments', 'Closing balance', 'Booked in other unit'];
   const sumRow = (S) => [name(S), (dt(S.from) || '-') + ' to ' + (dt(S.to) || '-'), r2(S.totals.stmtBills), r2(S.totals.ourBills), r2(S.totals.stmtBills - S.totals.ourBills),
-    S.matched.length, S.diff.length, S.missing.length, S.notInStmt.length, r2(S.totals.payments), r2(S.closing)];
+    S.matched.length, S.diff.length, S.missing.length, S.notInStmt.length, r2(S.totals.payments), r2(S.closing), (S.cross || []).length];
   const sums = units.map(sumRow);
-  const total = ['TOTAL', ''].concat([2, 3, 4, 5, 6, 7, 8, 9, 10].map((i) => r2(sums.reduce((t, x) => t + Number(x[i] || 0), 0))));
+  const total = ['TOTAL', ''].concat([2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((i) => r2(sums.reduce((t, x) => t + Number(x[i] || 0), 0))));
   const title = 'Vendor statement reconciliation - ' + S0.vendor, stamp = new Date().toLocaleString('en-IN');
   const file = ('Statement check ' + S0.vendor + (S0.unit ? ' ' + S0.unit : '') + ' ' + new Date().toISOString().slice(0, 10)).replace(/[\\/:*?"<>|]+/g, ' ');
   if (fmt === 'xlsx') {
@@ -735,6 +736,16 @@ async function stmtReport(fmt, share) {
     ws['!cols'] = sumHead.map((h, i) => ({ wch: i === 0 ? 30 : i === 1 ? 26 : 16 }));
     ws['!merges'] = [0, 1, 2].map((r) => ({ s: { r: r, c: 0 }, e: { r: r, c: sumHead.length - 1 } }));
     XLSX.utils.book_append_sheet(wb, ws, 'Summary');
+    const cross = [].concat(...units.map((S) => S.cross || []));
+    if (cross.length) {   // separate tab: bills on one unit's statement that we booked under another unit
+      const mh = ['Unit on vendor statement', 'Statement bill no.', 'Bill date', 'Statement amount', 'Unit booked by us', 'Our invoice no.', 'Our amount', 'Difference', 'PO no.', 'Remarks'];
+      const ma = [['Summit Hotels and Resorts'], [title], ['Unit mismatch - bills on one unit\'s vendor statement that we booked under a different unit (' + cross.length + ')'], [], mh]
+        .concat(cross.map((x) => [x.vu, x.s.ref || '(no number)', dt(x.s.date), x.s.amt, x.ou, x.o.inv, x.o.amt, x.d, x.o.po, x.note]));
+      const mw = XLSX.utils.aoa_to_sheet(ma);
+      mw['!cols'] = [24, 20, 12, 16, 24, 22, 14, 12, 22, 90].map((wch) => ({ wch: wch }));
+      mw['!merges'] = [0, 1, 2].map((r) => ({ s: { r: r, c: 0 }, e: { r: r, c: 9 } }));
+      XLSX.utils.book_append_sheet(wb, mw, 'Unit mismatch');
+    }
     const used = {};
     units.forEach((S) => {
       const x = sumRow(S);
@@ -763,6 +774,15 @@ async function stmtReport(fmt, share) {
     theme: 'grid', headStyles: { fillColor: M, fontSize: 8, halign: 'center' }, styles: { fontSize: 8, cellPadding: 4 }, margin: { left: 30, right: 30, top: 54 },
     columnStyles: { 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'center' }, 6: { halign: 'center' }, 7: { halign: 'center' }, 8: { halign: 'center' }, 9: { halign: 'right' }, 10: { halign: 'right' } },
     didParseCell: (c) => { if (c.section === 'body' && c.row.raw[0] === 'TOTAL') c.cell.styles.fontStyle = 'bold'; }, didDrawPage: band });
+  const crossAll = [].concat(...units.map((S) => S.cross || []));
+  if (crossAll.length) {
+    doc.addPage(); band();
+    doc.setFontSize(13); doc.setTextColor(M[0], M[1], M[2]); doc.text('Unit mismatch - bills booked by us in a different unit (' + crossAll.length + ')', 30, 66); doc.setTextColor(0);
+    doc.autoTable({ startY: 76, head: [['Unit on statement', 'Bill no.', 'Bill date', 'Statement amt', 'Our unit', 'Our invoice no.', 'Our amt', 'PO no.', 'Remarks']],
+      body: crossAll.map((x) => [x.vu, x.s.ref || '(no number)', dt(x.s.date), rs(x.s.amt), x.ou, x.o.inv, rs(x.o.amt), x.o.po, x.note]),
+      theme: 'grid', headStyles: { fillColor: M, fontSize: 8 }, styles: { fontSize: 7.5, cellPadding: 3 },
+      columnStyles: { 3: { halign: 'right' }, 6: { halign: 'right' }, 8: { cellWidth: 230 } }, margin: { left: 30, right: 30, top: 54 }, didDrawPage: band });
+  }
   units.forEach((S) => {
     const x = sumRow(S);
     doc.addPage(); band();
@@ -2454,6 +2474,7 @@ function stmtRows() {   // one list for the screen, Excel and PDF
   S.diff.forEach((x) => out.push(['Amount differs', x.s.ref, x.s.date, x.s.amt, x.o.inv, x.o.amt, x.d, x.o.po, x.note || '']));
   S.missing.forEach((x) => out.push([x.po.length ? (x.po[0].exact ? 'Not uploaded – PO raised' : x.po[0].byNo ? 'Not uploaded – PO no. on statement, amount differs' : 'Not uploaded – PO with close amount') : 'Not in our records', x.s.ref, x.s.date, x.s.amt, '', '', x.po.length && x.po[0].byNo ? x.po[0].diff : '', x.po.map((p) => p.po).join(', '),
     (x.po.length ? x.po.map((p) => `PO ${p.po}${p.byNo ? ' (PO no. written on statement)' : ''} dated ${p.d ? fmtDate(p.d) : '-'} for ${inr(p.t)}${p.byNo ? `, statement ${inr(x.s.amt)}, difference ${inr(p.diff)}` : ''}`).join('; ') + ' – invoice not uploaded' : 'No invoice and no PO with this amount or PO number')]));
+  (S.cross || []).forEach((x) => out.push(['Booked in a different unit', x.s.ref, x.s.date, x.s.amt, x.o.inv, x.o.amt, x.d, x.o.po, x.note]));
   S.notInStmt.forEach((o) => out.push(['Not in vendor statement', '', '', '', o.inv, o.amt, '', o.po, 'We have this invoice; the vendor has not shown it']));
   S.matched.forEach((x) => out.push(['Matched', x.s.ref, x.s.date, x.s.amt, x.o.inv, x.o.amt, 0, x.o.po, x.note || (x.how === 'amount' ? 'Matched by amount and date - our invoice no. is entered as "' + x.o.inv + '"' : '')]));
   S.money.forEach((m) => out.push([m.kind === 'payment' ? 'Payment (statement)' : m.kind === 'credit' ? 'Credit note (statement)' : 'Other (statement)', m.ref, m.date, m.amt, '', '', '', '', '']));
@@ -2478,12 +2499,13 @@ function renderStmt() {
       <div><span class="sub">Difference</span><br><b class="${Math.abs(T.stmtBills - T.ourBills) > 1 ? 'bad' : 'ok'}">${inr(T.stmtBills - T.ourBills)}</b></div>
       <div><span class="sub">Payments / credit notes on statement</span><br><b>${inr(T.payments)} / ${inr(T.credits)}</b></div>
     </div>
-    <p class="sub">✅ ${S.matched.length} matched · ⚠️ ${S.diff.length} amount differs · ❌ ${S.missing.length} on statement but not uploaded · ❌ ${S.notInStmt.length} not in statement</p>
+    <p class="sub">✅ ${S.matched.length} matched · ⚠️ ${S.diff.length} amount differs · ❌ ${S.missing.length} on statement but not uploaded · ❌ ${S.notInStmt.length} not in statement${(S.cross || []).length ? ' · 🔀 ' + S.cross.length + ' booked in other unit' : ''}</p>
     ${S.diff.length ? '<h4>⚠️ Amount differs</h4>' + S.diff.map((x) => line('warn', `Bill ${esc(x.s.ref)} · ${d(x.s.date)}`,
       `Statement ${inr(x.s.amt)} · our invoice ${esc(x.o.inv)} ${inr(x.o.amt)} · difference <b>${inr(x.d)}</b> · PO ${esc(x.o.po)}${x.note ? '<br><b>Remark:</b> ' + esc(x.note) : ''}`)).join('') : ''}
     ${S.missing.length ? '<h4>❌ On the statement but not uploaded with us</h4>' + S.missing.map((x) => line('bad', `Bill ${esc(x.s.ref || '(no number)')} · ${d(x.s.date)} · ${inr(x.s.amt)}`,
       x.po.length ? x.po.map((p) => `${p.exact ? '📄 PO raised for the same amount' : p.byNo ? '📄 PO number written on the statement – amount differs by ' + inr(p.diff) : '📄 PO with a close amount'}: <b>${esc(p.po)}</b> dated ${d(p.d)} for ${inr(p.t)} – <b>invoice not uploaded</b>${p.l ? ` · <a href="${esc(p.l)}" target="_blank" rel="noopener">View PO</a>` : ''}`).join('<br>')
         : 'No invoice uploaded and <b>no PO found with this amount or PO number</b> for this vendor.')).join('') : ''}
+    ${(S.cross || []).length ? '<h4>🔀 Booked by us in a different unit</h4>' + S.cross.map((x) => line('warn', `Bill ${esc(x.s.ref || '(no number)')} · ${d(x.s.date)} · ${inr(x.s.amt)}`, esc(x.note))).join('') : ''}
     ${S.notInStmt.length ? '<h4>❌ We have it, but it is not in the vendor statement</h4>' + S.notInStmt.map((o) => line('bad', `Invoice ${esc(o.inv || '(no number)')} · ${d(o.d)} · ${inr(o.amt)}`,
       `PO ${esc(o.po)}${o.il ? ` · <a href="${esc(o.il)}" target="_blank" rel="noopener">View invoice</a>` : ''}`)).join('') : ''}
     ${S.matched.length ? `<details><summary><b class="ok">✅ Matched (${S.matched.length})</b></summary>` + S.matched.map((x) => line('ok', `Bill ${esc(x.s.ref)} · ${d(x.s.date)} · ${inr(x.s.amt)}`, `Our invoice ${esc(x.o.inv)} · PO ${esc(x.o.po)}${x.note ? '<br><b>Remark:</b> ' + esc(x.note) : x.how === 'amount' ? ' · <i>matched by amount and date (our invoice no. is entered differently)</i>' : ''}`)).join('') + '</details>' : ''}
