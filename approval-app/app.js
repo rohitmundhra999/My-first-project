@@ -51,9 +51,9 @@ async function api(action, data = {}) {
   const write = WRITE_ACTIONS.includes(action) && action !== 'register';
   const body = JSON.stringify({ action, idToken: state.idToken, ...(state.viewAs && action !== 'register' ? { viewAs: state.viewAs } : {}),
     ...(write ? { requestId: newId() } : {}), ...data });
-  const limit = write || action === 'rateCompare' ? 120000 : 45000;
+  const limit = action === 'statementCheck' ? 330000 : write || action === 'rateCompare' ? 120000 : 45000;   // AI reading many statements takes minutes
   let lastErr = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < (action === 'statementCheck' ? 1 : 2); attempt++) {   // never re-send a statement check (it would use the AI limit twice)
     if (attempt) await new Promise((r) => setTimeout(r, 1500));
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), limit);
