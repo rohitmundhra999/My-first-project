@@ -172,7 +172,10 @@
     <!-- Approver -->
     <div id="viewApprove" hidden>
       <h2 class="section">Waiting for your decision</h2>
-      <label class="selall pall" id="pAllWrap" hidden><input type="checkbox" id="pAll"> Select all</label>
+      <div class="assignbar" id="pAllWrap" hidden>
+        <select id="pUnit" aria-label="Unit"></select>
+        <label class="selall"><input type="checkbox" id="pAll"> Select all</label>
+      </div>
       <div id="listPending"></div>
       <h2 class="section" id="holdTitle" hidden>On hold</h2>
       <div id="listHold"></div>
@@ -308,6 +311,6 @@
 </div>
 
 <div id="toast" class="toast" role="status" hidden></div>
-<script type="module" src="app.js?v=20261114d"></script>
+<script type="module" src="app.js?v=20261114e"></script>
 </body>
 </html>

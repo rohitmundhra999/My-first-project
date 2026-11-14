@@ -392,11 +392,16 @@ function render() {
   }
   if (state.mine) {
     $('tabApprove').querySelector('.count').textContent = state.mine.pending.length || '';
-    $('listPending').innerHTML = groupHtml(state.mine.pending, 'approve', 'All done. Nothing waiting for you.');
-    $('pAllWrap').hidden = !state.mine.pending.length;
-    $('pAll').checked = state.mine.pending.length > 0 && state.mine.pending.every((l) => state.sel.has(key(l)));
-    $('holdTitle').hidden = !state.mine.onHold.length;
-    $('listHold').innerHTML = state.mine.onHold.length ? groupHtml(state.mine.onHold, 'approve', '') : '';
+    const pUnits = [...new Set([...state.mine.pending, ...state.mine.onHold].map((l) => l.unit))].sort((a, b) => a.localeCompare(b));
+    state.pUnit = fillSelect('pUnit', 'All units', pUnits.map((u) => [u, u]), state.pUnit || '');
+    const inP = (l) => !state.pUnit || l.unit === state.pUnit;
+    const pend = state.mine.pending.filter(inP), hold = state.mine.onHold.filter(inP);
+    $('pAllWrap').hidden = !pend.length && !hold.length;
+    $('pUnit').hidden = pUnits.length < 2;
+    $('listPending').innerHTML = groupHtml(pend, 'approve', state.pUnit ? 'Nothing waiting for you in this unit.' : 'All done. Nothing waiting for you.');
+    $('pAll').checked = pend.length > 0 && pend.every((l) => state.sel.has(key(l)));
+    $('holdTitle').hidden = !hold.length;
+    $('listHold').innerHTML = hold.length ? groupHtml(hold, 'approve', '') : '';
   }
   updateDocks();
   if (state.tab === 'reports') renderReports();
@@ -1120,11 +1125,16 @@ function groupHtml(lines, mode, emptyMsg) {
     const order = [...new Set(lines.map((l) => l.unit))].sort((a, b) => a.localeCompare(b));
     return order.map((u) => assignGroupHtml({ unit: u, when: '', lines: lines.filter((l) => l.unit === u) }, mode)).join('');
   }
+  if (mode === 'approve') {   // unit-wise: unit name once, then all its items
+    const order = [...new Set(lines.map((l) => l.unit))].sort((a, b) => a.localeCompare(b));
+    groups.length = 0;
+    order.forEach((u) => groups.push({ unit: u, when: '', lines: lines.filter((l) => l.unit === u) }));
+  }
   return groups.map((g) => {
     const allSel = g.lines.every((l) => state.sel.has(key(l)));
     return `<article class="group">
       <label class="ghead"><input type="checkbox" data-group="${esc(g.lines.map(key).join(','))}" ${allSel ? 'checked' : ''}>
-        <span><b>${esc(g.unit)}</b> <span class="sub">${esc(g.when)} · ${g.lines.length} line${g.lines.length > 1 ? 's' : ''}</span></span></label>
+        <span><b>${esc(g.unit)}</b> <span class="sub">${g.when ? esc(g.when) + ' · ' : ''}${g.lines.length} item${g.lines.length > 1 ? 's' : ''}</span></span></label>
       ${g.lines.map((l) => lineHtml(l, mode)).join('')}
     </article>`;
   }).join('');
@@ -1204,7 +1214,7 @@ function lineHtml(l, mode) {
     const hold = l.approval === 'On Hold' ? '<span class="tag hold">On hold</span> ' : '';
     return `<div class="line" data-key="${esc(k)}">
       <label class="lhead"><input type="checkbox" data-key="${esc(k)}" ${checked}>
-        <span class="lmain"><span class="item">${hold}${esc(l.item)}</span><span class="sub">${meta}${pic}</span></span></label>
+        <span class="lmain"><span class="item">${hold}${esc(l.item)}</span><span class="sub">${l.when ? esc(l.when) + ' · ' : ''}${meta}${pic}</span></span></label>
       <div class="indent">${stockHtml(l)}</div>
       <div class="lact">
         <label class="qty">Qty <input type="number" inputmode="decimal" min="0" step="any" value="${esc(k in state.qty ? state.qty[k] : (l.approvedQty !== '' && l.approvedQty != null ? l.approvedQty : l.qty))}" data-qty="${esc(k)}" aria-label="Quantity for ${esc(l.item)}"> <span class="sub">${esc(l.uom)} (asked ${esc(l.qty)})</span></label>
@@ -2171,7 +2181,12 @@ $('aAll').onchange = (e) => {   // select / unselect every line shown under "Nee
 };
 $('aPdf').onclick = () => exportRequirement('pdf');
 $('aSnap').onclick = () => exportRequirement('png');
-$('pAll').onchange = (e) => { (state.mine?.pending || []).forEach((l) => (e.target.checked ? state.sel.add(key(l)) : state.sel.delete(key(l)))); render(); };
+$('pUnit').onchange = (e) => {   // a new unit: lines of other units are unticked, so Approve/Reject never touches hidden lines
+  state.pUnit = e.target.value;
+  if (state.pUnit) [...(state.mine?.pending || []), ...(state.mine?.onHold || [])].forEach((l) => { if (l.unit !== state.pUnit) state.sel.delete(key(l)); });
+  render();
+};
+$('pAll').onchange = (e) => { (state.mine?.pending || []).filter((l) => !state.pUnit || l.unit === state.pUnit).forEach((l) => (e.target.checked ? state.sel.add(key(l)) : state.sel.delete(key(l)))); render(); };
 document.querySelectorAll('[data-bulk]').forEach((b) => (b.onclick = () => decide(b.dataset.bulk, selectedLines())));
 
 document.addEventListener('change', (e) => {
