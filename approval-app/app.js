@@ -2254,7 +2254,8 @@ function renderInvoices() {
   const all = state.irep.rows, V = state.irep.vendors || {};
   const vendors = [...new Set(all.map((r) => r.v).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   const units = [...new Set(all.map((r) => r.u).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  if (IF.vlen !== vendors.length) { IF.vlen = vendors.length; $('iVendors').innerHTML = vendors.map((v) => `<option value="${esc(v)}">`).join(''); $('iVendor').placeholder = `All vendors (${vendors.length}) – type to search`; }
+  IF.names = vendors;
+  $('iVendor').placeholder = `All vendors (${vendors.length}) – type to search`;
   if ($('iVendor').value !== IF.vtext) $('iVendor').value = IF.vtext;
   $('iVendor').classList.toggle('on-filter', !!IF.vtext);
   IF.unit = fillSelect('iUnit', 'All units', units.map((u) => [u, u]), IF.unit);
@@ -2275,15 +2276,41 @@ function renderInvoices() {
   }).join('') + (rows.length > show.length ? `<p class="sub">Showing the latest ${show.length}. Pick a vendor or unit, or search, to see others.</p>` : '')
     : '<p class="empty">No invoice matches.</p>';
 }
+// vendor box: the matching names show at once under the box; the cards follow after a short pause
+function showISug() {
+  const t = IF.vtext.trim().toLowerCase(), names = IF.names || [];
+  const m = t ? names.filter((n) => n.toLowerCase().startsWith(t)).concat(names.filter((n) => !n.toLowerCase().startsWith(t) && n.toLowerCase().includes(t))) : names;
+  IF.sugI = -1;
+  $('iSug').innerHTML = m.length ? m.slice(0, 40).map((n) => `<button type="button" role="option" data-vpick="${esc(n)}">${esc(n)}</button>`).join('') : '<div class="none">No vendor with this name</div>';
+  $('iSug').hidden = false;
+}
+function pickIVendor(name) {
+  IF.vtext = name; IF.vendor = name; $('iVendor').value = name; $('iSug').hidden = true;
+  clearTimeout(IF.t); renderInvoices();
+}
 $('iVendor').oninput = (e) => {
   IF.vtext = e.target.value;
-  const hit = ((state.irep && state.irep.rows) || []).find((r) => r.v && r.v.toLowerCase() === IF.vtext.trim().toLowerCase());
-  IF.vendor = hit ? hit.v : '';
-  renderInvoices();
+  const hit = (IF.names || []).find((n) => n.toLowerCase() === IF.vtext.trim().toLowerCase());
+  IF.vendor = hit || '';
+  showISug();
+  clearTimeout(IF.t); IF.t = setTimeout(renderInvoices, 350);
 };
+$('iVendor').onfocus = () => { if (IF.names) showISug(); };
+$('iVendor').onblur = () => setTimeout(() => ($('iSug').hidden = true), 200);
+$('iVendor').onkeydown = (e) => {
+  const bs = [...$('iSug').querySelectorAll('button')];
+  if (e.key === 'Escape') { $('iSug').hidden = true; return; }
+  if (!bs.length || $('iSug').hidden) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    IF.sugI = Math.max(0, Math.min(bs.length - 1, IF.sugI + (e.key === 'ArrowDown' ? 1 : -1)));
+    bs.forEach((b, i) => b.classList.toggle('on', i === IF.sugI)); bs[IF.sugI].scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter') { e.preventDefault(); pickIVendor(bs[Math.max(0, IF.sugI)].dataset.vpick); }
+};
+$('iSug').addEventListener('pointerdown', (e) => { const b = e.target.closest('[data-vpick]'); if (b) { e.preventDefault(); pickIVendor(b.dataset.vpick); } });
 $('iUnit').onchange = (e) => { IF.unit = e.target.value; renderInvoices(); };
 $('iSearch').oninput = (e) => { IF.q = e.target.value; renderInvoices(); };
-$('iClear').onclick = () => { IF.vendor = ''; IF.vtext = ''; IF.unit = ''; IF.q = ''; renderInvoices(); };
+$('iClear').onclick = () => { $('iSug').hidden = true; IF.vendor = ''; IF.vtext = ''; IF.unit = ''; IF.q = ''; renderInvoices(); };
 $('vSel').onchange = (e) => { VF.sel = e.target.value; VF.edit = ''; renderVendors(); };
 $('vSearch').oninput = (e) => { VF.q = e.target.value; renderVendors(); };
 $('vClear').onclick = () => { VF.sel = ''; VF.q = ''; VF.edit = ''; renderVendors(); };

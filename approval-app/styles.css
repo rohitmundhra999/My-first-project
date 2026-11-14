@@ -334,3 +334,11 @@ html, body { overflow-x: clip; }
 #storeRepSlot .filters { position: static; box-shadow: none; }
 #viewApprove .group { overflow: visible; }
 #viewApprove .group > .ghead { position: sticky; top: calc(var(--top, 56px) + var(--tabsH, 48px) + var(--pbarH, 56px)); z-index: 6; }
+
+/* own suggestion list under a search box (shows matches at once while typing) */
+.sugwrap { position: relative; }
+.sugwrap input { width: 100%; }
+.sug { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 30; background: #fff; border: 1px solid var(--line, #ddd); border-radius: 10px; max-height: 320px; overflow: auto; box-shadow: 0 8px 24px rgba(0,0,0,.15); }
+.sug button { display: block; width: 100%; text-align: left; padding: 10px 12px; border: 0; border-bottom: 1px solid #f0f0f0; background: none; font: inherit; cursor: pointer; }
+.sug button:hover, .sug button.on { background: #f7eaea; }
+.sug .none { padding: 10px 12px; color: #777; }
