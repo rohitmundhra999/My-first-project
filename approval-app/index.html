@@ -10,7 +10,7 @@
 <link rel="apple-touch-icon" href="icon-192.png?v=2">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Summit Procurement">
-<link rel="stylesheet" href="styles.css?v=20261113e">
+<link rel="stylesheet" href="styles.css?v=20261114a">
 <script src="config.js?v=20261113b"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
@@ -172,6 +172,7 @@
     <!-- Approver -->
     <div id="viewApprove" hidden>
       <h2 class="section">Waiting for your decision</h2>
+      <label class="selall pall" id="pAllWrap" hidden><input type="checkbox" id="pAll"> Select all</label>
       <div id="listPending"></div>
       <h2 class="section" id="holdTitle" hidden>On hold</h2>
       <div id="listHold"></div>
@@ -307,6 +308,6 @@
 </div>
 
 <div id="toast" class="toast" role="status" hidden></div>
-<script type="module" src="app.js?v=20261113b"></script>
+<script type="module" src="app.js?v=20261114a"></script>
 </body>
 </html>

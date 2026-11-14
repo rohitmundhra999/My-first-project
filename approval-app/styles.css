@@ -323,3 +323,6 @@ html, body { overflow-x: clip; }
   .tile { padding: 8px 9px; }
   .viewas select { min-width: 150px; }
 }
+
+.selall.pall { display: flex; gap: 8px; align-items: center; margin: 0 0 10px 12px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.selall.pall input { width: 18px; height: 18px; }

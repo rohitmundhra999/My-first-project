@@ -390,6 +390,8 @@ function render() {
   if (state.mine) {
     $('tabApprove').querySelector('.count').textContent = state.mine.pending.length || '';
     $('listPending').innerHTML = groupHtml(state.mine.pending, 'approve', 'All done. Nothing waiting for you.');
+    $('pAllWrap').hidden = !state.mine.pending.length;
+    $('pAll').checked = state.mine.pending.length > 0 && state.mine.pending.every((l) => state.sel.has(key(l)));
     $('holdTitle').hidden = !state.mine.onHold.length;
     $('listHold').innerHTML = state.mine.onHold.length ? groupHtml(state.mine.onHold, 'approve', '') : '';
   }
@@ -2161,6 +2163,7 @@ $('aAll').onchange = (e) => {   // select / unselect every line shown under "Nee
 };
 $('aPdf').onclick = () => exportRequirement('pdf');
 $('aSnap').onclick = () => exportRequirement('png');
+$('pAll').onchange = (e) => { (state.mine?.pending || []).forEach((l) => (e.target.checked ? state.sel.add(key(l)) : state.sel.delete(key(l)))); render(); };
 document.querySelectorAll('[data-bulk]').forEach((b) => (b.onclick = () => decide(b.dataset.bulk, selectedLines())));
 
 document.addEventListener('change', (e) => {
