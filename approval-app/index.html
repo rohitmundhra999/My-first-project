@@ -194,6 +194,7 @@
         <button data-rtype="gs">Status of goods</button>
         <button data-rtype="dec">Approval report</button>
         <button data-rtype="ven" id="rtVen" hidden>Vendors</button>
+        <button data-rtype="inv" id="rtInv" hidden>Invoices</button>
       </div>
       <div id="poReport">
       <div class="filters">
@@ -294,6 +295,24 @@
       </div>
       <p class="sub asof" id="gsAsOf"></p>
     </div>
+    <div id="viewInvoices" hidden>
+      <div class="filters">
+        <select id="iVendor" aria-label="Vendor"></select>
+        <select id="iUnit" aria-label="Unit"></select>
+        <input id="iSearch" type="search" placeholder="Search invoice no, PO no, vendor or unit" aria-label="Search invoice">
+      </div>
+      <div class="rbar"><span id="iTotal" class="sub"></span><button id="iClear" class="btn sm ghost">Clear filters</button></div>
+      <div id="iBody"><p class="empty">Loading invoices…</p></div>
+      <div class="dl" aria-label="Download this report">
+        <span class="sub">Download</span>
+        <button class="btn sm" data-dl="inv" data-fmt="xlsx">Excel</button>
+        <button class="btn sm" data-dl="inv" data-fmt="pdf">PDF</button>
+        <span class="sub">Share</span>
+        <button class="btn sm" data-share="inv" data-fmt="pdf">PDF</button>
+        <button class="btn sm" data-share="inv" data-fmt="xlsx">Excel</button>
+        <button class="btn sm" data-share="inv" data-fmt="png">Snapshot</button>
+      </div>
+    </div>
     <div id="viewVendors" hidden>
       <div class="filters">
         <select id="vSel" aria-label="Vendor"></select>
@@ -329,6 +348,6 @@
 </div>
 
 <div id="toast" class="toast" role="status" hidden></div>
-<script type="module" src="app.js?v=20261114i"></script>
+<script type="module" src="app.js?v=20261114j"></script>
 </body>
 </html>

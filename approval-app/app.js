@@ -440,9 +440,11 @@ function renderReports() {
   const R = state.reports, f = state.rep;
   document.querySelectorAll('[data-rtype]').forEach((b) => b.classList.toggle('on', b.dataset.rtype === f.type));
   const venOk = canVendors();
-  $('rtVen').hidden = !venOk;
-  if (f.type === 'ven' && !venOk) f.type = 'nr';
-  $('poReport').hidden = f.type === 'dec' || f.type === 'gs' || f.type === 'ven'; $('viewDecisions').hidden = f.type !== 'dec'; $('viewGoodsRep').hidden = f.type !== 'gs';
+  $('rtVen').hidden = !venOk; $('rtInv').hidden = !venOk;
+  if ((f.type === 'ven' || f.type === 'inv') && !venOk) f.type = 'nr';
+  $('poReport').hidden = f.type === 'dec' || f.type === 'gs' || f.type === 'ven' || f.type === 'inv';
+  $('viewInvoices').hidden = f.type !== 'inv';
+  if (f.type === 'inv') return renderInvoices(); $('viewDecisions').hidden = f.type !== 'dec'; $('viewGoodsRep').hidden = f.type !== 'gs';
   $('viewVendors').hidden = f.type !== 'ven';
   if (f.type === 'ven') return renderVendors();
   if (f.type === 'dec') return renderDecisions();
@@ -627,6 +629,16 @@ function exportData(which) {
       head: ['#', 'Order No', 'Requested', 'Decided', 'Unit', 'Cluster', 'Item', 'Qty asked', 'Qty approved', 'UOM', 'Status', 'Approver', 'Reason for rejection'],
       body: rows.map((l, i) => [i + 1, l.o, fmtDate(l.d), decDate(l), l.u, l.c, l.it, l.q, l.aq, l.uom, l.s, l.by, l.rm]),
       pdfCols: [0, 1, 2, 3, 4, 6, 7, 8, 10, 11, 12],
+    };
+  }
+  if (which === 'inv') {
+    const rows = invoiceRows();
+    return {
+      title: 'Invoices', file: `Invoices ${stamp}`, money: 5,
+      filters: filterText([['Vendor', IF.vendor], ['Unit', IF.unit], ['Search', IF.q.trim()]]),
+      head: ['#', 'Vendor', 'Invoice No', 'Invoice date', 'Uploaded', 'Invoice amount', 'PO No', 'PO date', 'Unit', 'PO amount', 'Invoice link', 'PO link'],
+      body: rows.map((r, i) => [i + 1, r.v, r.inv, r.idt ? fmtDate(r.idt) : '', r.up ? fmtDate(r.up) : '', r.amt, r.po, r.pd ? fmtDate(r.pd) : '', r.u, r.pt, r.il, r.pl]),
+      pdfCols: [0, 1, 2, 3, 5, 6, 7, 8, 9],
     };
   }
   if (which === 'ven') {
@@ -2217,6 +2229,51 @@ function renderVendors() {
   }).join('') + (rows.length > show.length ? `<p class="sub">Showing the first ${show.length}. Search or pick a vendor to see the rest.</p>` : '')
     : '<p class="empty">No vendor matches.</p>';
 }
+// ---------- HO: Invoices report (each uploaded invoice with its PO; view / download / share both) ----------
+const IF = { vendor: '', unit: '', q: '' };
+async function loadInvoices() {
+  try { state.irep = await api('invoiceReport'); } catch (e) { $('iBody').innerHTML = ''; return handleError(e); }
+  if (state.rep.type === 'inv') renderInvoices();
+}
+function invoiceRows() {
+  const words = IF.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  return ((state.irep && state.irep.rows) || []).filter((r) => (!IF.vendor || r.v === IF.vendor) && (!IF.unit || r.u === IF.unit) &&
+    words.every((w) => [r.inv, r.po, r.v, r.u].join(' ').toLowerCase().includes(w)));
+}
+function fileBtns(link, label, name) {
+  if (!link) return `<span class="sub">No ${label} file</span>`;
+  return `<a class="btn sm" href="${esc(link)}" target="_blank" rel="noopener">View ${label}</a>`
+    + `<button type="button" class="btn sm" data-fdl="${esc(link)}" data-fname="${esc(name)}">Download ${label}</button>`
+    + `<button type="button" class="btn sm" data-fshare="${esc(link)}" data-fname="${esc(name)}">Share ${label}</button>`;
+}
+function renderInvoices() {
+  if (!state.irep) { $('iBody').innerHTML = '<p class="empty">Loading invoices…</p>'; if (!IF.loading) { IF.loading = true; loadInvoices().finally(() => (IF.loading = false)); } return; }
+  const all = state.irep.rows, V = state.irep.vendors || {};
+  const vendors = [...new Set(all.map((r) => r.v).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const units = [...new Set(all.map((r) => r.u).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  IF.vendor = fillSelect('iVendor', `All vendors (${vendors.length})`, vendors.map((v) => [v, v]), IF.vendor);
+  IF.unit = fillSelect('iUnit', 'All units', units.map((u) => [u, u]), IF.unit);
+  if ($('iSearch').value !== IF.q) $('iSearch').value = IF.q;
+  const rows = invoiceRows(), show = rows.slice(0, 150);
+  const sum = rows.reduce((a, r) => a + (r.amt || 0), 0);
+  $('iTotal').textContent = `${rows.length} invoice${rows.length === 1 ? '' : 's'} · ${inr(sum)}`;
+  $('iBody').innerHTML = rows.length ? show.map((r) => {
+    const vd = V[r.v] || [];
+    return `<article class="card">
+      <div class="top"><h3>${esc(r.v || 'Vendor not known')}</h3><span class="amt">${inr(r.amt)}</span></div>
+      ${vd.length ? `<div class="sub">${vd[0] ? '📍 ' + esc(vd[0]) : ''}${vd[1] ? ' · 📞 <a href="tel:' + esc(String(vd[1]).replace(/[^0-9+]/g, '')) + '">' + esc(vd[1]) + '</a>' : ''}${vd[2] ? ' · ✉️ <a href="mailto:' + esc(vd[2]) + '">' + esc(vd[2]) + '</a>' : ''}</div>` : ''}
+      <div class="sub"><b>Invoice</b> ${esc(r.inv || '(no number)')} · dated ${r.idt ? fmtDate(r.idt) : '-'} · ${inr(r.amt)} · uploaded ${r.up ? fmtDate(r.up) : '-'}</div>
+      <div class="filelinks">${fileBtns(r.il, 'invoice', `Invoice ${r.inv || r.po}`)}</div>
+      <div class="sub"><b>PO</b> ${esc(r.po)}${r.pd ? ' · ' + fmtDate(r.pd) : ''}${r.u ? ' · ' + esc(r.u) : ''}${r.pt ? ' · ' + inr(r.pt) : ''}${r.pn ? ' · ' + r.pn + ' item' + (r.pn > 1 ? 's' : '') : ''}</div>
+      <div class="filelinks">${fileBtns(r.pl, 'PO', `PO ${r.po}`)}</div>
+    </article>`;
+  }).join('') + (rows.length > show.length ? `<p class="sub">Showing the latest ${show.length}. Pick a vendor or unit, or search, to see others.</p>` : '')
+    : '<p class="empty">No invoice matches.</p>';
+}
+$('iVendor').onchange = (e) => { IF.vendor = e.target.value; renderInvoices(); };
+$('iUnit').onchange = (e) => { IF.unit = e.target.value; renderInvoices(); };
+$('iSearch').oninput = (e) => { IF.q = e.target.value; renderInvoices(); };
+$('iClear').onclick = () => { IF.vendor = ''; IF.unit = ''; IF.q = ''; renderInvoices(); };
 $('vSel').onchange = (e) => { VF.sel = e.target.value; VF.edit = ''; renderVendors(); };
 $('vSearch').oninput = (e) => { VF.q = e.target.value; renderVendors(); };
 $('vClear').onclick = () => { VF.sel = ''; VF.q = ''; VF.edit = ''; renderVendors(); };
