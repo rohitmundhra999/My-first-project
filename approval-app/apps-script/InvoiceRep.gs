@@ -14,9 +14,10 @@ function invoiceReportBuild_() {
       if (!k) return;
       const p = po[k] || (po[k] = { no: String(r[1]).trim(), l: '', d: '', v: '', t: 0, u: '', n: 0 });
       p.n++; if (!p.l) p.l = url(r[2]); if (!p.d) p.d = fd(r[3]); if (!p.v) p.v = String(r[4]).trim();
-      if (!p.t) p.t = Number(String(r[6]).replace(/[^0-9.]/g, '')) || 0; if (!p.u) p.u = String(r[7]).trim();
+      if (!p.t) p.t = Number(String(r[6]).replace(/[^0-9.]/g, '')) || 0; if (!p.u && !/^#/.test(String(r[7]))) p.u = String(r[7]).trim();
     });
   }
+  const pu = poUnits_();   // PO -> unit from FMS (P.Os PROPERTY is often empty)
   const rows = [], is = b.getSheetByName(STORE_CFG.INVOICES);
   if (is) {
     const last = lastFilled_(is, 1), first = Math.max(2, last - 4000 + 1);
@@ -25,7 +26,7 @@ function invoiceReportBuild_() {
       if (!k) return;
       const p = po[k] || {};
       rows.push({ po: String(r[0]).trim(), il: url(r[1]), up: fd(r[2]), amt: Number(String(r[3]).replace(/[^0-9.]/g, '')) || 0,
-        inv: String(r[4]).trim(), idt: fd(r[5]), v: p.v || '', u: p.u || '', pd: p.d || '', pt: p.t || 0, pl: p.l || '', pn: p.n || 0 });
+        inv: String(r[4]).trim(), idt: fd(r[5]), v: p.v || '', u: pu[k] || p.u || '', pd: p.d || '', pt: p.t || 0, pl: p.l || '', pn: p.n || 0 });
     });
   }
   rows.reverse();   // latest upload first
@@ -63,10 +64,20 @@ function invoiceRepPatch_(po, link, amount, invNo, invDate) {
         pt: Number(String(x[6]).replace(/[^0-9.]/g, '')) || 0, pl: /^https?:\/\//.test(String(x[2])) ? String(x[2]).trim() : '', pn: hits.length };
     }
   }
+  if (!f.u || /^#/.test(f.u)) f.u = poUnits_()[k] || '';
   c.rows.unshift(Object.assign({ po: po, il: link, up: Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), amt: amount, inv: invNo, idt: invDate }, f));
   if (f.v && !(c.vendors || (c.vendors = {}))[f.v]) {
     const v = vendorList_({ isHO: true }).list.find(x => x.name.toLowerCase() === f.v.toLowerCase());
     if (v) c.vendors[f.v] = [v.address, v.phone, v.email];
   }
   cachePutBig_(INVREP_CACHE, c, 21600);
+}
+
+/** PO number -> unit, from FMS (unit column and PO column). */
+function poUnits_() {
+  const sh = fms_(), n = sh.getLastRow() - CFG.FIRST_ROW + 1, out = {};
+  if (n < 1) return out;
+  const u = sh.getRange(CFG.FIRST_ROW, COL.UNIT, n, 1).getValues(), p = sh.getRange(CFG.FIRST_ROW, SCOL.PO, n, 1).getValues();
+  p.forEach((x, i) => { const k = String(x[0]).trim().toUpperCase(); if (k && !out[k]) out[k] = String(u[i][0]).trim(); });
+  return out;
 }
