@@ -606,6 +606,7 @@ function warmCache() {
   reports_(null, { fresh: true });
   try { storeLines_(); } catch (e) { console.error('Store cache failed: ' + e); }
   try { poPendingBuild_(); } catch (e) { console.error('PO list failed: ' + e); }
+  try { cachePutBig_(INVREP_CACHE, invoiceReportBuild_(), 21600); } catch (e) { console.error('Invoices report cache failed: ' + e); }
 }
 
 function cleanItems_(items) {
@@ -1363,6 +1364,7 @@ function storeInvoice_(user, req) {
   });
   const today = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd');
   try { patchStore_(unit, (ls, d) => { ls.forEach(l => { if (l.po && l.po.toUpperCase() === key && l.rcv !== '') l.inv = 'done'; }); (d.ivl = d.ivl || {})[po] = { n: invNo, d: dm[0], a: amount, l: link, t: today }; }); } catch (e) { console.warn(e); }
+  try { invoiceRepPatch_(po, link, amount, invNo, dm[0]); } catch (e) { console.warn('Invoices report patch: ' + e); }
   scheduleRefresh_();
   return { uploaded: true, po: po, link: link };
 }

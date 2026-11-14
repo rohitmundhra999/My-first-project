@@ -1,8 +1,8 @@
 
 // ======================= HO: Invoices report (INVOICES tab + the PO each invoice is for) =======================
 /** Every uploaded invoice (latest first) with its PO (P.Os tab) and the vendor's details. HO and admin only. */
-function invoiceReport_(user) {
-  canVendors_(user);
+function invoiceReportBuild_() {
+  const user = { isHO: true };   // internal: lets vendorList_ give the vendors' details
   const b = book_(), fd = v => (v instanceof Date ? Utilities.formatDate(v, CFG.TZ, 'yyyy-MM-dd') : String(v || '').trim());
   const url = v => (/^https?:\/\//.test(String(v)) ? String(v).trim() : '');
   // PO number -> details (P.Os: A order no, B PO no, C link, D date, E vendor, F days, G total, H unit; one row per line)
@@ -35,4 +35,38 @@ function invoiceReport_(user) {
   const vendors = {};
   rows.forEach(r => { const k = r.v.toLowerCase(); if (r.v && vd[k] && !vendors[r.v]) vendors[r.v] = vd[k]; });
   return { rows: rows, vendors: vendors };
+}
+
+// Ready copy of the Invoices report: rebuilt by warmCache every 5 minutes, new app uploads are added at once,
+// and the app's Refresh button reads the sheet again (fresh).
+const INVREP_CACHE = 'INVREP';
+function invoiceReport_(user, req) {
+  canVendors_(user);
+  if (!(req && req.fresh)) { const c = cacheGetBig_(INVREP_CACHE); if (c) return c; }
+  const out = invoiceReportBuild_();
+  cachePutBig_(INVREP_CACHE, out, 21600);
+  return out;
+}
+/** An invoice just uploaded in the app: put it on top of the ready copy (with its PO details). */
+function invoiceRepPatch_(po, link, amount, invNo, invDate) {
+  const c = cacheGetBig_(INVREP_CACHE);
+  if (!c) return;
+  const k = po.toUpperCase(), had = c.rows.find(r => String(r.po).toUpperCase() === k);
+  let f = had ? { v: had.v, u: had.u, pd: had.pd, pt: had.pt, pl: had.pl, pn: had.pn } : null;
+  if (!f) {
+    f = { v: '', u: '', pd: '', pt: 0, pl: '', pn: 0 };
+    const ps = book_().getSheetByName(STORE_CFG.POS);
+    const hits = ps ? ps.getRange(2, 2, Math.max(1, ps.getLastRow() - 1), 1).createTextFinder(po).matchEntireCell(true).findAll() : [];
+    if (hits.length) {
+      const x = ps.getRange(hits[0].getRow(), 1, 1, 8).getValues()[0];
+      f = { v: String(x[4]).trim(), u: String(x[7]).trim(), pd: x[3] instanceof Date ? Utilities.formatDate(x[3], CFG.TZ, 'yyyy-MM-dd') : String(x[3] || '').trim(),
+        pt: Number(String(x[6]).replace(/[^0-9.]/g, '')) || 0, pl: /^https?:\/\//.test(String(x[2])) ? String(x[2]).trim() : '', pn: hits.length };
+    }
+  }
+  c.rows.unshift(Object.assign({ po: po, il: link, up: Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), amt: amount, inv: invNo, idt: invDate }, f));
+  if (f.v && !(c.vendors || (c.vendors = {}))[f.v]) {
+    const v = vendorList_({ isHO: true }).list.find(x => x.name.toLowerCase() === f.v.toLowerCase());
+    if (v) c.vendors[f.v] = [v.address, v.phone, v.email];
+  }
+  cachePutBig_(INVREP_CACHE, c, 21600);
 }

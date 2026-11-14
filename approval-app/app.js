@@ -904,6 +904,7 @@ async function hoUploadInvoice(form) {
     try { f = await fileForUpload(file); } catch (e) { return toast(e.message, true); }
     toast('Uploading invoice…');
     await api('storeInvoice', { po, invoiceNo: no, date, amount: Number(amount), file: { type: f.type, data: f.data } });
+    state.irep = null;   // Invoices report: reload (the server has added this invoice)
     state.hi.form = null;
     if (state.reports) state.reports.invoicePending = state.reports.invoicePending.filter((p) => p.po !== po);
     toast(`Invoice uploaded for PO ${po}.`);
@@ -1912,6 +1913,7 @@ async function uploadInvoice(form) {
     try { f = await fileForUpload(file); } catch (e) { return toast(e.message, true); }
     toast('Uploading invoice…');
     await api('storeInvoice', { po, invoiceNo: no, date, amount: Number(amount), file: { type: f.type, data: f.data } });
+    state.irep = null;   // Invoices report: reload (the server has added this invoice)
     sv.inv = null;
     toast(`Invoice uploaded for PO ${po}.`);
     await loadStore(false, state.gen);
@@ -2231,8 +2233,8 @@ function renderVendors() {
 }
 // ---------- HO: Invoices report (each uploaded invoice with its PO; view / download / share both) ----------
 const IF = { vendor: '', unit: '', q: '' };
-async function loadInvoices() {
-  try { state.irep = await api('invoiceReport'); } catch (e) { $('iBody').innerHTML = ''; return handleError(e); }
+async function loadInvoices(fresh) {
+  try { state.irep = await api('invoiceReport', fresh ? { fresh: true } : {}); } catch (e) { $('iBody').innerHTML = ''; return handleError(e); }
   if (state.rep.type === 'inv') renderInvoices();
 }
 function invoiceRows() {
@@ -2303,7 +2305,11 @@ document.querySelectorAll('[data-rview]').forEach((b) => (b.onclick = () => { st
   ($(id).onchange = (e) => { state.rep[k] = e.target.value; if (k === 'cluster') state.rep.unit = ''; renderReports(); }));
 $('fSearch').oninput = (e) => { state.rep.q = e.target.value; renderReports(); };
 $('btnClear').onclick = () => { Object.assign(state.rep, { cluster: '', unit: '', vendor: '', month: '', age: '', q: '' }); renderReports(); };
-$('btnRefresh').onclick = () => { toast('Reading the latest from the sheet…'); run('refresh', () => refresh(true)); if (state.tab === 'honr') loadHoNr(true); };
+$('btnRefresh').onclick = () => {
+  toast('Reading the latest from the sheet…'); run('refresh', () => refresh(true)); if (state.tab === 'honr') loadHoNr(true);
+  if (state.irep && state.rep.type === 'inv' && !$('viewInvoices').hidden) { state.irep = null; IF.loading = true; $('iBody').innerHTML = '<p class="empty">Loading invoices…</p>'; loadInvoices(true).finally(() => (IF.loading = false)); }
+  else state.irep = null;   // next time it is opened it comes from the server's ready copy
+};
 $('btnSignOut').onclick = signOut;
 $('btnAssign').onclick = assignSelected;
 $('aUnit').onchange = (e) => { state.aUnit = e.target.value; render(); };
