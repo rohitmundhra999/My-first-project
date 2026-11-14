@@ -631,6 +631,16 @@ function exportData(which) {
       pdfCols: [0, 1, 2, 3, 4, 6, 7, 8, 10, 11, 12],
     };
   }
+  if (which === 'stm') {
+    const S = IF.stmt || {};
+    return {
+      title: `Statement check – ${S.vendor || ''}`, file: `Statement check ${S.vendor || ''} ${stamp}`.replace(/\s+/g, ' '), money: 4,
+      filters: `Period ${S.from ? fmtDate(S.from) : '-'} to ${S.to ? fmtDate(S.to) : '-'} · statement bills ${inr((S.totals || {}).stmtBills || 0)} · our invoices ${inr((S.totals || {}).ourBills || 0)}`,
+      head: ['#', 'Result', 'Statement bill', 'Bill date', 'Statement amount', 'Our invoice', 'Our amount', 'Difference', 'PO', 'Note'],
+      body: stmtRows().map((r, i) => [i + 1, r[0], r[1], r[2] ? fmtDate(r[2]) : '', r[3], r[4], r[5], r[6], r[7], r[8]]),
+      pdfCols: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    };
+  }
   if (which === 'inv') {
     const rows = invoiceRows();
     return {
@@ -2285,6 +2295,7 @@ function showISug() {
   $('iSug').hidden = false;
 }
 function pickIVendor(name) {
+  if (IF.vendor !== name) { IF.stmt = null; renderStmt(); }
   IF.vtext = name; IF.vendor = name; $('iVendor').value = name; $('iSug').hidden = true;
   clearTimeout(IF.t); renderInvoices();
 }
@@ -2307,10 +2318,71 @@ $('iVendor').onkeydown = (e) => {
     bs.forEach((b, i) => b.classList.toggle('on', i === IF.sugI)); bs[IF.sugI].scrollIntoView({ block: 'nearest' });
   } else if (e.key === 'Enter') { e.preventDefault(); pickIVendor(bs[Math.max(0, IF.sugI)].dataset.vpick); }
 };
+// ---- AI: check a vendor statement against our invoices (and POs without an invoice) ----
+$('iStmtFile').onchange = async (e) => {
+  const file = e.target.files[0]; e.target.value = '';
+  if (!file) return;
+  if (!IF.vendor) return toast('First pick the vendor in the vendor box, then upload the statement.', true);
+  IF.stmt = { busy: `Reading ${file.name} with AI and matching with ${IF.vendor}'s invoices… this can take up to a minute.` }; renderStmt();
+  try {
+    let payload;
+    if (/\.(xlsx|xls|csv)$/i.test(file.name) || /sheet|excel|csv/.test(file.type)) {
+      await loadLibs('xlsx');
+      const wb = window.XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      payload = { text: wb.SheetNames.slice(0, 5).map((n) => window.XLSX.utils.sheet_to_csv(wb.Sheets[n], { blankrows: false })).join('\n\n').slice(0, 60000) };
+    } else { const f = await fileForUpload(file); payload = { file: { type: f.type, data: f.data } }; }
+    IF.stmt = await api('statementCheck', Object.assign({ vendor: IF.vendor }, payload));
+    IF.stmt.file = file.name;
+  } catch (err) { IF.stmt = null; renderStmt(); return handleError(err); }
+  renderStmt();
+};
+function stmtRows() {   // one list for the screen, Excel and PDF
+  const S = IF.stmt, out = [];
+  if (!S || S.busy) return out;
+  S.diff.forEach((x) => out.push(['Amount differs', x.s.ref, x.s.date, x.s.amt, x.o.inv, x.o.amt, x.d, x.o.po, '']));
+  S.missing.forEach((x) => out.push([x.po.length ? (x.po[0].exact ? 'Not uploaded – PO raised' : 'Not uploaded – PO with close amount') : 'Not in our records', x.s.ref, x.s.date, x.s.amt, '', '', '', x.po.map((p) => p.po).join(', '),
+    x.po.length ? x.po.map((p) => `PO ${p.po} dated ${p.d ? fmtDate(p.d) : '-'} for ${inr(p.t)}`).join('; ') + ' – invoice not uploaded' : 'No invoice and no PO with this amount']));
+  S.notInStmt.forEach((o) => out.push(['Not in vendor statement', '', '', '', o.inv, o.amt, '', o.po, 'We have this invoice; the vendor has not shown it']));
+  S.matched.forEach((x) => out.push(['Matched', x.s.ref, x.s.date, x.s.amt, x.o.inv, x.o.amt, 0, x.o.po, '']));
+  S.money.forEach((m) => out.push([m.kind === 'payment' ? 'Payment (statement)' : m.kind === 'credit' ? 'Credit note (statement)' : 'Other (statement)', m.ref, m.date, m.amt, '', '', '', '', '']));
+  return out;
+}
+function renderStmt() {
+  const S = IF.stmt, box = $('iStmt');
+  if (!S) { box.innerHTML = ''; return; }
+  if (S.busy) { box.innerHTML = `<p class="empty">${esc(S.busy)}</p>`; return; }
+  const d = (x) => (x ? fmtDate(x) : '-');
+  const line = (cls, title, body) => `<div class="sl"><b class="${cls}">${title}</b><br>${body}</div>`;
+  const T = S.totals;
+  box.innerHTML = `<section class="stmt card">
+    <div class="top"><h3>Statement check · ${esc(S.vendor)}</h3><button type="button" class="btn sm ghost" id="iStmtClose">Close</button></div>
+    <div class="sub">${esc(S.file || '')} · period ${d(S.from)} to ${d(S.to)}${S.closing ? ' · closing balance ' + inr(S.closing) : ''}</div>
+    <div class="sum">
+      <div><span class="sub">Bills on statement</span><br><b>${inr(T.stmtBills)}</b></div>
+      <div><span class="sub">Our invoices (same period)</span><br><b>${inr(T.ourBills)}</b></div>
+      <div><span class="sub">Difference</span><br><b class="${Math.abs(T.stmtBills - T.ourBills) > 1 ? 'bad' : 'ok'}">${inr(T.stmtBills - T.ourBills)}</b></div>
+      <div><span class="sub">Payments / credit notes on statement</span><br><b>${inr(T.payments)} / ${inr(T.credits)}</b></div>
+    </div>
+    <p class="sub">✅ ${S.matched.length} matched · ⚠️ ${S.diff.length} amount differs · ❌ ${S.missing.length} on statement but not uploaded · ❌ ${S.notInStmt.length} not in statement</p>
+    ${S.diff.length ? '<h4>⚠️ Amount differs</h4>' + S.diff.map((x) => line('warn', `Bill ${esc(x.s.ref)} · ${d(x.s.date)}`,
+      `Statement ${inr(x.s.amt)} · our invoice ${esc(x.o.inv)} ${inr(x.o.amt)} · difference <b>${inr(x.d)}</b> · PO ${esc(x.o.po)}`)).join('') : ''}
+    ${S.missing.length ? '<h4>❌ On the statement but not uploaded with us</h4>' + S.missing.map((x) => line('bad', `Bill ${esc(x.s.ref || '(no number)')} · ${d(x.s.date)} · ${inr(x.s.amt)}`,
+      x.po.length ? x.po.map((p) => `${p.exact ? '📄 PO raised for the same amount' : '📄 PO with a close amount'}: <b>${esc(p.po)}</b> dated ${d(p.d)} for ${inr(p.t)} – <b>invoice not uploaded</b>${p.l ? ` · <a href="${esc(p.l)}" target="_blank" rel="noopener">View PO</a>` : ''}`).join('<br>')
+        : 'No invoice uploaded and <b>no PO found with this amount</b> for this vendor.')).join('') : ''}
+    ${S.notInStmt.length ? '<h4>❌ We have it, but it is not in the vendor statement</h4>' + S.notInStmt.map((o) => line('bad', `Invoice ${esc(o.inv || '(no number)')} · ${d(o.d)} · ${inr(o.amt)}`,
+      `PO ${esc(o.po)}${o.il ? ` · <a href="${esc(o.il)}" target="_blank" rel="noopener">View invoice</a>` : ''}`)).join('') : ''}
+    ${S.matched.length ? `<details><summary><b class="ok">✅ Matched (${S.matched.length})</b></summary>` + S.matched.map((x) => line('ok', `Bill ${esc(x.s.ref)} · ${d(x.s.date)} · ${inr(x.s.amt)}`, `Our invoice ${esc(x.o.inv)} · PO ${esc(x.o.po)}`)).join('') + '</details>' : ''}
+    ${S.money.length ? `<details><summary><b>Payments and credit notes on the statement (${S.money.length})</b></summary>` + S.money.map((m) => line('', `${esc(m.kind)} · ${esc(m.ref || '')} · ${d(m.date)}`, inr(m.amt))).join('') + '</details>' : ''}
+    <div class="dl"><span class="sub">This check</span>
+      <button class="btn sm" data-dl="stm" data-fmt="xlsx">Excel</button><button class="btn sm" data-dl="stm" data-fmt="pdf">PDF</button>
+      <button class="btn sm" data-share="stm" data-fmt="pdf">Share PDF</button></div>
+  </section>`;
+  $('iStmtClose').onclick = () => { IF.stmt = null; renderStmt(); };
+}
 $('iSug').addEventListener('pointerdown', (e) => { const b = e.target.closest('[data-vpick]'); if (b) { e.preventDefault(); pickIVendor(b.dataset.vpick); } });
 $('iUnit').onchange = (e) => { IF.unit = e.target.value; renderInvoices(); };
 $('iSearch').oninput = (e) => { IF.q = e.target.value; renderInvoices(); };
-$('iClear').onclick = () => { $('iSug').hidden = true; IF.vendor = ''; IF.vtext = ''; IF.unit = ''; IF.q = ''; renderInvoices(); };
+$('iClear').onclick = () => { $('iSug').hidden = true; IF.stmt = null; renderStmt(); IF.vendor = ''; IF.vtext = ''; IF.unit = ''; IF.q = ''; renderInvoices(); };
 $('vSel').onchange = (e) => { VF.sel = e.target.value; VF.edit = ''; renderVendors(); };
 $('vSearch').oninput = (e) => { VF.q = e.target.value; renderVendors(); };
 $('vClear').onclick = () => { VF.sel = ''; VF.q = ''; VF.edit = ''; renderVendors(); };

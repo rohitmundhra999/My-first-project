@@ -342,3 +342,10 @@ html, body { overflow-x: clip; }
 .sug button { display: block; width: 100%; text-align: left; padding: 10px 12px; border: 0; border-bottom: 1px solid #f0f0f0; background: none; font: inherit; cursor: pointer; }
 .sug button:hover, .sug button.on { background: #f7eaea; }
 .sug .none { padding: 10px 12px; color: #777; }
+
+.stmtbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+.stmt h4 { margin: 14px 0 6px; font-size: 15px; }
+.stmt .sl { border: 1px solid var(--border, #ddd); border-radius: 10px; padding: 8px 10px; margin: 6px 0; background: var(--surface, #fff); font-size: 14px; }
+.stmt .ok { color: #1b7f3b; } .stmt .bad { color: #b3261e; } .stmt .warn { color: #9a6200; }
+.stmt .sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.stmt .sum div { border: 1px solid var(--border, #ddd); border-radius: 10px; padding: 8px 10px; background: var(--surface, #fff); }
