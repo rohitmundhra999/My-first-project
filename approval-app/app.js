@@ -2255,9 +2255,10 @@ window.__nlp = { state, api };
     root.setProperty('--top', (bar + h(document.getElementById('viewAsBar'))) + 'px');   // header + "View app as"
     root.setProperty('--tabsH', h(document.querySelector('.tabs')) + 'px');
     root.setProperty('--segH', (h(document.querySelector('#viewStore > .seg')) + 6) + 'px');
+    root.setProperty('--pbarH', h(document.getElementById('pAllWrap')) + 'px');
     root.setProperty('--segRH', (h(document.querySelector('#app > #viewReports > .seg')) + 6) + 'px');
   };
   const ro = new ResizeObserver(set);
-  ['.bar', '#viewAsBar', '.tabs', '#viewStore > .seg', '#viewReports > .seg'].forEach((s) => { const el = document.querySelector(s); if (el) ro.observe(el); });
+  ['.bar', '#viewAsBar', '.tabs', '#viewStore > .seg', '#viewReports > .seg', '#pAllWrap'].forEach((s) => { const el = document.querySelector(s); if (el) ro.observe(el); });
   window.addEventListener('resize', set); set();
 })();
