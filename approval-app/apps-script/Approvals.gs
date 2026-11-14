@@ -291,8 +291,18 @@ function decide_(user, req) {
       if (qty === null) qty = Number(row[COL.QTY - 1]) || null;
       if (decision === 'Approved' && !(qty > 0)) return skipped.push({ orderNo: it.orderNo, why: 'Enter a quantity above 0.' });
 
-      sh.getRange(it.row, COL.ACTUAL, 1, 2).setValues([[new Date(), decision]]);             // J, K
-      sh.getRange(it.row, COL.APPROVED_BY, 1, 2).setValues([[user.name, qty === null ? '' : qty]]); // M, N
+      // Write J-N together; if the sheet refuses (e.g. a drop-down rule), put the line back exactly as it was and skip it,
+      // so a line is never left half saved and the other lines still go through.
+      const rng = sh.getRange(it.row, COL.ACTUAL, 1, COL.APPR_QTY - COL.ACTUAL + 1);   // J..N
+      const before = rng.getFormulas()[0].map((f, c) => f || row[COL.ACTUAL - 1 + c]);
+      const after = before.slice();
+      after[0] = new Date(); after[COL.APPROVAL - COL.ACTUAL] = decision;
+      after[COL.APPROVED_BY - COL.ACTUAL] = user.name; after[COL.APPR_QTY - COL.ACTUAL] = qty === null ? '' : qty;
+      try { rng.setValues([after]); }
+      catch (e) {
+        try { rng.setValues([before]); } catch (e2) { console.error('Could not restore row ' + it.row + ': ' + e2); }
+        return skipped.push({ orderNo: it.orderNo, why: 'The sheet did not accept it (' + String(e.message || e).slice(0, 120) + ')' });
+      }
       done.push({ row: it.row, orderNo: it.orderNo, qty: qty, r: row });
     });
     if (done.length) log_(user, decision.toUpperCase(), done.map(d => d.orderNo + (d.qty !== null ? ' x' + d.qty : '')).join(', '), remark);

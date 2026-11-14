@@ -348,7 +348,10 @@ function applySync(r, unit) {
     }
   });
   take('ho', (p) => (state.ho = p));
-  take('mine', (p) => (state.mine = p));
+  take('mine', (p) => {   // lines whose decision is still being saved stay hidden, even if this copy was read before the save
+    if (p && deciding.size) { p.pending = p.pending.filter((l) => !deciding.has(key(l))); p.onHold = p.onHold.filter((l) => !deciding.has(key(l))); }
+    state.mine = p;
+  });
   // "same" = nothing changed since the copy here: keep it, just update its "as of" time
   take('reports', (p) => { if (!p.same) state.reports = p.reports; else if (state.reports && p.asOf) state.reports.asOf = p.asOf; state.repAt = Date.now(); });
   take('dec', (p) => { if (!p.same) state.dec = Object.assign({}, p.decisions, { lines: unpack(p.decisions.lines) }); else if (state.dec && p.asOf) state.dec.asOf = p.asOf; state.decAt = Date.now(); });
@@ -1346,6 +1349,7 @@ async function exportRequirement(kind) {
   cv.toBlob((b) => (b ? shareFile(b, `Requirement ${stamp}.png`) : toast('Could not make the snapshot.', true)), 'image/png');
 }
 
+const deciding = new Set();   // keys of lines whose decision is on its way to the server
 async function decide(decision, lines) {
   if (!lines.length || state.busy) return;
   let remark = '';
@@ -1361,6 +1365,7 @@ async function decide(decision, lines) {
     if (bad) return toast(`Enter a quantity above 0 for ${bad.orderNo}.`, true);
   }
   const gone = new Set(lines.map(key));
+  gone.forEach((k) => deciding.add(k));
   optimistic(() => {   // the lines leave the list at once; the server is told in the background
     lines.forEach((l) => { state.sel.delete(key(l)); delete state.qty[key(l)]; });
     const m = state.mine; if (!m) return;
@@ -1368,7 +1373,7 @@ async function decide(decision, lines) {
     m.pending = m.pending.filter((l) => !gone.has(key(l))); m.onHold = m.onHold.filter((l) => !gone.has(key(l)));
     if (decision === 'On Hold') m.onHold = moved.map((l) => ({ ...l, approval: 'On Hold' })).concat(m.onHold);
   }, async () => {
-    const r = await api('decide', { decision, items, remark });
+    const r = await api('decide', { decision, items, remark }).finally(() => gone.forEach((k) => deciding.delete(k)));
     toast(`${r.decided} line${r.decided === 1 ? '' : 's'} marked ${r.decision}.` + skippedText(r.skipped), r.skipped.length > 0);
   });
 }
