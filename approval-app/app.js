@@ -2319,6 +2319,16 @@ $('iVendor').onkeydown = (e) => {
   } else if (e.key === 'Enter') { e.preventDefault(); pickIVendor(bs[Math.max(0, IF.sugI)].dataset.vpick); }
 };
 // ---- AI: check a vendor statement against our invoices (and POs without an invoice) ----
+// one statement file -> { text } (Excel) or { file } (PDF / photo); also used for every file inside a zip
+const stmtMime = (n) => /\.pdf$/i.test(n) ? 'application/pdf' : /\.png$/i.test(n) ? 'image/png' : /\.webp$/i.test(n) ? 'image/webp' : /\.jpe?g$/i.test(n) ? 'image/jpeg' : /\.(xlsx|xls|csv)$/i.test(n) ? 'application/vnd.ms-excel' : '';
+async function stmtPart(file) {
+  if (/\.(xlsx|xls|csv)$/i.test(file.name) || /sheet|excel|csv/.test(file.type)) {
+    await loadLibs('xlsx');
+    const wb = window.XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    return { text: wb.SheetNames.slice(0, 5).map((n) => window.XLSX.utils.sheet_to_csv(wb.Sheets[n], { blankrows: false })).join('\n\n').slice(0, 60000) };
+  }
+  const f = await fileForUpload(file); return { file: { type: f.type, data: f.data } };
+}
 $('iStmtFile').onchange = async (e) => {
   const file = e.target.files[0]; e.target.value = '';
   if (!file) return;
@@ -2326,13 +2336,22 @@ $('iStmtFile').onchange = async (e) => {
   IF.stmt = { busy: `Reading ${file.name} with AI and matching with ${IF.vendor}'s invoices… this can take up to a minute.` }; renderStmt();
   try {
     let payload;
-    if (/\.(xlsx|xls|csv)$/i.test(file.name) || /sheet|excel|csv/.test(file.type)) {
+    if (/\.zip$/i.test(file.name) || /zip/.test(file.type)) {   // a zip with many statements (e.g. one per unit): open it and check every file
       await loadLibs('xlsx');
-      const wb = window.XLSX.read(await file.arrayBuffer(), { type: 'array' });
-      payload = { text: wb.SheetNames.slice(0, 5).map((n) => window.XLSX.utils.sheet_to_csv(wb.Sheets[n], { blankrows: false })).join('\n\n').slice(0, 60000) };
-    } else { const f = await fileForUpload(file); payload = { file: { type: f.type, data: f.data } }; }
+      const z = window.XLSX.CFB.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' }), files = [];
+      for (let i = 0; i < z.FileIndex.length; i++) {
+        const fi = z.FileIndex[i], path = String(z.FullPaths[i] || ''), name = path.split('/').pop();
+        if (fi.type !== 2 || !fi.content || !fi.content.length || /__MACOSX|\/\./.test(path) || /^\./.test(name) || !stmtMime(name)) continue;
+        files.push(Object.assign({ name: name }, await stmtPart(new File([fi.content], name, { type: stmtMime(name) }))));
+      }
+      if (!files.length) throw new Error('No PDF, photo or Excel statement found inside the zip file.');
+      if (files.length > 30) throw new Error('Too many files in the zip (max 30).');
+      IF.stmt = { busy: `Reading ${files.length} statements from ${file.name} with AI and matching with ${IF.vendor}'s invoices… this can take a few minutes.` }; renderStmt();
+      payload = { files: files };
+    } else payload = await stmtPart(file);
     IF.stmt = await api('statementCheck', Object.assign({ vendor: IF.vendor }, payload));
     IF.stmt.file = file.name;
+    if (IF.stmt.failed && IF.stmt.failed.length) toast(`AI could not read: ${IF.stmt.failed.join(', ')}. Please try those again later.`, true);
   } catch (err) { IF.stmt = null; renderStmt(); return handleError(err); }
   renderStmt();
 };
@@ -2340,8 +2359,8 @@ function stmtRows() {   // one list for the screen, Excel and PDF
   const S = IF.stmt, out = [];
   if (!S || S.busy) return out;
   S.diff.forEach((x) => out.push(['Amount differs', x.s.ref, x.s.date, x.s.amt, x.o.inv, x.o.amt, x.d, x.o.po, '']));
-  S.missing.forEach((x) => out.push([x.po.length ? (x.po[0].exact ? 'Not uploaded – PO raised' : 'Not uploaded – PO with close amount') : 'Not in our records', x.s.ref, x.s.date, x.s.amt, '', '', '', x.po.map((p) => p.po).join(', '),
-    x.po.length ? x.po.map((p) => `PO ${p.po} dated ${p.d ? fmtDate(p.d) : '-'} for ${inr(p.t)}`).join('; ') + ' – invoice not uploaded' : 'No invoice and no PO with this amount']));
+  S.missing.forEach((x) => out.push([x.po.length ? (x.po[0].exact ? 'Not uploaded – PO raised' : x.po[0].byNo ? 'Not uploaded – PO no. on statement, amount differs' : 'Not uploaded – PO with close amount') : 'Not in our records', x.s.ref, x.s.date, x.s.amt, '', '', x.po.length && x.po[0].byNo ? x.po[0].diff : '', x.po.map((p) => p.po).join(', '),
+    (x.po.length ? x.po.map((p) => `PO ${p.po}${p.byNo ? ' (PO no. written on statement)' : ''} dated ${p.d ? fmtDate(p.d) : '-'} for ${inr(p.t)}${p.byNo ? `, statement ${inr(x.s.amt)}, difference ${inr(p.diff)}` : ''}`).join('; ') + ' – invoice not uploaded' : 'No invoice and no PO with this amount or PO number') + (x.s.f ? ` [${x.s.f}]` : '')]));
   S.notInStmt.forEach((o) => out.push(['Not in vendor statement', '', '', '', o.inv, o.amt, '', o.po, 'We have this invoice; the vendor has not shown it']));
   S.matched.forEach((x) => out.push(['Matched', x.s.ref, x.s.date, x.s.amt, x.o.inv, x.o.amt, 0, x.o.po, '']));
   S.money.forEach((m) => out.push([m.kind === 'payment' ? 'Payment (statement)' : m.kind === 'credit' ? 'Credit note (statement)' : 'Other (statement)', m.ref, m.date, m.amt, '', '', '', '', '']));
@@ -2366,9 +2385,9 @@ function renderStmt() {
     <p class="sub">✅ ${S.matched.length} matched · ⚠️ ${S.diff.length} amount differs · ❌ ${S.missing.length} on statement but not uploaded · ❌ ${S.notInStmt.length} not in statement</p>
     ${S.diff.length ? '<h4>⚠️ Amount differs</h4>' + S.diff.map((x) => line('warn', `Bill ${esc(x.s.ref)} · ${d(x.s.date)}`,
       `Statement ${inr(x.s.amt)} · our invoice ${esc(x.o.inv)} ${inr(x.o.amt)} · difference <b>${inr(x.d)}</b> · PO ${esc(x.o.po)}`)).join('') : ''}
-    ${S.missing.length ? '<h4>❌ On the statement but not uploaded with us</h4>' + S.missing.map((x) => line('bad', `Bill ${esc(x.s.ref || '(no number)')} · ${d(x.s.date)} · ${inr(x.s.amt)}`,
-      x.po.length ? x.po.map((p) => `${p.exact ? '📄 PO raised for the same amount' : '📄 PO with a close amount'}: <b>${esc(p.po)}</b> dated ${d(p.d)} for ${inr(p.t)} – <b>invoice not uploaded</b>${p.l ? ` · <a href="${esc(p.l)}" target="_blank" rel="noopener">View PO</a>` : ''}`).join('<br>')
-        : 'No invoice uploaded and <b>no PO found with this amount</b> for this vendor.')).join('') : ''}
+    ${S.missing.length ? '<h4>❌ On the statement but not uploaded with us</h4>' + S.missing.map((x) => line('bad', `Bill ${esc(x.s.ref || '(no number)')}${x.s.f ? ' · ' + esc(x.s.f) : ''} · ${d(x.s.date)} · ${inr(x.s.amt)}`,
+      x.po.length ? x.po.map((p) => `${p.exact ? '📄 PO raised for the same amount' : p.byNo ? '📄 PO number written on the statement – amount differs by ' + inr(p.diff) : '📄 PO with a close amount'}: <b>${esc(p.po)}</b> dated ${d(p.d)} for ${inr(p.t)} – <b>invoice not uploaded</b>${p.l ? ` · <a href="${esc(p.l)}" target="_blank" rel="noopener">View PO</a>` : ''}`).join('<br>')
+        : 'No invoice uploaded and <b>no PO found with this amount or PO number</b> for this vendor.')).join('') : ''}
     ${S.notInStmt.length ? '<h4>❌ We have it, but it is not in the vendor statement</h4>' + S.notInStmt.map((o) => line('bad', `Invoice ${esc(o.inv || '(no number)')} · ${d(o.d)} · ${inr(o.amt)}`,
       `PO ${esc(o.po)}${o.il ? ` · <a href="${esc(o.il)}" target="_blank" rel="noopener">View invoice</a>` : ''}`)).join('') : ''}
     ${S.matched.length ? `<details><summary><b class="ok">✅ Matched (${S.matched.length})</b></summary>` + S.matched.map((x) => line('ok', `Bill ${esc(x.s.ref)} · ${d(x.s.date)} · ${inr(x.s.amt)}`, `Our invoice ${esc(x.o.inv)} · PO ${esc(x.o.po)}`)).join('') + '</details>' : ''}
