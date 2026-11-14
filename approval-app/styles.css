@@ -326,3 +326,9 @@ html, body { overflow-x: clip; }
 
 .selall.pall { display: flex; gap: 8px; align-items: center; margin: 0 0 10px 12px; font-size: 14px; font-weight: 600; cursor: pointer; }
 .selall.pall input { width: 18px; height: 18px; }
+
+/* Locked top for every screen: "View app as" + each screen's unit / filter drop-downs stay visible while scrolling */
+#viewAsBar { position: sticky; top: var(--barH, 56px); z-index: 10; }
+#app [id^="view"] > .assignbar { position: sticky; top: calc(var(--top, 56px) + var(--tabsH, 48px)); z-index: 7; background: var(--page); margin-top: 0; padding: 10px 0; box-shadow: 0 6px 0 var(--page); }
+#app > #viewReports .filters { position: sticky; top: calc(var(--top, 56px) + var(--tabsH, 48px) + var(--segRH, 46px)); z-index: 7; background: var(--page); padding: 8px 0; box-shadow: 0 6px 0 var(--page); }
+#storeRepSlot .filters { position: static; box-shadow: none; }

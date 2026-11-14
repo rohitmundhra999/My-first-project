@@ -2250,11 +2250,14 @@ window.__nlp = { state, api };
   const root = document.documentElement.style;
   const h = (el) => (el && el.offsetParent !== null ? el.getBoundingClientRect().height : 0);
   const set = () => {
-    root.setProperty('--top', h(document.querySelector('.bar')) + 'px');
+    const bar = h(document.querySelector('.bar'));
+    root.setProperty('--barH', bar + 'px');
+    root.setProperty('--top', (bar + h(document.getElementById('viewAsBar'))) + 'px');   // header + "View app as"
     root.setProperty('--tabsH', h(document.querySelector('.tabs')) + 'px');
     root.setProperty('--segH', (h(document.querySelector('#viewStore > .seg')) + 6) + 'px');
+    root.setProperty('--segRH', (h(document.querySelector('#app > #viewReports > .seg')) + 6) + 'px');
   };
   const ro = new ResizeObserver(set);
-  ['.bar', '.tabs', '#viewStore > .seg'].forEach((s) => { const el = document.querySelector(s); if (el) ro.observe(el); });
+  ['.bar', '#viewAsBar', '.tabs', '#viewStore > .seg', '#viewReports > .seg'].forEach((s) => { const el = document.querySelector(s); if (el) ro.observe(el); });
   window.addEventListener('resize', set); set();
 })();
