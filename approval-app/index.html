@@ -302,8 +302,8 @@
         <input id="iSearch" type="search" placeholder="Search invoice no, PO no, vendor or unit" aria-label="Search invoice">
       </div>
       <div class="rbar"><span id="iTotal" class="sub"></span><button id="iClear" class="btn sm ghost">Clear filters</button></div>
-      <div class="stmtbar"><label class="btn sm primary">Check vendor statement (AI)<input id="iStmtFile" type="file" accept="image/*,application/pdf,.xlsx,.xls,.csv" hidden></label>
-        <span class="sub">Pick the vendor above, then upload their statement (PDF, photo or Excel).</span></div>
+      <div class="stmtbar"><label class="btn sm primary">Check vendor statement (AI)<input id="iStmtFile" type="file" accept="image/*,application/pdf,.xlsx,.xls,.csv,.zip,application/zip" hidden></label>
+        <span class="sub">Pick the vendor above, then upload their statement (PDF, photo, Excel, or a zip file with many statements).</span></div>
       <div id="iStmt"></div>
       <div id="iBody"><p class="empty">Loading invoices…</p></div>
       <div class="dl" aria-label="Download this report">
@@ -351,6 +351,6 @@
 </div>
 
 <div id="toast" class="toast" role="status" hidden></div>
-<script type="module" src="app.js?v=20261114n"></script>
+<script type="module" src="app.js?v=20261114p"></script>
 </body>
 </html>
