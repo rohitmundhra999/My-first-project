@@ -458,3 +458,4 @@ body { font-size: 14px; -webkit-font-smoothing: antialiased; font-variant-numeri
   .dtable td.act:empty { display: none; }
 }
 @media (max-width: 760px) { #viewVendorHub .filters { position: static; } }
+@media (max-width: 760px) { .dtable td.num { text-align: left; } }
