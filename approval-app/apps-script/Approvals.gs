@@ -1543,8 +1543,12 @@ function makePO_(user, req) {
   if (req.newVendor) {
     const nv = req.newVendor, name = String(nv.name || '').replace(/\s+/g, ' ').trim();
     if (!name || name.length > 80) throw appError_('BAD_REQUEST', 'Enter the new vendor name.');
-    vendor = vs.find(v => v[0].toLowerCase() === name.toLowerCase()) ||
-      [name, String(nv.address || '').trim().slice(0, 200), String(nv.phone || '').replace(/[^0-9+ ]/g, '').slice(0, 20), true];
+    const nk = s => String(s).toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(w => w && ['m','s','ms','the','pvt','private','ltd','limited','llp','co','company','and','inc','corp','corporation'].indexOf(w) < 0).join('');
+    const same = vs.find(v => nk(v[0]) === nk(name));
+    if (same) throw appError_('BAD_REQUEST', 'This vendor already exists as "' + same[0] + '". Pick it from the list – do not create it again.');
+    const nvEmail = String(nv.email || '').trim().toLowerCase();
+    if (nvEmail && !/^[^\s@,;]+@[^\s@,;]+\.[a-z]{2,}$/i.test(nvEmail)) throw appError_('BAD_REQUEST', 'Enter a valid vendor email.');
+    vendor = [name, String(nv.address || '').trim().slice(0, 200), String(nv.phone || '').replace(/[^0-9+ ]/g, '').slice(0, 20), true, nvEmail];
   } else {
     vendor = vs.find(v => v[0] === String(req.vendor || '').trim());
     if (!vendor) throw appError_('BAD_REQUEST', 'Choose the vendor.');
@@ -1582,11 +1586,12 @@ function makePO_(user, req) {
       const grand = Math.round((subtotal - discountAmt) * 100) / 100;
     const hotel = hotelInfo_(req.shipTo || unit);
     const billToHotel = hotelInfo_(req.billTo || unit);
-    const link = poPdf_({ poNo: poNo, date: now, unit: unit, hotel: hotel, billToHotel: billToHotel, vendor: vendor, vendorEmail: vendorEmailOf_(vendor[0]), days: days, lines: lines, subtotal: subtotal, discountAmt: discountAmt, total: grand, note: note, terms: terms, by: user.name });
+    const link = poPdf_({ poNo: poNo, date: now, unit: unit, hotel: hotel, billToHotel: billToHotel, vendor: vendor, vendorEmail: vendorEmailOf_(vendor[0]) || vendor[4] || '', days: days, lines: lines, subtotal: subtotal, discountAmt: discountAmt, total: grand, note: note, terms: terms, by: user.name });
 
     if (vendor[3] === true) {   // new vendor: add it to VENDORS like the vendor form does
       const vsh = book_().getSheetByName(PO_CFG.VENDORS);
       vsh.getRange(lastFilled_(vsh, 2) + 1, 1, 1, 4).setValues([[now, vendor[0], vendor[1], vendor[2]]]);
+      if (vendor[4]) { const es = vendorEmailTab_(); es.getRange(es.getLastRow() + 1, 1, 1, 4).setValues([[vendor[0], vendor[4], now, user.name]]); }   // VENDOR EMAILS
     }
     const at = posLast + 1;
     pos.getRange(at, 1, lines.length, 8).setValues(lines.map(l => [l.orderNo, poNo, link, now, vendor[0], days, grand, unit]));

@@ -2182,6 +2182,8 @@ function renderPO(force) {
         ${f.newVendor ? `<label class="field full">New vendor name<input data-pf="nvName" maxlength="80" value="${esc(f.newVendor.name || '')}"></label>
           <label class="field full">Vendor address<input data-pf="nvAddress" maxlength="200" value="${esc(f.newVendor.address || '')}"></label>
           <label class="field">Vendor phone<input data-pf="nvPhone" inputmode="tel" maxlength="20" value="${esc(f.newVendor.phone || '')}"></label>
+          <label class="field">Vendor email<input data-pf="nvEmail" type="email" inputmode="email" maxlength="100" placeholder="vendor@example.com" value="${esc(f.newVendor.email || '')}"></label>
+          <div class="field full" id="nvDup">${nvDupHtml(f.newVendor.name)}</div>
           <div class="field"><span>&nbsp;</span><button type="button" class="linkbtn" id="poPickVendor">Pick an existing vendor instead</button></div>`
         : `<label class="field full">Vendor<input data-pf="vendor" list="poVendors" value="${esc(f.vendor)}" placeholder="Type to search ${(state.vendors || []).length} vendors"><datalist id="poVendors">${vendorOpts}</datalist></label>
           <div class="field full"><button type="button" class="linkbtn" id="poNewVendor">+ Vendor not in the list? Add a new vendor</button></div>`}
@@ -2235,6 +2237,11 @@ function makePO() {
   let vendor = '', newVendor = null;
   if (f.newVendor) {
     if (!String(f.newVendor.name || '').trim()) return toast('Enter the new vendor name.', true);
+    const em = String(f.newVendor.email || '').trim();
+    if (em && !/^[^\s@,;]+@[^\s@,;]+\.[a-z]{2,}$/i.test(em)) return toast('Enter a valid vendor email.', true);
+    const dup = vendorMatches(f.newVendor.name);
+    if (dup.strong.length) return toast(`This vendor already exists as "${dup.strong[0]}". Pick it from the list – don't create it again.`, true);
+    if (dup.maybe.length && !confirm(`Similar vendor already exists: ${dup.maybe.slice(0, 3).join(', ')}.\n\nIs "${f.newVendor.name.trim()}" really a different vendor?`)) return;
     newVendor = f.newVendor;
   } else {
     vendor = String(f.vendor || '').trim();
@@ -2286,13 +2293,16 @@ $('poBody').addEventListener('input', (e) => {
   else if (k === 'nvName') f.newVendor.name = t.value;
   else if (k === 'nvAddress') f.newVendor.address = t.value;
   else if (k === 'nvPhone') f.newVendor.phone = t.value;
+  else if (k === 'nvEmail') f.newVendor.email = t.value;
+  if (k === 'nvName' && $('nvDup')) $('nvDup').innerHTML = nvDupHtml(t.value);
 });
 $('poBody').addEventListener('click', (e) => {
   const t = e.target;
   if (t.id === 'poMake') return makePO();
-  if (t.id === 'poNewVendor') { state.poForm.newVendor = { name: state.poForm.vendor || '', address: '', phone: '' }; return renderPO(true); }
+  if (t.id === 'poNewVendor') { state.poForm.newVendor = { name: state.poForm.vendor || '', address: '', phone: '', email: '' }; return renderPO(true); }
   if (t.id === 'poPickVendor') { state.poForm.newVendor = null; return renderPO(true); }
   if (t.dataset.pounsel) { state.poSel.delete(t.dataset.pounsel); return renderPO(true); }
+  if (t.dataset.usevendor) { state.poForm.newVendor = null; state.poForm.vendor = t.dataset.usevendor; return renderPO(true); }
 });
 
 // ---------- wiring ----------
@@ -2789,3 +2799,36 @@ function runChecks() {
   document.addEventListener('click', () => setTimeout(upd, 600));
   setInterval(upd, 2000); upd();
 })();
+
+// ---------- Duplicate vendor check (new vendor in Make PO): same name with spelling / spacing / Pvt Ltd changes ----------
+const VSTOP = new Set(['m', 's', 'ms', 'the', 'pvt', 'private', 'ltd', 'limited', 'llp', 'co', 'company', 'and', 'inc', 'corp', 'corporation']);
+const vWords = (n) => String(n).toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter((w) => w && !VSTOP.has(w));
+function editSim(a, b) {   // 1 = same, 0 = nothing alike (Levenshtein)
+  if (!a || !b) return 0;
+  const m = a.length, n = b.length; let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) { const cur = [i]; for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = cur; }
+  return 1 - prev[n] / Math.max(m, n);
+}
+function vendorMatches(name) {
+  const w = vWords(name), key = w.join('');
+  const out = { strong: [], maybe: [] };
+  if (key.length < 3) return out;
+  (state.vendors || []).forEach((v) => {
+    const vw = vWords(v[0]), vk = vw.join('');
+    if (!vk) return;
+    const sim = editSim(key, vk), short = Math.min(key.length, vk.length), long = Math.max(key.length, vk.length);
+    const contains = short >= 5 && (vk.includes(key) || key.includes(vk));
+    const common = w.filter((x) => x.length > 2 && vw.includes(x)).length, jac = common / new Set(w.concat(vw)).size;
+    if (key === vk || sim >= 0.85 || (contains && short / long >= 0.75)) out.strong.push(v[0]);
+    else if (sim >= 0.7 || contains || jac >= 0.5) out.maybe.push(v[0]);
+  });
+  return out;
+}
+function nvDupHtml(name) {
+  const d = vendorMatches(name || '');
+  if (!d.strong.length && !d.maybe.length) return '';
+  const btns = (l) => l.slice(0, 5).map((n) => `<button type="button" class="btn sm" data-usevendor="${esc(n)}">Use “${esc(n)}”</button>`).join(' ');
+  return d.strong.length
+    ? `<div class="dupwarn bad">⚠ <b>This vendor already exists.</b> Do not create it again – pick the existing vendor:<div class="filelinks">${btns(d.strong)}</div></div>`
+    : `<div class="dupwarn">⚠ Similar vendor${d.maybe.length > 1 ? 's' : ''} already in the list. If it is the same vendor, pick it:<div class="filelinks">${btns(d.maybe)}</div></div>`;
+}
