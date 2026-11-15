@@ -445,3 +445,15 @@ body { font-size: 14px; -webkit-font-smoothing: antialiased; font-variant-numeri
 @media (min-width: 900px) { #viewVendorHub .filters { grid-template-columns: 2fr 1fr 1fr 1fr; } #viewVendorHub .filters > input[type="search"]:last-child { grid-column: 1 / -1; } }
 #viewVendorHub .dtable th { top: 0; }
 @media (min-width: 761px) { .dtable td[data-l="PO No"], .dtable td[data-l="Date"] { white-space: nowrap; } }
+/* phone cards: two columns, label above value, so each row stays short */
+@media (max-width: 760px) {
+  .dtable tr { display: grid; grid-template-columns: 1fr 1fr; column-gap: 12px; padding: 10px 12px; }
+  .dtable td { display: block; text-align: left; padding: 3px 0; font-size: 13px; }
+  .dtable td[data-l]::before { display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 1px; }
+  .dtable td > div { text-align: left; }
+  .dtable td.vcell, .dtable td.act, .dtable .editrow td, .dtable td[data-l="Address"] { grid-column: 1 / -1; }
+  .dtable td.act { display: flex; justify-content: flex-start; flex-wrap: wrap; gap: 6px; border-top: 1px solid var(--border); margin-top: 6px; padding-top: 8px; }
+  .dtable td.act::before { flex: 0 0 100%; margin: 0; }
+  .dtable td.act:not([data-l])::before { display: none; }
+  .dtable td.act:empty { display: none; }
+}
