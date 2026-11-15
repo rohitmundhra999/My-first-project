@@ -2668,17 +2668,18 @@ window.__nlp = { state, api };
 
 // ---------- HO: PO report (every PO since 1 April with goods and invoice status; table on desktop, cards on phone) ----------
 const PF = { vendor: '', vtext: '', unit: '', st: '', month: '', q: '', show: 200 };
+const posList = () => ((state.irep && state.irep.pos) || []).filter((p) => String(p.v).toLowerCase().replace(/[^a-z]/g, '').indexOf('centralstore') === -1);   // Central Store POs are left out
 const GOODS = { all: 'Received', part: 'Part received', none: 'Not received' };
 function poRepRows() {
   const words = PF.q.trim().toLowerCase().split(/\s+/).filter(Boolean), vt = PF.vtext.trim().toLowerCase();
-  return ((state.irep && state.irep.pos) || []).filter((p) => (PF.vendor ? p.v === PF.vendor : !vt || p.v.toLowerCase().includes(vt)) &&
+  return posList().filter((p) => (PF.vendor ? p.v === PF.vendor : !vt || p.v.toLowerCase().includes(vt)) &&
     (!PF.unit || p.u === PF.unit) && (!PF.st || p.s === PF.st) && (!PF.month || String(p.d).slice(0, 7) === PF.month) &&
     words.every((w) => [p.po, p.v, p.u, p.ino].join(' ').toLowerCase().includes(w)));
 }
 function renderPoRep() {
   if (!state.irep) { $('pBody').innerHTML = '<p class="empty">Loading POs…</p>'; if (!IF.loading) { IF.loading = true; loadInvoices().finally(() => (IF.loading = false)); } return; }
   if (!state.irep.pos) { $('pBody').innerHTML = '<p class="empty">The PO report is being prepared. Tap ↻ in a minute.</p>'; return; }
-  const all = state.irep.pos;
+  const all = posList();
   PF.names = [...new Set(all.map((p) => p.v).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   $('pVendor').placeholder = `All vendors (${PF.names.length}) – type to search`;
   if ($('pVendor').value !== PF.vtext) $('pVendor').value = PF.vtext;
