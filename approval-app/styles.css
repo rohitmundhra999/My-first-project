@@ -444,3 +444,4 @@ body { font-size: 14px; -webkit-font-smoothing: antialiased; font-variant-numeri
 #viewVendorHub .filters { position: sticky; top: calc(var(--top, 56px) + var(--tabsH, 48px) + 42px); z-index: 7; background: var(--page); padding: 8px 0; }
 @media (min-width: 900px) { #viewVendorHub .filters { grid-template-columns: 2fr 1fr 1fr 1fr; } #viewVendorHub .filters > input[type="search"]:last-child { grid-column: 1 / -1; } }
 #viewVendorHub .dtable th { top: 0; }
+@media (min-width: 761px) { .dtable td[data-l="PO No"], .dtable td[data-l="Date"] { white-space: nowrap; } }
