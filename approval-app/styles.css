@@ -489,3 +489,4 @@ body.docked .scrollbtns { bottom: calc(96px + env(safe-area-inset-bottom)); }
   background: var(--page); box-shadow: 0 -10px 0 var(--page), 0 8px 0 var(--page); }
 #viewApprove .group > .ghead { background: var(--surface-2); }
 #storeRepSlot #viewReports > .seg, #storeRepSlot .filters { box-shadow: none; }
+#app > #viewReports .filters, #viewVendorHub .filters { box-shadow: 0 -10px 0 var(--page), 0 14px 0 var(--page); }
