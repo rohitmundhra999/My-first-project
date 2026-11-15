@@ -53,8 +53,10 @@ async function api(action, data = {}) {
     ...(write ? { requestId: newId() } : {}), ...data });
   const limit = action === 'statementCheck' ? 330000 : write || action === 'rateCompare' ? 120000 : 45000;   // AI reading many statements takes minutes
   let lastErr = null;
-  for (let attempt = 0; attempt < (action === 'statementCheck' ? 1 : 2); attempt++) {   // never re-send a statement check (it would use the AI limit twice)
-    if (attempt) await new Promise((r) => setTimeout(r, 1500));
+  const tries = action === 'statementCheck' ? 1 : write ? 7 : 2, waits = [1500, 3000, 5000, 8000, 12000, 20000];   // a save keeps trying ~50 s (same requestId: never done twice)
+  for (let attempt = 0; attempt < tries; attempt++) {   // never re-send a statement check (it would use the AI limit twice)
+    if (attempt) await new Promise((r) => setTimeout(r, waits[attempt - 1] || 1500));
+    if (write && !navigator.onLine) await new Promise((r) => addEventListener('online', r, { once: true }));   // no internet: wait, then send
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), limit);
     let res, out;
@@ -68,7 +70,7 @@ async function api(action, data = {}) {
       continue;   // try once more (a save is never done twice: see requestId)
     } finally { clearTimeout(timer); }
     if (!out.ok) {
-      if (out.code === 'BUSY' && attempt === 0) { lastErr = new ApiError(out.code, out.error); continue; }
+      if (out.code === 'BUSY' && attempt < tries - 1) { lastErr = new ApiError(out.code, out.error); continue; }
       throw new ApiError(out.code, out.error || 'Something went wrong.');
     }
     return out;
@@ -325,6 +327,11 @@ async function refresh(fresh, withMe) {
     want.store = { unit: st.unit, v: st.byUnit[st.unit] ? st.byUnit[st.unit].v : '' };
     if (!st.base) want.base = true;
     if (!st.meta[st.unit] && st.view === 'raise') want.meta = st.unit;
+  }
+  if (!fresh && fsLive()) {   // these arrive live from Firestore: no need to ask the server
+    ['ho', 'mine', 'reports', 'dec', 'po', 'vendors'].forEach((k) => { if (FS.got.has(k === 'mine' ? fsMineKey() : k)) delete want[k]; });
+    if (want.store && FS.got.has('store_' + fsId(want.store.unit))) delete want.store;
+    if (!Object.keys(want).length) { render(); saveLocal(); return; }
   }
   let r;
   try { r = await api('sync', { want, fresh }); } catch (e) { if (gen !== state.gen) return; return handleError(e); }
@@ -1027,13 +1034,17 @@ async function hoUploadInvoice(form) {
   run('storeInvoice', async () => {
     let f;
     try { f = await fileForUpload(file); } catch (e) { return toast(e.message, true); }
-    toast('Uploading invoice…');
-    await api('storeInvoice', { po, invoiceNo: no, date, amount: Number(amount), file: { type: f.type, data: f.data } });
-    state.irep = null;   // Invoices report: reload (the server has added this invoice)
+    // at once: the form closes and the PO leaves the list; the upload continues in the background
     state.hi.form = null;
+    const keep = state.reports ? state.reports.invoicePending.slice() : null;
     if (state.reports) state.reports.invoicePending = state.reports.invoicePending.filter((p) => p.po !== po);
-    toast(`Invoice uploaded for PO ${po}.`);
     renderHoInv(true);
+    toast(`Invoice for PO ${po} saved – uploading in the background.`);
+    const sid = beginSave();
+    api('storeInvoice', { po, invoiceNo: no, date, amount: Number(amount), file: { type: f.type, data: f.data } })
+      .then(() => { state.irep = null; toast(`Invoice uploaded for PO ${po}.`); })
+      .catch((e) => { if (state.reports && keep) state.reports.invoicePending = keep; toast(`Invoice for PO ${po} was NOT uploaded: ${e.message} Please upload it again.`, true); renderHoInv(true); })
+      .finally(() => endSave(sid));
   });
 }
 function setupHoInvEvents() {
@@ -1583,7 +1594,7 @@ async function registerPush(ask) {
       import('https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js'),
     ]);
     if (!(await isSupported())) return banner('This browser cannot receive notifications.');
-    const app = initializeApp(CFG.FIREBASE);
+    const app = await fbApp();
     const messaging = getMessaging(app);
     const reg = await navigator.serviceWorker.register('firebase-messaging-sw.js', { updateViaCache: 'none' });
     reg.update().catch(() => {}); // always pick up the newest notification worker
@@ -2036,13 +2047,16 @@ async function uploadInvoice(form) {
   run('storeInvoice', async () => {
     let f;
     try { f = await fileForUpload(file); } catch (e) { return toast(e.message, true); }
-    toast('Uploading invoice…');
-    await api('storeInvoice', { po, invoiceNo: no, date, amount: Number(amount), file: { type: f.type, data: f.data } });
-    state.irep = null;   // Invoices report: reload (the server has added this invoice)
+    // at once: the form closes and the PO leaves "Invoice pending"; the upload continues in the background
     sv.inv = null;
-    toast(`Invoice uploaded for PO ${po}.`);
-    await loadStore(false, state.gen);
+    (sv.data?.lines || []).forEach((l) => { if (l.po === po && l.inv === 'pending') l.inv = 'done'; });
     renderStore(true);
+    toast(`Invoice for PO ${po} saved – uploading in the background.`);
+    const sid = beginSave();
+    api('storeInvoice', { po, invoiceNo: no, date, amount: Number(amount), file: { type: f.type, data: f.data } })
+      .then(() => { state.irep = null; toast(`Invoice uploaded for PO ${po}.`); })
+      .catch((e) => { toast(`Invoice for PO ${po} was NOT uploaded: ${e.message} Please upload it again.`, true); })
+      .finally(() => { endSave(sid); loadStore(false, state.gen).then(() => renderStore(true)); });
   });
 }
 
@@ -2832,3 +2846,66 @@ function nvDupHtml(name) {
     ? `<div class="dupwarn bad">⚠ <b>This vendor already exists.</b> Do not create it again – pick the existing vendor:<div class="filelinks">${btns(d.strong)}</div></div>`
     : `<div class="dupwarn">⚠ Similar vendor${d.maybe.length > 1 ? 's' : ''} already in the list. If it is the same vendor, pick it:<div class="filelinks">${btns(d.maybe)}</div></div>`;
 }
+
+// ---------- Fast reading from Firebase Firestore (a live copy the server keeps up to date; the sheet stays the main record) ----------
+const FB = 'https://www.gstatic.com/firebasejs/10.12.2/';
+let FB_APP = null;
+async function fbApp() {
+  if (FB_APP) return FB_APP;
+  const { initializeApp, getApps, getApp } = await import(FB + 'firebase-app.js');
+  FB_APP = getApps().length ? getApp() : initializeApp(CFG.FIREBASE);
+  return FB_APP;
+}
+const FS = { on: false, got: new Set(), ver: {}, subs: {}, email: '' };
+const fsId = (s) => String(s).replace(/[^A-Za-z0-9]/g, '_').slice(0, 120);
+const fsMineKey = () => 'mine_' + fsId(FS.email);
+const fsLive = () => FS.on && !state.viewAs;
+async function fsStart() {
+  if (FS.starting || !state.idToken || !state.me) return;
+  FS.starting = true;
+  try {
+    const app = await fbApp();
+    const [{ getAuth, signInWithCredential, GoogleAuthProvider }, F] = await Promise.all([import(FB + 'firebase-auth.js'), import(FB + 'firebase-firestore.js')]);
+    const auth = getAuth(app), email = (jwtPayload(state.idToken) || {}).email || '';
+    if (!auth.currentUser || auth.currentUser.email !== email) await signInWithCredential(auth, GoogleAuthProvider.credential(state.idToken));
+    FS.F = F; FS.db = F.getFirestore(app); FS.email = email.toLowerCase(); FS.on = true;
+    fsWatch();
+  } catch (e) { console.warn('Fast reading is off (the app uses the server):', e && e.message); FS.on = false; }
+  finally { FS.starting = false; }
+}
+function fsWatch() {
+  if (!FS.on || !state.me) return;
+  const u = state.me.user, keys = new Set();
+  if (u.isHO || u.isApprover || state.me.admin) ['reports', 'dec'].forEach((k) => keys.add(k));
+  if (u.isHO) ['ho', 'po', 'vendors'].forEach((k) => keys.add(k));
+  if (canVendors()) ['irep', 'vlist'].forEach((k) => keys.add(k));
+  if (u.isApprover) keys.add(fsMineKey());
+  ((state.me.user.units || []).concat(state.store?.unit ? [state.store.unit] : [])).forEach((x) => keys.add('store_' + fsId(x)));
+  Object.keys(FS.subs).forEach((k) => { if (!keys.has(k)) { FS.subs[k](); delete FS.subs[k]; FS.got.delete(k); } });
+  keys.forEach((k) => {
+    if (FS.subs[k]) return;
+    const { doc, onSnapshot } = FS.F;
+    FS.subs[k] = onSnapshot(doc(FS.db, 'pub', k), (snap) => { if (snap.exists()) fsLoad(k, snap.data()); else FS.got.delete(k); },
+      () => { FS.got.delete(k); if (FS.subs[k]) { FS.subs[k](); delete FS.subs[k]; } });   // no access / not published: the server path is used
+  });
+}
+async function fsLoad(k, head) {
+  if (!head || !head.v || FS.ver[k] === head.v) return;
+  const { collection, getDocs } = FS.F;
+  try {
+    const cs = await getDocs(collection(FS.db, 'pub', k, 'c'));
+    const parts = cs.docs.filter((d) => d.data().v === head.v).sort((a, b) => Number(a.id) - Number(b.id));
+    if (parts.length !== Number(head.n)) return;   // still being written: the next change notice brings it
+    const obj = JSON.parse(parts.map((d) => d.data().j).join(''));
+    FS.ver[k] = head.v; FS.got.add(k);
+    if (state.viewAs) return;   // "view app as": that person's data comes from the server
+    if (k === 'irep') { if (!IF.loading) { state.irep = obj; if (state.tab === 'vendors') renderVendorHub(); runChecks(); } return; }
+    if (k === 'vlist') { state.vlist = obj.list; if (vOn('info')) renderVendors(); return; }
+    if (saving() && k !== 'reports' && k !== 'dec') return;   // a save is on its way: its lines must not flicker back
+    if (k.indexOf('store_') === 0) applySync({ store: obj }, obj.unit);
+    else if (k.indexOf('mine_') === 0) applySync({ mine: obj });
+    else applySync({ [k]: obj });
+    render(); saveLocal();
+  } catch (e) { console.warn('Firestore read ' + k + ':', e && e.message); }
+}
+setInterval(() => { if (state.me && state.idToken && !FS.on && !FS.starting && !FS.tried) { FS.tried = true; fsStart(); } else if (FS.on) fsWatch(); }, 3000);
