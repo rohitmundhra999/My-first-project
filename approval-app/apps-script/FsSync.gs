@@ -95,10 +95,49 @@ function fsAfterWrite_(action) {
   try { fsPublish_(map[action]); } catch (e) { console.error('fsAfterWrite: ' + e); }
 }
 
-/** Run once from the editor: makes the every-minute trigger and publishes everything. */
+/** Sign-in for Firestore: a short-lived token for the signed-in user (uid = their email), made by the server. */
+function fsCustomToken_(email) {
+  const sa = JSON.parse(prop_('FIREBASE_SERVICE_ACCOUNT')), now = Math.floor(Date.now() / 1000);
+  const enc = o => Utilities.base64EncodeWebSafe(JSON.stringify(o)).replace(/=+$/, '');
+  const input = enc({ alg: 'RS256', typ: 'JWT' }) + '.' + enc({ iss: sa.client_email, sub: sa.client_email, uid: String(email).toLowerCase(),
+    aud: 'https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit', iat: now, exp: now + 3600 });
+  return input + '.' + Utilities.base64EncodeWebSafe(Utilities.computeRsaSha256Signature(input, sa.private_key)).replace(/=+$/, '');
+}
+function fsTokenAction_(user, req, realUser) { return { token: fsCustomToken_(realUser.email) }; }
+
+/** One-time: creates the Firestore database (if missing) and puts the security rules live. Returns what happened. */
+function fsAdminSetup_() {
+  const sa = JSON.parse(prop_('FIREBASE_SERVICE_ACCOUNT')), now = Math.floor(Date.now() / 1000);
+  const enc = o => Utilities.base64EncodeWebSafe(JSON.stringify(o)).replace(/=+$/, '');
+  const input = enc({ alg: 'RS256', typ: 'JWT' }) + '.' + enc({ iss: sa.client_email, scope: 'https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/firebase',
+    aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 });
+  const sig = Utilities.base64EncodeWebSafe(Utilities.computeRsaSha256Signature(input, sa.private_key)).replace(/=+$/, '');
+  const tok = JSON.parse(UrlFetchApp.fetch('https://oauth2.googleapis.com/token', { method: 'post', payload: { grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: input + '.' + sig } }).getContentText()).access_token;
+  const call = (method, url, body) => { const r = UrlFetchApp.fetch(url, { method: method, contentType: 'application/json', muteHttpExceptions: true, headers: { Authorization: 'Bearer ' + tok }, payload: body ? JSON.stringify(body) : undefined }); return [r.getResponseCode(), r.getContentText()]; };
+  const out = {};
+  out.db = call('post', 'https://firestore.googleapis.com/v1/projects/' + FS_PROJECT + '/databases?databaseId=(default)', { locationId: 'asia-south1', type: 'FIRESTORE_NATIVE' });
+  if (out.db[0] === 200) Utilities.sleep(20000);   // a new database takes a few seconds
+  const rs = call('post', 'https://firebaserules.googleapis.com/v1/projects/' + FS_PROJECT + '/rulesets', { source: { files: [{ name: 'firestore.rules', content: FS_RULES }] } });
+  out.rules = rs;
+  if (rs[0] === 200) {
+    const name = JSON.parse(rs[1]).name;
+    const rel = 'projects/' + FS_PROJECT + '/releases/cloud.firestore';
+    out.release = call('patch', 'https://firebaserules.googleapis.com/v1/' + rel, { release: { name: rel, rulesetName: name } });
+    if (out.release[0] === 404) out.release = call('post', 'https://firebaserules.googleapis.com/v1/projects/' + FS_PROJECT + '/releases', { name: rel, rulesetName: name });
+  }
+  Object.keys(out).forEach(k => (out[k] = [out[k][0], String(out[k][1]).slice(0, 300)]));
+  return out;
+}
+
+/** Run once from the editor: database + rules, the every-minute trigger, and a first full publish. */
 function fsSetup() {
+  console.log(JSON.stringify(fsAdminSetup_()));
   ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'fsTick').forEach(t => ScriptApp.deleteTrigger(t));
   ScriptApp.newTrigger('fsTick').timeBased().everyMinutes(1).create();
   CacheService.getScriptCache().removeAll(['fsv_reports']);
-  return fsPublish_();
+  const n = fsPublish_();
+  console.log('Published ' + n + ' documents');
+  return n;
 }
+
+const FS_RULES = "rules_version = '2';\nservice cloud.firestore {\n  match /databases/{db}/documents {\n    function signedIn() { return request.auth != null; }\n    function acl() { return get(/databases/$(db)/documents/acl/$(request.auth.uid)).data; }\n    function canRead(d) {\n      return signedIn() && exists(/databases/$(db)/documents/acl/$(request.auth.uid)) && (\n        d.owner != '' ? (d.owner == request.auth.uid || acl().ho == true)\n        : d.unit != '' ? (acl().full == true || d.unit in acl().units)\n        : acl().full == true);\n    }\n    match /pub/{k} { allow read: if canRead(resource.data); allow write: if false; }\n    match /pub/{k}/c/{i} { allow read: if canRead(get(/databases/$(db)/documents/pub/$(k)).data); allow write: if false; }\n    match /acl/{e} { allow read: if signedIn() && request.auth.uid == e; allow write: if false; }\n  }\n}\n";

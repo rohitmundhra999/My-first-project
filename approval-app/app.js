@@ -2865,9 +2865,12 @@ async function fsStart() {
   FS.starting = true;
   try {
     const app = await fbApp();
-    const [{ getAuth, signInWithCredential, GoogleAuthProvider }, F] = await Promise.all([import(FB + 'firebase-auth.js'), import(FB + 'firebase-firestore.js')]);
-    const auth = getAuth(app), email = (jwtPayload(state.idToken) || {}).email || '';
-    if (!auth.currentUser || auth.currentUser.email !== email) await signInWithCredential(auth, GoogleAuthProvider.credential(state.idToken));
+    const [{ getAuth, signInWithCustomToken }, F] = await Promise.all([import(FB + 'firebase-auth.js'), import(FB + 'firebase-firestore.js')]);
+    const auth = getAuth(app), email = String((jwtPayload(state.idToken) || {}).email || '').toLowerCase();
+    if (!auth.currentUser || auth.currentUser.uid !== email) {   // the server checks the Google sign-in and gives a Firestore pass for this email
+      const r = await api('fsToken', {});
+      await signInWithCustomToken(auth, r.token);
+    }
     FS.F = F; FS.db = F.getFirestore(app); FS.email = email.toLowerCase(); FS.on = true;
     fsWatch();
   } catch (e) { console.warn('Fast reading is off (the app uses the server):', e && e.message); FS.on = false; }

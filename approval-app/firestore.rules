@@ -1,16 +1,16 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{db}/documents {
-    function signedIn() { return request.auth != null && request.auth.token.email_verified == true; }
-    function acl() { return get(/databases/$(db)/documents/acl/$(request.auth.token.email)).data; }
+    function signedIn() { return request.auth != null; }
+    function acl() { return get(/databases/$(db)/documents/acl/$(request.auth.uid)).data; }
     function canRead(d) {
-      return signedIn() && exists(/databases/$(db)/documents/acl/$(request.auth.token.email)) && (
-        d.owner != '' ? (d.owner == request.auth.token.email || acl().ho == true)
+      return signedIn() && exists(/databases/$(db)/documents/acl/$(request.auth.uid)) && (
+        d.owner != '' ? (d.owner == request.auth.uid || acl().ho == true)
         : d.unit != '' ? (acl().full == true || d.unit in acl().units)
         : acl().full == true);
     }
     match /pub/{k} { allow read: if canRead(resource.data); allow write: if false; }
     match /pub/{k}/c/{i} { allow read: if canRead(get(/databases/$(db)/documents/pub/$(k)).data); allow write: if false; }
-    match /acl/{e} { allow read: if signedIn() && request.auth.token.email == e; allow write: if false; }
+    match /acl/{e} { allow read: if signedIn() && request.auth.uid == e; allow write: if false; }
   }
 }

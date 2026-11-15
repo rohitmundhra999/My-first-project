@@ -67,7 +67,7 @@ function doPost(e) {
     const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_,
       reports: (u, r) => scopeReports_(u, reports_(u, r)), decisions: (u, r) => scopeReports_(u, decisions_(u, r)), testPush: testPush_,
       storeMeta: storeMeta_, storeList: storeList_, storeRaise: storeRaise_, storeReceive: storeReceive_, storeInvoice: storeInvoice_,
-      sync: sync_, makePO: makePO_, readInvoice: readInvoice_, hoReceiveList: hoReceiveList_, rateList: rateList_, rateCompare: rateCompare_, vendorList: vendorList_, vendorSave: vendorSave_, invoiceReport: invoiceReport_, statementCheck: statementCheck_ };
+      sync: sync_, makePO: makePO_, readInvoice: readInvoice_, hoReceiveList: hoReceiveList_, rateList: rateList_, rateCompare: rateCompare_, vendorList: vendorList_, vendorSave: vendorSave_, invoiceReport: invoiceReport_, statementCheck: statementCheck_, fsToken: fsTokenAction_ };
     const fn = handlers[req.action];
     if (!fn) throw appError_('BAD_REQUEST', 'Unknown action.');
     const user = previewUser_(realUser, req);
@@ -88,6 +88,7 @@ function doPost(e) {
       try { text = JSON.stringify(Object.assign({ ok: true }, fn(user, req, realUser))); }
       catch (e) { c.remove(rid); throw e; }
       c.put(rid, text.length < 90000 ? text : JSON.stringify({ ok: true, again: true }), 21600);
+      fsAfterWrite_(req.action);   // Firestore copy: the other phones see this save at once
       return ContentService.createTextOutput(text).setMimeType(ContentService.MimeType.JSON);
     }
     return json_(Object.assign({ ok: true }, fn(user, req, realUser)));
@@ -607,6 +608,7 @@ function warmCache() {
   try { storeLines_(); } catch (e) { console.error('Store cache failed: ' + e); }
   try { poPendingBuild_(); } catch (e) { console.error('PO list failed: ' + e); }
   try { cachePutBig_(INVREP_CACHE, invoiceReportBuild_(), 21600); } catch (e) { console.error('Invoices report cache failed: ' + e); }
+  fsTick();   // Firestore copy
 }
 
 function cleanItems_(items) {
