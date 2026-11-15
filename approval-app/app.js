@@ -2906,6 +2906,7 @@ async function fsLoad(k, head) {
     const obj = JSON.parse(parts.map((d) => d.data().j).join(''));
     FS.ver[k] = head.v; FS.got.add(k);
     if (state.viewAs) return;   // "view app as": that person's data comes from the server
+    if ((k === 'irep' || k === 'vlist') && !fullAccess()) return;   // storekeeper (or admin previewing one): own units only, from the server
     if (k === 'irep') { if (!IF.loading) { state.irep = obj; if (state.tab === 'vendors') renderVendorHub(); runChecks(); } return; }
     if (k === 'vlist') { state.vlist = obj.list; if (vOn('info')) renderVendors(); return; }
     if (saving() && k !== 'reports' && k !== 'dec') return;   // a save is on its way: its lines must not flicker back
