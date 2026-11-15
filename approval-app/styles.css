@@ -481,3 +481,11 @@ body.docked .scrollbtns { bottom: calc(96px + env(safe-area-inset-bottom)); }
 .scrollbtns [data-sb=up] { grid-area: up; } .scrollbtns [data-sb=down] { grid-area: down; }
 .scrollbtns [data-sb=left] { grid-area: left; } .scrollbtns [data-sb=right] { grid-area: right; }
 @media (min-width: 761px) { #viewVendorHub .dtable .act .btn.sm { padding: 4px 7px; min-height: 28px; font-size: 12px; margin-left: 3px; } #viewVendorHub .dtable td, #viewVendorHub .dtable th { padding-left: 9px; padding-right: 9px; } }
+/* Locked top: every locked strip has a solid background, so rows scrolling underneath never show through (all screens) */
+.tabs { margin-bottom: 0; box-shadow: var(--shadow), 0 -12px 0 var(--surface); }
+#viewStore > .seg, #app > #viewReports > .seg, #viewVendorHub > .seg {
+  background: var(--page); margin-top: 0; padding-top: 6px; box-shadow: 0 -12px 0 var(--page), 0 8px 0 var(--page); }
+#app > #viewReports .filters, #viewVendorHub .filters, #app [id^="view"] > .assignbar, #storeBody .chips {
+  background: var(--page); box-shadow: 0 -10px 0 var(--page), 0 8px 0 var(--page); }
+#viewApprove .group > .ghead { background: var(--surface-2); }
+#storeRepSlot #viewReports > .seg, #storeRepSlot .filters { box-shadow: none; }
