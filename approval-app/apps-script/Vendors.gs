@@ -4,7 +4,7 @@
 // tab VENDOR EMAILS (locked, only the owner edits), so the VENDORS tab keeps its columns. New POs print all of it.
 const VEND_CFG = { TAB: 'VENDOR EMAILS', HEAD: ['Vendor', 'Email', 'Updated', 'Updated by'] };
 
-// Every user can see the Vendors tab; only HO and the admin can edit vendor details (and run the statement check).
+// Every user can see the Vendors tab; only HO and the admin can edit vendor details (every user can run the statement check).
 function canVendors_(u) { if (!u) throw appError_('FORBIDDEN', 'Please sign in.'); }
 function canEditVendors_(u) { if (!u.isHO && !isAdmin_(u)) throw appError_('FORBIDDEN', 'Only HO can change vendor details.'); }
 // A storekeeper (not HO / approver / admin) sees invoices and POs of their own unit(s) only.

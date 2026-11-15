@@ -2353,7 +2353,6 @@ const vOn = (t) => state.tab === 'vendors' && (state.vtab || 'info') === t;
 function renderVendorHub() {
   const t = state.vtab || 'info';
   document.querySelectorAll('[data-vtab]').forEach((b) => b.classList.toggle('on', b.dataset.vtab === t));
-  $('iStmtBar').hidden = !canEditVendors();
   $('viewVendors').hidden = t !== 'info'; $('viewInvoices').hidden = t !== 'inv'; $('viewPoRep').hidden = t !== 'po';
   if (t === 'info') renderVendors(); else if (t === 'inv') renderInvoices(); else renderPoRep();
 }
