@@ -195,6 +195,7 @@ function setupChrome() {
   $('tabHoInv').hidden = !u.isHO;
   $('tabHoNr').hidden = !u.isHO;
   $('tabRates').hidden = !u.isHO;
+  $('tabVendorsHub').hidden = !canVendors();
   $('tabStore').hidden = !hasStore();
   setupStoreUnits();
   $('approverPick').innerHTML = '<option value="">Choose approver…</option>' + state.me.approvers.map((n) => `<option>${esc(n)}</option>`).join('');
@@ -281,6 +282,7 @@ function setTab(tab, withMe) {
   if (tab === 'store' && !hasStore()) tab = 'reports';
   if (tab === 'po' && !u.isHO) tab = 'reports';
   if ((tab === 'goods' || tab === 'hoinv' || tab === 'honr' || tab === 'rates') && !u.isHO) tab = 'reports';
+  if (tab === 'vendors' && !canVendors()) tab = 'reports';
   state.tab = tab; state.sel.clear();
   if (tab !== 'store' || state.store.view !== 'reports') unmountStoreReports();
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
@@ -291,6 +293,8 @@ function setTab(tab, withMe) {
   $('viewHoInv').hidden = tab !== 'hoinv';
   $('viewHoNr').hidden = tab !== 'honr';
   $('viewRates').hidden = tab !== 'rates';
+  $('viewVendorHub').hidden = tab !== 'vendors';
+  if (tab === 'vendors') renderVendorHub();
   if (tab === 'rates') loadRates(false);
   if (tab === 'honr') loadHoNr(false);
   if (tab === 'hoinv') renderHoInv(true);
@@ -439,14 +443,9 @@ function renderReports() {
   lockStoreUnit(state.rep);
   const R = state.reports, f = state.rep;
   document.querySelectorAll('[data-rtype]').forEach((b) => b.classList.toggle('on', b.dataset.rtype === f.type));
-  const venOk = canVendors();
-  $('rtVen').hidden = !venOk; $('rtInv').hidden = !venOk;
-  if ((f.type === 'ven' || f.type === 'inv') && !venOk) f.type = 'nr';
-  $('poReport').hidden = f.type === 'dec' || f.type === 'gs' || f.type === 'ven' || f.type === 'inv';
-  $('viewInvoices').hidden = f.type !== 'inv';
-  if (f.type === 'inv') return renderInvoices(); $('viewDecisions').hidden = f.type !== 'dec'; $('viewGoodsRep').hidden = f.type !== 'gs';
-  $('viewVendors').hidden = f.type !== 'ven';
-  if (f.type === 'ven') return renderVendors();
+  if (f.type === 'ven' || f.type === 'inv') f.type = 'nr';
+  $('poReport').hidden = f.type === 'dec' || f.type === 'gs';
+  $('viewDecisions').hidden = f.type !== 'dec'; $('viewGoodsRep').hidden = f.type !== 'gs';
   if (f.type === 'dec') return renderDecisions();
   if (f.type === 'gs') return renderGoodsRep();
   document.querySelectorAll('[data-rview]').forEach((b) => b.classList.toggle('on', b.dataset.rview === f.view));
@@ -649,6 +648,16 @@ function exportData(which) {
       head: ['#', 'Vendor', 'Invoice No', 'Invoice date', 'Uploaded', 'Invoice amount', 'PO No', 'PO date', 'Unit', 'PO amount', 'Invoice link', 'PO link'],
       body: rows.map((r, i) => [i + 1, r.v, r.inv, r.idt ? fmtDate(r.idt) : '', r.up ? fmtDate(r.up) : '', r.amt, r.po, r.pd ? fmtDate(r.pd) : '', r.u, r.pt, r.il, r.pl]),
       pdfCols: [0, 1, 2, 3, 5, 6, 7, 8, 9],
+    };
+  }
+  if (which === 'por') {
+    const rows = poRepRows();
+    return {
+      title: 'PO report', file: `PO report ${stamp}`, money: 6,
+      filters: filterText([['Vendor', PF.vendor || PF.vtext.trim()], ['Unit', PF.unit], ['Status', PF.st], ['Month', PF.month && monthLabel(PF.month)], ['Search', PF.q.trim()]]),
+      head: ['#', 'PO No', 'PO date', 'Unit', 'Vendor', 'Items', 'PO amount', 'Goods', 'Invoice status', 'Invoice No', 'Invoice amount', 'PO link'],
+      body: rows.map((p, i) => [i + 1, p.po, p.d ? fmtDate(p.d) : '', p.u, p.v, p.n, Math.round(p.t), GOODS[p.g], p.s, p.ino, p.ia ? Math.round(p.ia) : '', p.l]),
+      pdfCols: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
     };
   }
   if (which === 'ven') {
@@ -2295,6 +2304,7 @@ $('tabGoods').onclick = () => setTab('goods');
 $('tabHoInv').onclick = () => setTab('hoinv');
 $('tabHoNr').onclick = () => setTab('honr');
 $('tabRates').onclick = () => setTab('rates');
+$('tabVendorsHub').onclick = () => setTab('vendors');
 setupGoodsEvents();
 setupHoInvEvents();
 setupHoNrEvents();
@@ -2311,11 +2321,19 @@ document.querySelectorAll('[data-rtype]').forEach((b) => (b.onclick = () => {
 }));
 
 // ---------- HO: Vendors report (details from VENDORS; address, phone and email can be edited) ----------
-const canVendors = () => !!state.me && !$('viewReports').classList.contains('instore') && (state.me.user.isHO || (!!state.me.admin && !state.viewAs));
+const canVendors = () => !!state.me && (state.me.user.isHO || (!!state.me.admin && !state.viewAs));
+const vOn = (t) => state.tab === 'vendors' && (state.vtab || 'info') === t;
+function renderVendorHub() {
+  const t = state.vtab || 'info';
+  document.querySelectorAll('[data-vtab]').forEach((b) => b.classList.toggle('on', b.dataset.vtab === t));
+  $('viewVendors').hidden = t !== 'info'; $('viewInvoices').hidden = t !== 'inv'; $('viewPoRep').hidden = t !== 'po';
+  if (t === 'info') renderVendors(); else if (t === 'inv') renderInvoices(); else renderPoRep();
+}
+document.querySelectorAll('[data-vtab]').forEach((b) => (b.onclick = () => { state.vtab = b.dataset.vtab; renderVendorHub(); }));
 const VF = { sel: '', q: '', edit: '' };
 async function loadVendors() {
   try { const r = await api('vendorList'); state.vlist = r.list; } catch (e) { $('vBody').innerHTML = ''; return handleError(e); }
-  if (state.rep.type === 'ven') renderVendors();
+  if (vOn('info')) renderVendors();
 }
 function vendorRows() {
   const q = VF.q.trim().toLowerCase(), words = q ? q.split(/\s+/) : [];
@@ -2329,28 +2347,28 @@ function renderVendors() {
   const rows = vendorRows(), ro = readOnly();
   $('vTotal').textContent = `${rows.length} vendor${rows.length === 1 ? '' : 's'}`;
   const show = rows.slice(0, 200);
-  $('vBody').innerHTML = rows.length ? show.map((v) => {
-    const open = VF.edit === v.name && !ro;
-    const tel = v.phone ? `<a href="tel:${esc(v.phone.split(/[,\/]/)[0].replace(/[^0-9+]/g, ''))}">${esc(v.phone)}</a>` : '<span class="sub">not given</span>';
-    return `<article class="card">
-      <div class="top"><h3>${esc(v.name)}</h3>${ro || open ? '' : `<button type="button" class="btn sm" data-vedit="${esc(v.name)}">Edit</button>`}</div>
-      ${open ? `<form class="grid2" id="vForm" data-vname="${esc(v.name)}">
+  $('vBody').innerHTML = rows.length ? `<div class="dtable-wrap"><table class="dtable">
+    <thead><tr><th>Vendor</th><th>Address</th><th>Phone</th><th>Email</th><th>Deals in</th><th></th></tr></thead><tbody>${show.map((v) => {
+    if (VF.edit === v.name && !ro) return `<tr class="editrow"><td colspan="6"><b>${esc(v.name)}</b><form class="grid2" id="vForm" data-vname="${esc(v.name)}">
         <label class="field full">Address <input name="address" value="${esc(v.address)}" maxlength="200" autocomplete="off"></label>
         <label class="field">Phone <input name="phone" value="${esc(v.phone)}" inputmode="tel" maxlength="40" autocomplete="off"></label>
         <label class="field">Email <input name="email" type="email" value="${esc(v.email)}" maxlength="100" autocomplete="off" placeholder="vendor@example.com"></label>
         <div class="formfoot field full"><button type="button" class="btn ghost" data-vcancel>Cancel</button><button type="submit" class="btn primary">Save</button></div>
-      </form>` : `<div class="sub">📍 ${v.address ? esc(v.address) : 'Address not given'}</div>
-      <div class="sub">📞 ${tel} · ✉️ ${v.email ? `<a href="mailto:${esc(v.email)}">${esc(v.email)}</a>` : '<span>Email not added</span>'}</div>
-      ${v.deals || v.cycle ? `<div class="sub">${v.deals ? 'Deals in: ' + esc(v.deals) : ''}${v.deals && v.cycle ? ' · ' : ''}${v.cycle ? 'Payment cycle: ' + esc(v.cycle) : ''}</div>` : ''}`}
-    </article>`;
-  }).join('') + (rows.length > show.length ? `<p class="sub">Showing the first ${show.length}. Search or pick a vendor to see the rest.</p>` : '')
+      </form></td></tr>`;
+    const tel = v.phone ? `<a href="tel:${esc(v.phone.split(/[,\/]/)[0].replace(/[^0-9+]/g, ''))}">${esc(v.phone)}</a>` : '<span class="muted">—</span>';
+    return `<tr><td data-l="Vendor" class="vcell"><b>${esc(v.name)}</b>${v.cycle ? `<div class="sub">Payment cycle: ${esc(v.cycle)}</div>` : ''}</td>
+      <td data-l="Address">${v.address ? esc(v.address) : '<span class="muted">—</span>'}</td><td data-l="Phone">${tel}</td>
+      <td data-l="Email">${v.email ? `<a href="mailto:${esc(v.email)}">${esc(v.email)}</a>` : '<span class="muted">—</span>'}</td>
+      <td data-l="Deals in">${v.deals ? esc(v.deals) : '<span class="muted">—</span>'}</td>
+      <td class="act">${ro ? '' : `<button type="button" class="btn sm ghost" data-vedit="${esc(v.name)}">Edit</button>`}</td></tr>`;
+  }).join('')}</tbody></table></div>` + (rows.length > show.length ? `<p class="sub">Showing the first ${show.length}. Search or pick a vendor to see the rest.</p>` : '')
     : '<p class="empty">No vendor matches.</p>';
 }
 // ---------- HO: Invoices report (each uploaded invoice with its PO; view / download / share both) ----------
 const IF = { vendor: '', vtext: '', unit: '', q: '' };
 async function loadInvoices(fresh) {
   try { state.irep = await api('invoiceReport', fresh ? { fresh: true } : {}); } catch (e) { $('iBody').innerHTML = ''; return handleError(e); }
-  if (state.rep.type === 'inv') renderInvoices();
+  if (vOn('inv')) renderInvoices(); else if (vOn('po')) renderPoRep();
 }
 function invoiceRows() {
   const words = IF.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -2378,17 +2396,19 @@ function renderInvoices() {
   const rows = invoiceRows(), show = rows.slice(0, 150);
   const sum = rows.reduce((a, r) => a + (r.amt || 0), 0);
   $('iTotal').textContent = `${rows.length} invoice${rows.length === 1 ? '' : 's'} · ${inr(sum)}`;
-  $('iBody').innerHTML = rows.length ? show.map((r) => {
+  const fb = (link, label, name) => link ? `<a class="btn sm" href="${esc(link)}" target="_blank" rel="noopener">View</a><button type="button" class="btn sm ghost" data-fdl="${esc(link)}" data-fname="${esc(name)}" title="Download ${label}">Download</button><button type="button" class="btn sm ghost" data-fshare="${esc(link)}" data-fname="${esc(name)}" title="Share ${label}">Share</button>` : '<span class="muted">No file</span>';
+  $('iBody').innerHTML = rows.length ? `<div class="dtable-wrap"><table class="dtable">
+    <thead><tr><th>Vendor</th><th>Invoice</th><th class="num">Invoice amount</th><th>Against PO</th><th>Unit</th><th>Invoice file</th><th>PO file</th></tr></thead><tbody>${show.map((r) => {
     const vd = V[r.v] || [];
-    return `<article class="card">
-      <div class="top"><h3>${esc(r.v || 'Vendor not known')}</h3><span class="amt">${inr(r.amt)}</span></div>
-      ${vd.length ? `<div class="sub">${vd[0] ? '📍 ' + esc(vd[0]) : ''}${vd[1] ? ' · 📞 <a href="tel:' + esc(String(vd[1]).replace(/[^0-9+]/g, '')) + '">' + esc(vd[1]) + '</a>' : ''}${vd[2] ? ' · ✉️ <a href="mailto:' + esc(vd[2]) + '">' + esc(vd[2]) + '</a>' : ''}</div>` : ''}
-      <div class="sub"><b>Invoice</b> ${esc(r.inv || '(no number)')} · dated ${r.idt ? fmtDate(r.idt) : '-'} · ${inr(r.amt)} · uploaded ${r.up ? fmtDate(r.up) : '-'}</div>
-      <div class="filelinks">${fileBtns(r.il, 'invoice', `Invoice ${r.inv || r.po}`)}</div>
-      <div class="sub"><b>PO</b> ${esc(r.po)}${r.pd ? ' · ' + fmtDate(r.pd) : ''}${r.u ? ' · ' + esc(r.u) : ''}${r.pt ? ' · ' + inr(r.pt) : ''}${r.pn ? ' · ' + r.pn + ' item' + (r.pn > 1 ? 's' : '') : ''}</div>
-      <div class="filelinks">${fileBtns(r.pl, 'PO', `PO ${r.po}`)}</div>
-    </article>`;
-  }).join('') + (rows.length > show.length ? `<p class="sub">Showing the latest ${show.length}. Pick a vendor or unit, or search, to see others.</p>` : '')
+    return `<tr>
+      <td data-l="Vendor" class="vcell"><b>${esc(r.v || 'Vendor not known')}</b>${vd[1] ? `<div class="sub"><a href="tel:${esc(String(vd[1]).replace(/[^0-9+]/g, ''))}">${esc(vd[1])}</a></div>` : ''}</td>
+      <td data-l="Invoice"><b>${esc(r.inv || '(no number)')}</b><div class="sub">Dated ${r.idt ? fmtDate(r.idt) : '-'} · uploaded ${r.up ? fmtDate(r.up) : '-'}</div></td>
+      <td data-l="Amount" class="num"><b>${inr(r.amt)}</b></td>
+      <td data-l="PO"><b>${esc(r.po)}</b><div class="sub">${r.pd ? fmtDate(r.pd) : ''}${r.pt ? ' · ' + inr(r.pt) : ''}${r.pn ? ' · ' + r.pn + ' item' + (r.pn > 1 ? 's' : '') : ''}</div></td>
+      <td data-l="Unit">${esc(r.u || '-')}</td>
+      <td data-l="Invoice file" class="act">${fb(r.il, 'invoice', `Invoice ${r.inv || r.po}`)}</td>
+      <td data-l="PO file" class="act">${fb(r.pl, 'PO', `PO ${r.po}`)}</td></tr>`;
+  }).join('')}</tbody></table></div>` + (rows.length > show.length ? `<p class="sub">Showing the latest ${show.length}. Pick a vendor or unit, or search, to see others.</p>` : '')
     : '<p class="empty">No invoice matches.</p>';
 }
 // vendor box: the matching names show at once under the box; the cards follow after a short pause
@@ -2551,7 +2571,7 @@ $('fSearch').oninput = (e) => { state.rep.q = e.target.value; renderReports(); }
 $('btnClear').onclick = () => { Object.assign(state.rep, { cluster: '', unit: '', vendor: '', month: '', age: '', q: '' }); renderReports(); };
 $('btnRefresh').onclick = () => {
   toast('Reading the latest from the sheet…'); run('refresh', () => refresh(true)); if (state.tab === 'honr') loadHoNr(true);
-  if (state.irep && state.rep.type === 'inv' && !$('viewInvoices').hidden) { state.irep = null; IF.loading = true; $('iBody').innerHTML = '<p class="empty">Loading invoices…</p>'; loadInvoices(true).finally(() => (IF.loading = false)); }
+  if (state.irep && (vOn('inv') || vOn('po'))) { state.irep = null; IF.loading = true; $(vOn('po') ? 'pBody' : 'iBody').innerHTML = '<p class="empty">Loading…</p>'; loadInvoices(true).finally(() => (IF.loading = false)); }
   else state.irep = null;   // next time it is opened it comes from the server's ready copy
 };
 $('btnSignOut').onclick = signOut;
@@ -2645,3 +2665,62 @@ window.__nlp = { state, api };
   ['.bar', '#viewAsBar', '.tabs', '#viewStore > .seg', '#viewReports > .seg', '#pAllWrap'].forEach((s) => { const el = document.querySelector(s); if (el) ro.observe(el); });
   window.addEventListener('resize', set); set();
 })();
+
+// ---------- HO: PO report (every PO since 1 April with goods and invoice status; table on desktop, cards on phone) ----------
+const PF = { vendor: '', vtext: '', unit: '', st: '', month: '', q: '', show: 200 };
+const GOODS = { all: 'Received', part: 'Part received', none: 'Not received' };
+function poRepRows() {
+  const words = PF.q.trim().toLowerCase().split(/\s+/).filter(Boolean), vt = PF.vtext.trim().toLowerCase();
+  return ((state.irep && state.irep.pos) || []).filter((p) => (PF.vendor ? p.v === PF.vendor : !vt || p.v.toLowerCase().includes(vt)) &&
+    (!PF.unit || p.u === PF.unit) && (!PF.st || p.s === PF.st) && (!PF.month || String(p.d).slice(0, 7) === PF.month) &&
+    words.every((w) => [p.po, p.v, p.u, p.ino].join(' ').toLowerCase().includes(w)));
+}
+function renderPoRep() {
+  if (!state.irep) { $('pBody').innerHTML = '<p class="empty">Loading POs…</p>'; if (!IF.loading) { IF.loading = true; loadInvoices().finally(() => (IF.loading = false)); } return; }
+  if (!state.irep.pos) { $('pBody').innerHTML = '<p class="empty">The PO report is being prepared. Tap ↻ in a minute.</p>'; return; }
+  const all = state.irep.pos;
+  PF.names = [...new Set(all.map((p) => p.v).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  $('pVendor').placeholder = `All vendors (${PF.names.length}) – type to search`;
+  if ($('pVendor').value !== PF.vtext) $('pVendor').value = PF.vtext;
+  $('pVendor').classList.toggle('on-filter', !!PF.vtext);
+  PF.unit = fillSelect('pUnitF', 'All units', [...new Set(all.map((p) => p.u).filter(Boolean))].sort((a, b) => a.localeCompare(b)).map((u) => [u, u]), PF.unit);
+  PF.month = fillSelect('pMonth', 'All months', [...new Set(all.map((p) => String(p.d).slice(0, 7)).filter((m) => /^\d{4}-\d{2}$/.test(m)))].sort().reverse().map((m) => [m, monthLabel(m)]), PF.month);
+  $('pStat').value = PF.st; $('pStat').classList.toggle('on-filter', !!PF.st);
+  if ($('pSearch').value !== PF.q) $('pSearch').value = PF.q;
+  const rows = poRepRows(), sum = (a) => a.reduce((x, p) => x + (p.t || 0), 0);
+  const inv = rows.filter((p) => p.s === 'Invoiced'), pend = rows.filter((p) => p.s !== 'Invoiced');
+  $('pTiles').innerHTML = [['POs', rows.length, inr(sum(rows))], ['Invoiced', inv.length, inr(sum(inv))], ['Invoice pending', pend.length, inr(sum(pend))],
+    ['Not received', rows.filter((p) => p.g === 'none').length, 'POs with no goods yet']]
+    .map(([k, n, s], i) => `<div class="tile${i === 1 ? ' good' : i === 2 ? ' warn' : ''}"><span class="sub">${k}</span><b>${n}</b><span class="sub">${s}</span></div>`).join('');
+  $('pTotal').textContent = `${rows.length} PO${rows.length === 1 ? '' : 's'} · ${inr(sum(rows))}`;
+  const show = rows.slice(0, PF.show);
+  $('pBody').innerHTML = rows.length ? `<div class="dtable-wrap"><table class="dtable">
+    <thead><tr><th>PO No</th><th>Date</th><th>Unit</th><th>Vendor</th><th class="num">Items</th><th class="num">Amount</th><th>Goods</th><th>Invoice</th><th></th></tr></thead>
+    <tbody>${show.map((p) => `<tr>
+      <td data-l="PO No"><b>${esc(p.po)}</b></td><td data-l="Date">${p.d ? fmtDate(p.d) : '-'}</td><td data-l="Unit">${esc(p.u)}</td>
+      <td data-l="Vendor" class="vcell">${esc(p.v || '-')}</td><td data-l="Items" class="num">${p.n}</td><td data-l="Amount" class="num"><b>${inr(p.t)}</b></td>
+      <td data-l="Goods"><span class="badge ${p.g === 'all' ? 'ok' : p.g === 'part' ? 'mid' : 'no'}">${GOODS[p.g]}</span></td>
+      <td data-l="Invoice"><span class="badge ${p.s === 'Invoiced' ? 'ok' : 'mid'}">${esc(p.s)}</span>${p.ino ? `<div class="sub">${esc(p.ino)}${p.ia ? ' · ' + inr(p.ia) : ''}</div>` : ''}</td>
+      <td class="act">${p.l ? `<a class="btn sm" href="${esc(p.l)}" target="_blank" rel="noopener">View PO</a><button type="button" class="btn sm ghost" data-fshare="${esc(p.l)}" data-fname="PO ${esc(p.po)}">Share</button>` : ''}</td>
+    </tr>`).join('')}</tbody></table></div>` + (rows.length > show.length ? `<p class="center"><button type="button" class="btn sm" id="pMore">Show more (${rows.length - show.length} left)</button></p>` : '')
+    : '<p class="empty">No PO matches.</p>';
+  if ($('pMore')) $('pMore').onclick = () => { PF.show += 200; renderPoRep(); };
+}
+function showPSug() {
+  const t = PF.vtext.trim().toLowerCase(), names = PF.names || [];
+  const m = t ? names.filter((n) => n.toLowerCase().startsWith(t)).concat(names.filter((n) => !n.toLowerCase().startsWith(t) && n.toLowerCase().includes(t))) : names;
+  $('pSug').innerHTML = m.length ? m.slice(0, 40).map((n) => `<button type="button" role="option" data-pvpick="${esc(n)}">${esc(n)}</button>`).join('') : '<div class="none">No vendor with this name</div>';
+  $('pSug').hidden = false;
+}
+$('pVendor').oninput = (e) => {
+  PF.vtext = e.target.value; PF.show = 200;
+  PF.vendor = (PF.names || []).find((n) => n.toLowerCase() === PF.vtext.trim().toLowerCase()) || '';
+  showPSug(); clearTimeout(PF.t); PF.t = setTimeout(renderPoRep, 300);
+};
+$('pVendor').onfocus = () => { if (PF.names) showPSug(); };
+$('pVendor').onblur = () => setTimeout(() => ($('pSug').hidden = true), 200);
+$('pSug').onmousedown = (e) => e.preventDefault();
+$('pSug').onclick = (e) => { const b = e.target.closest('[data-pvpick]'); if (!b) return; PF.vtext = PF.vendor = b.dataset.pvpick; $('pSug').hidden = true; PF.show = 200; renderPoRep(); };
+[['pUnitF', 'unit'], ['pStat', 'st'], ['pMonth', 'month']].forEach(([id, k]) => ($(id).onchange = (e) => { PF[k] = e.target.value; PF.show = 200; renderPoRep(); }));
+$('pSearch').oninput = (e) => { PF.q = e.target.value; PF.show = 200; clearTimeout(PF.t); PF.t = setTimeout(renderPoRep, 250); };
+$('pClear').onclick = () => { Object.assign(PF, { vendor: '', vtext: '', unit: '', st: '', month: '', q: '', show: 200 }); renderPoRep(); };

@@ -38,7 +38,49 @@ function invoiceReportBuild_() {
   vendorList_(user).list.forEach(v => { vd[v.name.toLowerCase()] = [v.address, v.phone, v.email]; });
   const vendors = {};
   rows.forEach(r => { const k = r.v.toLowerCase(); if (r.v && vd[k] && !vendors[r.v]) vendors[r.v] = vd[k]; });
-  return { rows: rows, vendors: vendors };
+  const pos = poAllBuild_(rows, po);
+  pos.forEach(p => { const k = p.v.toLowerCase(); if (p.v && vd[k] && !vendors[p.v]) vendors[p.v] = vd[k]; });
+  return { rows: rows, vendors: vendors, pos: pos };
+}
+
+/** PO report: every PO (FMS lines from REPORT_FROM, PO type) with its goods and invoice status, newest first. */
+function poAllBuild_(invRows, poTab) {
+  const snap = fmsSnap_(), fromKey = REPORT_FROM.y * 10000 + REPORT_FROM.m * 100 + REPORT_FROM.d;
+  const pad = v => (v < 10 ? '0' : '') + v, norm = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const inv = {};
+  invRows.forEach(r => { const k = String(r.po).toUpperCase(), x = inv[k] || (inv[k] = { n: 0, a: 0, no: [] }); x.n++; x.a += r.amt || 0; if (r.inv) x.no.push(r.inv); });
+  const out = {}, order = [];
+  let year = CFG.START_YEAR, prevMonth = 1;
+  snap.rows.forEach((r, i) => {
+    const m = String(snap.stamps[i][0]).match(/^(\d{1,2})-(\d{1,2})/);
+    if (!m) return;
+    const day = +m[1], mon = +m[2];
+    if (prevMonth - mon >= 6) year++;
+    prevMonth = mon;
+    if (year * 10000 + mon * 100 + day < fromKey) return;
+    if (String(r[21]).replace(/[\s.]/g, '').toUpperCase() !== 'PO') return;   // V: PO type
+    const key = String(r[19]).trim().toUpperCase();                           // T: PO number
+    if (!key) return;
+    let p = out[key];
+    if (!p) {
+      const u = norm(r[2]), mapped = UNIT_MAP.find(x => x[2].some(k => u.indexOf(k) !== -1)), t = poTab[key] || {};
+      p = out[key] = { po: String(r[19]).trim(), d: t.d || (year + '-' + pad(mon) + '-' + pad(day)), u: mapped ? mapped[1] : String(r[2]).trim(),
+        v: String(r[32]).trim() || t.v || '', t: Number(String(r[20]).replace(/[^0-9.]/g, '')) || t.t || 0, l: t.l || '',
+        n: 0, rc: 0, ok: false };
+      order.push(key);
+    }
+    p.n++;
+    if (String(r[27]).trim() !== '') p.rc++;                                   // AB: received
+    const ac = String(r[28]).trim().toUpperCase();                            // AC: UPDATE = invoice pending
+    if (ac && ac !== 'UPDATE') p.ok = true;
+  });
+  return order.map(k => {
+    const p = out[k], iv = inv[k];
+    // g: goods (all / part / none received); s: invoice status
+    return { po: p.po, d: p.d, u: p.u, v: p.v, t: p.t, l: p.l, n: p.n,
+      g: p.rc === 0 ? 'none' : p.rc >= p.n ? 'all' : 'part',
+      s: iv || p.ok ? 'Invoiced' : 'Invoice pending', ic: iv ? iv.n : 0, ia: iv ? iv.a : 0, ino: iv ? iv.no.slice(0, 3).join(', ') : '' };
+  }).sort((a, b) => String(b.d).localeCompare(String(a.d)));
 }
 
 // Ready copy of the Invoices report: rebuilt by warmCache every 5 minutes, new app uploads are added at once,
@@ -75,6 +117,8 @@ function invoiceRepPatch_(po, link, amount, invNo, invDate) {
     const v = vendorList_({ isHO: true }).list.find(x => x.name.toLowerCase() === f.v.toLowerCase());
     if (v) c.vendors[f.v] = [v.address, v.phone, v.email];
   }
+  const pp = (c.pos || []).find(x => String(x.po).toUpperCase() === k);
+  if (pp) { pp.s = 'Invoiced'; pp.ic = (pp.ic || 0) + 1; pp.ia = (pp.ia || 0) + (amount || 0); pp.ino = [invNo, pp.ino].filter(Boolean).join(', '); }
   cachePutBig_(INVREP_CACHE, c, 21600);
 }
 
