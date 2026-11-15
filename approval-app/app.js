@@ -317,7 +317,7 @@ async function refresh(fresh, withMe) {
   const want = { ho: u.isHO, mine: u.isApprover };
   if (withMe) want.me = true;
   if (u.isHO && (state.tab === 'po' || state.po)) { want.po = { v: state.po?.v || '' }; if (!state.vendors) want.vendors = true; }
-  const repOn = state.tab === 'reports' || state.tab === 'hoinv' || (state.tab === 'store' && st.view === 'reports');
+  const repOn = state.tab === 'reports' || state.tab === 'vendors' || state.tab === 'hoinv' || (state.tab === 'store' && st.view === 'reports');
   if (repOn || state.reports) want.reports = { v: state.reports?.v || '' };
   if ((repOn && state.rep.type === 'dec') || state.dec) want.dec = { v: state.dec?.v || '' };
   if (state.tab === 'goods' || (repOn && state.rep.type === 'gs') || state.goods) want.goods = { v: state.goods?.v || '' };
@@ -358,6 +358,7 @@ function applySync(r, unit) {
   });
   // "same" = nothing changed since the copy here: keep it, just update its "as of" time
   take('reports', (p) => { if (!p.same) state.reports = p.reports; else if (state.reports && p.asOf) state.reports.asOf = p.asOf; state.repAt = Date.now(); });
+  runChecks();
   take('dec', (p) => { if (!p.same) state.dec = Object.assign({}, p.decisions, { lines: unpack(p.decisions.lines) }); else if (state.dec && p.asOf) state.dec.asOf = p.asOf; state.decAt = Date.now(); });
   take('goods', (p) => { if (!p.same) state.goods = p; else if (state.goods && p.asOf) state.goods.asOf = p.asOf; });
   take('store', (p) => putStore(unit || p.unit, p));
@@ -2369,6 +2370,7 @@ const IF = { vendor: '', vtext: '', unit: '', q: '' };
 async function loadInvoices(fresh) {
   try { state.irep = await api('invoiceReport', fresh ? { fresh: true } : {}); } catch (e) { $('iBody').innerHTML = ''; return handleError(e); }
   if (vOn('inv')) renderInvoices(); else if (vOn('po')) renderPoRep();
+  runChecks();
 }
 function invoiceRows() {
   const words = IF.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -2669,7 +2671,7 @@ window.__nlp = { state, api };
 // ---------- HO: PO report (every PO since 1 April with goods and invoice status; table on desktop, cards on phone) ----------
 const PF = { vendor: '', vtext: '', unit: '', st: '', month: '', q: '', show: 200 };
 const posList = () => ((state.irep && state.irep.pos) || []).filter((p) => String(p.v).toLowerCase().replace(/[^a-z]/g, '').indexOf('centralstore') === -1);   // Central Store POs are left out
-const GOODS = { all: 'Received', part: 'Part received', none: 'Not received' };
+const GOODS = { all: 'Received', part: 'Part pending', none: 'Not received' };
 function poRepRows() {
   const words = PF.q.trim().toLowerCase().split(/\s+/).filter(Boolean), vt = PF.vtext.trim().toLowerCase();
   return posList().filter((p) => (PF.vendor ? p.v === PF.vendor : !vt || p.v.toLowerCase().includes(vt)) &&
@@ -2691,7 +2693,7 @@ function renderPoRep() {
   const rows = poRepRows(), sum = (a) => a.reduce((x, p) => x + (p.t || 0), 0);
   const inv = rows.filter((p) => p.s === 'Invoiced'), pend = rows.filter((p) => p.s !== 'Invoiced');
   $('pTiles').innerHTML = [['POs', rows.length, inr(sum(rows))], ['Invoiced', inv.length, inr(sum(inv))], ['Invoice pending', pend.length, inr(sum(pend))],
-    ['Not received', rows.filter((p) => p.g === 'none').length, 'POs with no goods yet']]
+    ['Not received', rows.filter((p) => p.g !== 'all').length, 'same as Material not received']]
     .map(([k, n, s], i) => `<div class="tile${i === 1 ? ' good' : i === 2 ? ' warn' : ''}"><span class="sub">${k}</span><b>${n}</b><span class="sub">${s}</span></div>`).join('');
   $('pTotal').textContent = `${rows.length} PO${rows.length === 1 ? '' : 's'} · ${inr(sum(rows))}`;
   const show = rows.slice(0, PF.show);
@@ -2725,3 +2727,24 @@ $('pSug').onclick = (e) => { const b = e.target.closest('[data-pvpick]'); if (!b
 [['pUnitF', 'unit'], ['pStat', 'st'], ['pMonth', 'month']].forEach(([id, k]) => ($(id).onchange = (e) => { PF[k] = e.target.value; PF.show = 200; renderPoRep(); }));
 $('pSearch').oninput = (e) => { PF.q = e.target.value; PF.show = 200; clearTimeout(PF.t); PF.t = setTimeout(renderPoRep, 250); };
 $('pClear').onclick = () => { Object.assign(PF, { vendor: '', vtext: '', unit: '', st: '', month: '', q: '', show: 200 }); renderPoRep(); };
+
+// ---------- Report checker: every time data comes in, the reports are compared with each other (HO + admin) ----------
+function runChecks() {
+  const bar = $('checkBar');
+  if (!bar || !canVendors() || !state.reports || !state.irep || !state.irep.pos) { if (bar) bar.hidden = true; return; }
+  const K = (x) => String(x).trim().toUpperCase(), pos = posList(), pm = new Map(pos.map((p) => [K(p.po), p]));
+  const nr = new Set(state.reports.notReceived.map((p) => K(p.po))), ipr = state.reports.invoicePending.map((p) => K(p.po));
+  const poNr = new Set(pos.filter((p) => p.g !== 'all').map((p) => K(p.po)));
+  const out = [];
+  const add = (what, list) => { if (list.length) out.push(`<li><b>${esc(what)}</b> (${list.length}): ${list.slice(0, 12).map(esc).join(', ')}${list.length > 12 ? ' …' : ''}</li>`); };
+  add('In Material not received but not "not received" in PO report', [...nr].filter((k) => !poNr.has(k)));
+  add('"Not received" in PO report but not in Material not received', [...poNr].filter((k) => !nr.has(k)));
+  add('In Invoice pending report but missing from PO report', ipr.filter((k) => !pm.has(k)));
+  add('In Invoice pending report but marked Invoiced in PO report', ipr.filter((k) => pm.has(k) && pm.get(k).s === 'Invoiced' && !(state.irep.rows || []).some((r) => K(r.po) === k)));
+  add('Invoice uploaded but PO shows Invoice pending in PO report', [...new Set((state.irep.rows || []).map((r) => K(r.po)))].filter((k) => pm.has(k) && pm.get(k).s !== 'Invoiced'));
+  const head = `Material not received ${nr.size} POs · PO report not received ${poNr.size} POs · Invoice pending ${ipr.length} POs`;
+  bar.hidden = false;
+  bar.className = 'checkbar ' + (out.length ? 'bad' : 'ok');
+  bar.innerHTML = out.length ? `<details><summary>⚠ Report check: ${out.length} mismatch${out.length > 1 ? 'es' : ''} found between reports — tap to see</summary><p class="sub">${head}</p><ul>${out.join('')}</ul></details>`
+    : `✓ Report check: all reports match · <span class="sub">${head}</span>`;
+}

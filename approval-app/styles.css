@@ -459,3 +459,11 @@ body { font-size: 14px; -webkit-font-smoothing: antialiased; font-variant-numeri
 }
 @media (max-width: 760px) { #viewVendorHub .filters { position: static; } }
 @media (max-width: 760px) { .dtable td.num { text-align: left; } }
+
+/* Report checker bar (HO + admin) */
+.checkbar { max-width: 1100px; margin: 8px auto 0; padding: 8px 12px; border-radius: 8px; font-size: 13px; }
+.checkbar.ok { background: var(--ok-bg); color: var(--ok-ink); }
+.checkbar.bad { background: var(--no-bg); color: var(--no-ink); }
+.checkbar summary { cursor: pointer; font-weight: 650; }
+.checkbar ul { margin: 6px 0 0; padding-left: 18px; } .checkbar li { margin: 3px 0; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .checkbar { margin: 6px 10px 0; } }

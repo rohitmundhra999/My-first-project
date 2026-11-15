@@ -58,6 +58,7 @@ function poAllBuild_(invRows, poTab) {
     if (prevMonth - mon >= 6) year++;
     prevMonth = mon;
     if (year * 10000 + mon * 100 + day < fromKey) return;
+    if (String(r[10]).trim().toLowerCase() !== 'approved') return;            // K: same rule as Material not received (rejected lines left out)
     if (String(r[21]).replace(/[\s.]/g, '').toUpperCase() !== 'PO') return;   // V: PO type
     const key = String(r[19]).trim().toUpperCase();                           // T: PO number
     if (!key) return;
@@ -66,19 +67,19 @@ function poAllBuild_(invRows, poTab) {
       const u = norm(r[2]), mapped = UNIT_MAP.find(x => x[2].some(k => u.indexOf(k) !== -1)), t = poTab[key] || {};
       p = out[key] = { po: String(r[19]).trim(), d: t.d || (year + '-' + pad(mon) + '-' + pad(day)), u: mapped ? mapped[1] : String(r[2]).trim(),
         v: String(r[32]).trim() || t.v || '', t: Number(String(r[20]).replace(/[^0-9.]/g, '')) || t.t || 0, l: t.l || '',
-        n: 0, rc: 0, ok: false };
+        n: 0, nr: 0, ok: false };
       order.push(key);
     }
     p.n++;
-    if (String(r[27]).trim() !== '') p.rc++;                                   // AB: received
+    if (String(r[27]).trim() === '' && String(r[29]).trim() === '') p.nr++;   // same as Material not received: AB received and AD invoice no. both empty
     const ac = String(r[28]).trim().toUpperCase();                            // AC: UPDATE = invoice pending
-    if (ac && ac !== 'UPDATE') p.ok = true;
+    if ((ac && ac !== 'UPDATE') || String(r[29]).trim()) p.ok = true;
   });
   return order.map(k => {
     const p = out[k], iv = inv[k];
     // g: goods (all / part / none received); s: invoice status
     return { po: p.po, d: p.d, u: p.u, v: p.v, t: p.t, l: p.l, n: p.n,
-      g: p.rc === 0 ? 'none' : p.rc >= p.n ? 'all' : 'part',
+      g: p.nr === 0 ? 'all' : p.nr >= p.n ? 'none' : 'part',
       s: iv || p.ok ? 'Invoiced' : 'Invoice pending', ic: iv ? iv.n : 0, ia: iv ? iv.a : 0, ino: iv ? iv.no.slice(0, 3).join(', ') : '' };
   }).sort((a, b) => String(b.d).localeCompare(String(a.d)));
 }
