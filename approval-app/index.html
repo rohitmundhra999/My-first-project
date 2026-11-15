@@ -56,8 +56,8 @@
       <button id="tabHoInv" data-tab="hoinv" hidden>Upload invoice</button>
       <button id="tabRates" data-tab="rates" hidden>Check rates</button>
       <button id="tabApprove" data-tab="approve" hidden>To approve <span class="count"></span></button>
-      <button id="tabVendorsHub" data-tab="vendors" hidden>Vendors</button>
       <button id="tabReports" data-tab="reports">Reports</button>
+      <button id="tabVendorsHub" data-tab="vendors" hidden>Vendors</button>
     </nav>
 
     <!-- Storekeeper: only the lines of the chosen unit; the server checks the unit on every action -->
@@ -310,7 +310,7 @@
         <input id="iSearch" type="search" placeholder="Search invoice no, PO no, vendor or unit" aria-label="Search invoice">
       </div>
       <div class="rbar"><span id="iTotal" class="sub"></span><button id="iClear" class="btn sm ghost">Clear filters</button></div>
-      <div class="stmtbar"><label class="btn sm primary">Check vendor statement (AI)<input id="iStmtFile" type="file" accept="image/*,application/pdf,.xlsx,.xls,.csv,.zip,application/zip" multiple hidden></label>
+      <div class="stmtbar" id="iStmtBar"><label class="btn sm primary">Check vendor statement (AI)<input id="iStmtFile" type="file" accept="image/*,application/pdf,.xlsx,.xls,.csv,.zip,application/zip" multiple hidden></label>
         <span class="sub">Pick the vendor above, then upload their statements (PDF, photo, Excel or zip; many files can be picked at once). Pick a unit to check only that unit.</span></div>
       <div id="iStmt"></div>
       <div id="iBody"><p class="empty">Loading invoices…</p></div>

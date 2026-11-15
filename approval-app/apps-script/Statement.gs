@@ -3,7 +3,7 @@
 // Lines are matched by invoice number (written a little differently is fine) and amount. A bill on the statement that
 // we do not have is also looked up among this vendor's POs without an invoice (same amount): "PO raised, invoice not uploaded".
 function statementCheck_(user, req) {
-  canVendors_(user);
+  canEditVendors_(user);
   const vendor = String(req.vendor || '').replace(/\s+/g, ' ').trim();
   if (!vendor) throw appError_('BAD_REQUEST', 'Pick the vendor first.');
   const parts = [];

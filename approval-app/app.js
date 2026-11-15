@@ -2346,11 +2346,14 @@ document.querySelectorAll('[data-rtype]').forEach((b) => (b.onclick = () => {
 }));
 
 // ---------- HO: Vendors report (details from VENDORS; address, phone and email can be edited) ----------
-const canVendors = () => !!state.me && (state.me.user.isHO || (!!state.me.admin && !state.viewAs));
+const canVendors = () => !!state.me;   // Vendors tab: every user
+const canEditVendors = () => !!state.me && (state.me.user.isHO || (!!state.me.admin && !state.viewAs));   // edit: HO + admin only
+const fullAccess = () => !!state.me && (state.me.user.isHO || state.me.user.isApprover || !!state.me.admin);
 const vOn = (t) => state.tab === 'vendors' && (state.vtab || 'info') === t;
 function renderVendorHub() {
   const t = state.vtab || 'info';
   document.querySelectorAll('[data-vtab]').forEach((b) => b.classList.toggle('on', b.dataset.vtab === t));
+  $('iStmtBar').hidden = !canEditVendors();
   $('viewVendors').hidden = t !== 'info'; $('viewInvoices').hidden = t !== 'inv'; $('viewPoRep').hidden = t !== 'po';
   if (t === 'info') renderVendors(); else if (t === 'inv') renderInvoices(); else renderPoRep();
 }
@@ -2369,7 +2372,7 @@ function renderVendors() {
   if (!state.vlist) { $('vBody').innerHTML = '<p class="empty">Loading vendors…</p>'; if (!VF.loading) { VF.loading = true; loadVendors().finally(() => (VF.loading = false)); } return; }
   fillSelect('vSel', `All vendors (${state.vlist.length})`, state.vlist.map((v) => [v.name, v.name]), VF.sel);
   if ($('vSearch').value !== VF.q) $('vSearch').value = VF.q;
-  const rows = vendorRows(), ro = readOnly();
+  const rows = vendorRows(), ro = readOnly() || !canEditVendors();
   $('vTotal').textContent = `${rows.length} vendor${rows.length === 1 ? '' : 's'}`;
   const show = rows.slice(0, 200);
   $('vBody').innerHTML = rows.length ? `<div class="dtable-wrap"><table class="dtable">
@@ -2571,12 +2574,14 @@ $('vSearch').oninput = (e) => { VF.q = e.target.value; renderVendors(); };
 $('vClear').onclick = () => { VF.sel = ''; VF.q = ''; VF.edit = ''; renderVendors(); };
 $('vBody').addEventListener('click', (e) => {
   const ed = e.target.closest('[data-vedit]');
+  if (ed && !canEditVendors()) return;
   if (ed) { VF.edit = ed.dataset.vedit; renderVendors(); const f = $('vForm'); if (f) f.address.focus(); return; }
   if (e.target.closest('[data-vcancel]')) { VF.edit = ''; renderVendors(); }
 });
 $('vBody').addEventListener('submit', async (e) => {
   if (e.target.id !== 'vForm') return;
   e.preventDefault();
+  if (!canEditVendors()) return toast('Only HO can change vendor details.', true);
   const f = e.target, name = f.dataset.vname;
   const data = { vendor: name, address: f.address.value.trim(), phone: f.phone.value.trim(), email: f.email.value.trim() };
   if (data.email && !/^[^\s@,;]+@[^\s@,;]+\.[a-z]{2,}$/i.test(data.email)) return toast('Enter a valid email address.', true);
@@ -2758,7 +2763,7 @@ $('pClear').onclick = () => { Object.assign(PF, { vendor: '', vtext: '', unit: '
 // ---------- Report checker: every time data comes in, the reports are compared with each other (HO + admin) ----------
 function runChecks() {
   const bar = $('checkBar');
-  if (!bar || !canVendors() || !state.reports || !state.irep || !state.irep.pos) { if (bar) bar.hidden = true; return; }
+  if (!bar || !canEditVendors() || !state.reports || !state.irep || !state.irep.pos) { if (bar) bar.hidden = true; return; }
   const K = (x) => String(x).trim().toUpperCase(), pos = posList(), pm = new Map(pos.map((p) => [K(p.po), p]));
   const nr = new Set(state.reports.notReceived.map((p) => K(p.po))), ipr = state.reports.invoicePending.map((p) => K(p.po));
   const poNr = new Set(pos.filter((p) => p.g !== 'all').map((p) => K(p.po)));
@@ -2881,7 +2886,7 @@ function fsWatch() {
   const u = state.me.user, keys = new Set();
   if (u.isHO || u.isApprover || state.me.admin) ['reports', 'dec'].forEach((k) => keys.add(k));
   if (u.isHO) ['ho', 'po', 'vendors'].forEach((k) => keys.add(k));
-  if (canVendors()) ['irep', 'vlist'].forEach((k) => keys.add(k));
+  if (fullAccess()) ['irep', 'vlist'].forEach((k) => keys.add(k));
   if (u.isApprover) keys.add(fsMineKey());
   ((state.me.user.units || []).concat(state.store?.unit ? [state.store.unit] : [])).forEach((x) => keys.add('store_' + fsId(x)));
   Object.keys(FS.subs).forEach((k) => { if (!keys.has(k)) { FS.subs[k](); delete FS.subs[k]; FS.got.delete(k); } });

@@ -89,10 +89,12 @@ function poAllBuild_(invRows, poTab) {
 const INVREP_CACHE = 'INVREP';
 function invoiceReport_(user, req) {
   canVendors_(user);
-  if (!(req && req.fresh)) { const c = cacheGetBig_(INVREP_CACHE); if (c) return c; }
-  const out = invoiceReportBuild_();
-  cachePutBig_(INVREP_CACHE, out, 21600);
-  return out;
+  let out = (!(req && req.fresh)) ? cacheGetBig_(INVREP_CACHE) : null;
+  if (!out) { out = invoiceReportBuild_(); cachePutBig_(INVREP_CACHE, out, 21600); }
+  const only = vendorUnitsOnly_(user);
+  if (!only) return out;
+  const mine = x => only.indexOf(String(x.u || '').trim().toLowerCase()) !== -1;
+  return { rows: (out.rows || []).filter(mine), vendors: out.vendors, pos: out.pos ? out.pos.filter(mine) : out.pos };
 }
 /** An invoice just uploaded in the app: put it on top of the ready copy (with its PO details). */
 function invoiceRepPatch_(po, link, amount, invNo, invDate) {

@@ -4,7 +4,11 @@
 // tab VENDOR EMAILS (locked, only the owner edits), so the VENDORS tab keeps its columns. New POs print all of it.
 const VEND_CFG = { TAB: 'VENDOR EMAILS', HEAD: ['Vendor', 'Email', 'Updated', 'Updated by'] };
 
-function canVendors_(u) { if (!u.isHO && !isAdmin_(u)) throw appError_('FORBIDDEN', 'Only HO can see vendors.'); }
+// Every user can see the Vendors tab; only HO and the admin can edit vendor details (and run the statement check).
+function canVendors_(u) { if (!u) throw appError_('FORBIDDEN', 'Please sign in.'); }
+function canEditVendors_(u) { if (!u.isHO && !isAdmin_(u)) throw appError_('FORBIDDEN', 'Only HO can change vendor details.'); }
+// A storekeeper (not HO / approver / admin) sees invoices and POs of their own unit(s) only.
+function vendorUnitsOnly_(u) { return (u.isHO || u.isApprover || isAdmin_(u)) ? null : (u.units || []).map(x => String(x).trim().toLowerCase()); }
 
 function vendorEmailTab_() {
   const b = book_();
@@ -48,7 +52,7 @@ function vendorList_(user) {
 
 /** Edit a vendor's address, phone and email. */
 function vendorSave_(user, req) {
-  canVendors_(user);
+  canEditVendors_(user);
   const name = String(req.vendor || '').replace(/\s+/g, ' ').trim(), k = name.toLowerCase();
   const address = String(req.address || '').replace(/\s+/g, ' ').trim();
   const phone = String(req.phone || '').replace(/[^0-9+ ,\/-]/g, '').trim();
