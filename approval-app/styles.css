@@ -480,3 +480,4 @@ body.docked .scrollbtns { bottom: calc(96px + env(safe-area-inset-bottom)); }
 .scrollbtns button:hover { opacity: 1; background: var(--brand-soft); }
 .scrollbtns [data-sb=up] { grid-area: up; } .scrollbtns [data-sb=down] { grid-area: down; }
 .scrollbtns [data-sb=left] { grid-area: left; } .scrollbtns [data-sb=right] { grid-area: right; }
+@media (min-width: 761px) { #viewVendorHub .dtable .act .btn.sm { padding: 4px 7px; min-height: 28px; font-size: 12px; margin-left: 3px; } #viewVendorHub .dtable td, #viewVendorHub .dtable th { padding-left: 9px; padding-right: 9px; } }

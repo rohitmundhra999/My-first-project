@@ -2761,7 +2761,7 @@ function runChecks() {
   const shown = (el) => { const r = el.getBoundingClientRect(); return el.offsetParent !== null && r.bottom > 80 && r.top < innerHeight - 40; };
   const wraps = () => [...document.querySelectorAll('.dtable-wrap, .mwrap')].filter(shown);
   const vWrap = () => wraps().find((w) => w.scrollHeight > w.clientHeight + 2 && w.getBoundingClientRect().top < innerHeight / 2);
-  const hWrap = () => wraps().find((w) => w.scrollWidth > w.clientWidth + 2);
+  const hWrap = () => wraps().find((w) => /auto|scroll/.test(getComputedStyle(w).overflowX) && w.scrollWidth > w.clientWidth + 2);
   const page = () => document.scrollingElement;
   const upd = () => {
     const pg = page(), v = vWrap(), hz = hWrap();
