@@ -470,8 +470,8 @@ body { font-size: 14px; -webkit-font-smoothing: antialiased; font-variant-numeri
 
 /* Vendors tab tables (desktop): heading row stays locked; the table scrolls under the locked filters */
 @media (min-width: 761px) {
-  #viewVendorHub .dtable-wrap { max-height: calc(100dvh - var(--top, 56px) - var(--tabsH, 48px) - var(--hubH, 120px) - 12px); overflow: auto; }
-  #viewVendorHub .dtable thead th { position: sticky; top: 0; z-index: 2; box-shadow: 0 1px 0 var(--border); }
+  #viewVendorHub .dtable-wrap { overflow: visible; max-height: none; }
+  #viewVendorHub .dtable thead th { position: sticky; top: calc(var(--top, 56px) + var(--tabsH, 48px) + 42px + var(--hubF, 60px)); z-index: 6; box-shadow: 0 1px 0 var(--border), 0 -8px 0 var(--page); }
 }
 /* Scroll buttons */
 .scrollbtns { position: fixed; right: 14px; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 40; display: grid; grid-template-columns: 38px 38px; grid-template-areas: ". up" "left right" ". down"; gap: 6px; }

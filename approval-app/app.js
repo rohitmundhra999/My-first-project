@@ -2663,7 +2663,7 @@ window.__nlp = { state, api };
     root.setProperty('--pbarH', h(document.getElementById('pAllWrap')) + 'px');
     root.setProperty('--segRH', (h(document.querySelector('#app > #viewReports > .seg')) + 6) + 'px');
     const hf = [...document.querySelectorAll('#viewVendorHub .filters')].map(h).find((x) => x) || 0;
-    root.setProperty('--hubH', (h(document.querySelector('#viewVendorHub > .seg')) + hf + 16) + 'px');   // Vendors tab: sub-tabs + filters locked above the table
+    root.setProperty('--hubF', hf + 'px');   // Vendors tab: height of the locked filters (table heading locks just below them)
   };
   const ro = new ResizeObserver(set);
   ['.bar', '#viewAsBar', '.tabs', '#viewStore > .seg', '#viewReports > .seg', '#pAllWrap', '#viewVendorHub > .seg'].forEach((s) => { const el = document.querySelector(s); if (el) ro.observe(el); });
