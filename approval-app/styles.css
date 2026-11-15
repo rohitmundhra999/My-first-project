@@ -467,3 +467,16 @@ body { font-size: 14px; -webkit-font-smoothing: antialiased; font-variant-numeri
 .checkbar summary { cursor: pointer; font-weight: 650; }
 .checkbar ul { margin: 6px 0 0; padding-left: 18px; } .checkbar li { margin: 3px 0; overflow-wrap: anywhere; }
 @media (max-width: 760px) { .checkbar { margin: 6px 10px 0; } }
+
+/* Vendors tab tables (desktop): heading row stays locked; the table scrolls under the locked filters */
+@media (min-width: 761px) {
+  #viewVendorHub .dtable-wrap { max-height: calc(100dvh - var(--top, 56px) - var(--tabsH, 48px) - var(--hubH, 120px) - 12px); overflow: auto; }
+  #viewVendorHub .dtable thead th { position: sticky; top: 0; z-index: 2; box-shadow: 0 1px 0 var(--border); }
+}
+/* Scroll buttons */
+.scrollbtns { position: fixed; right: 14px; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 40; display: grid; grid-template-columns: 38px 38px; grid-template-areas: ". up" "left right" ". down"; gap: 6px; }
+body.docked .scrollbtns { bottom: calc(96px + env(safe-area-inset-bottom)); }
+.scrollbtns button { width: 38px; height: 38px; border-radius: 50%; border: 1px solid var(--border); background: var(--surface); color: var(--brand); font-size: 14px; box-shadow: 0 2px 8px rgba(0,0,0,.18); cursor: pointer; display: flex; align-items: center; justify-content: center; opacity: .92; }
+.scrollbtns button:hover { opacity: 1; background: var(--brand-soft); }
+.scrollbtns [data-sb=up] { grid-area: up; } .scrollbtns [data-sb=down] { grid-area: down; }
+.scrollbtns [data-sb=left] { grid-area: left; } .scrollbtns [data-sb=right] { grid-area: right; }

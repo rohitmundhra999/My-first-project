@@ -2662,9 +2662,12 @@ window.__nlp = { state, api };
     root.setProperty('--segH', (h(document.querySelector('#viewStore > .seg')) + 6) + 'px');
     root.setProperty('--pbarH', h(document.getElementById('pAllWrap')) + 'px');
     root.setProperty('--segRH', (h(document.querySelector('#app > #viewReports > .seg')) + 6) + 'px');
+    const hf = [...document.querySelectorAll('#viewVendorHub .filters')].map(h).find((x) => x) || 0;
+    root.setProperty('--hubH', (h(document.querySelector('#viewVendorHub > .seg')) + hf + 16) + 'px');   // Vendors tab: sub-tabs + filters locked above the table
   };
   const ro = new ResizeObserver(set);
-  ['.bar', '#viewAsBar', '.tabs', '#viewStore > .seg', '#viewReports > .seg', '#pAllWrap'].forEach((s) => { const el = document.querySelector(s); if (el) ro.observe(el); });
+  ['.bar', '#viewAsBar', '.tabs', '#viewStore > .seg', '#viewReports > .seg', '#pAllWrap', '#viewVendorHub > .seg'].forEach((s) => { const el = document.querySelector(s); if (el) ro.observe(el); });
+  document.querySelectorAll('#viewVendorHub .filters').forEach((el) => ro.observe(el));
   window.addEventListener('resize', set); set();
 })();
 
@@ -2748,3 +2751,41 @@ function runChecks() {
   bar.innerHTML = out.length ? `<details><summary>⚠ Report check: ${out.length} mismatch${out.length > 1 ? 'es' : ''} found between reports — tap to see</summary><p class="sub">${head}</p><ul>${out.join('')}</ul></details>`
     : `✓ Report check: all reports match · <span class="sub">${head}</span>`;
 }
+
+// ---------- Scroll buttons (up / down / left / right) on every screen ----------
+(function scrollButtons() {
+  const box = document.createElement('div');
+  box.className = 'scrollbtns';
+  box.innerHTML = '<button type="button" data-sb="up" aria-label="Scroll up">▲</button><button type="button" data-sb="left" aria-label="Scroll left">◀</button><button type="button" data-sb="right" aria-label="Scroll right">▶</button><button type="button" data-sb="down" aria-label="Scroll down">▼</button>';
+  document.body.appendChild(box);
+  const shown = (el) => { const r = el.getBoundingClientRect(); return el.offsetParent !== null && r.bottom > 80 && r.top < innerHeight - 40; };
+  const wraps = () => [...document.querySelectorAll('.dtable-wrap, .mwrap')].filter(shown);
+  const vWrap = () => wraps().find((w) => w.scrollHeight > w.clientHeight + 2 && w.getBoundingClientRect().top < innerHeight / 2);
+  const hWrap = () => wraps().find((w) => w.scrollWidth > w.clientWidth + 2);
+  const page = () => document.scrollingElement;
+  const upd = () => {
+    const pg = page(), v = vWrap(), hz = hWrap();
+    const canUp = pg.scrollTop > 4 || (v && v.scrollTop > 4), canDown = pg.scrollTop + innerHeight < pg.scrollHeight - 4 || (v && v.scrollTop + v.clientHeight < v.scrollHeight - 4);
+    box.querySelector('[data-sb=up]').hidden = !canUp; box.querySelector('[data-sb=down]').hidden = !canDown;
+    box.querySelector('[data-sb=left]').hidden = !(hz && hz.scrollLeft > 2); box.querySelector('[data-sb=right]').hidden = !(hz && hz.scrollLeft + hz.clientWidth < hz.scrollWidth - 2);
+    box.hidden = !canUp && !canDown && !hz;
+  };
+  box.onclick = (e) => {
+    const d = e.target.closest('[data-sb]')?.dataset.sb; if (!d) return;
+    const step = Math.round(innerHeight * 0.7), pg = page();
+    if (d === 'left' || d === 'right') { const w = hWrap(); if (w) w.scrollBy({ left: (d === 'left' ? -1 : 1) * w.clientWidth * 0.7, behavior: 'smooth' }); }
+    else {
+      const v = vWrap(), dir = d === 'up' ? -1 : 1;
+      const pageMore = dir > 0 ? pg.scrollTop + innerHeight < pg.scrollHeight - 4 : pg.scrollTop > 4;
+      const wrapMore = v && (dir > 0 ? v.scrollTop + v.clientHeight < v.scrollHeight - 4 : v.scrollTop > 4);
+      // going down: move the page first until the table sits under the locked top, then scroll inside the table; going up: the reverse
+      if (wrapMore && (dir > 0 ? !pageMore || v.getBoundingClientRect().top < 260 : true)) v.scrollBy({ top: dir * Math.min(step, v.clientHeight * 0.8), behavior: 'smooth' });
+      else window.scrollBy({ top: dir * step, behavior: 'smooth' });
+    }
+    setTimeout(upd, 450);
+  };
+  addEventListener('scroll', upd, { passive: true }); addEventListener('resize', upd);
+  document.addEventListener('scroll', (e) => { if (e.target !== document) upd(); }, { capture: true, passive: true });
+  document.addEventListener('click', () => setTimeout(upd, 600));
+  setInterval(upd, 2000); upd();
+})();
