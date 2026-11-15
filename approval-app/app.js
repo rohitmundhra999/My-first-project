@@ -241,7 +241,7 @@ function setupViewAs() {
 // Switching person: the screens of everyone already looked at are kept in memory, so switching back is instant;
 // a new person needs ONE request (who + their lists together) instead of two.
 const viewCache = {};
-const VIEW_KEYS = ['me', 'tab', 'ho', 'mine', 'reports', 'dec', 'po', 'vendors'];
+const VIEW_KEYS = ['me', 'tab', 'ho', 'mine', 'reports', 'dec', 'po', 'vendors', 'irep', 'vlist'];
 async function changeViewAs(email) {
   const gen = ++state.gen;
   const st = state.store;
@@ -2348,7 +2348,7 @@ document.querySelectorAll('[data-rtype]').forEach((b) => (b.onclick = () => {
 // ---------- HO: Vendors report (details from VENDORS; address, phone and email can be edited) ----------
 const canVendors = () => !!state.me;   // Vendors tab: every user
 const canEditVendors = () => !!state.me && (state.me.user.isHO || (!!state.me.admin && !state.viewAs));   // edit: HO + admin only
-const fullAccess = () => !!state.me && (state.me.user.isHO || state.me.user.isApprover || !!state.me.admin);
+const fullAccess = () => !!state.me && (state.me.user.isHO || state.me.user.isApprover || (!!state.me.admin && !state.viewAs));
 const vOn = (t) => state.tab === 'vendors' && (state.vtab || 'info') === t;
 function renderVendorHub() {
   const t = state.vtab || 'info';
