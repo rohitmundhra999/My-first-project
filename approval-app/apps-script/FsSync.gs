@@ -141,3 +141,4 @@ function fsSetup() {
 }
 
 const FS_RULES = "rules_version = '2';\nservice cloud.firestore {\n  match /databases/{db}/documents {\n    function signedIn() { return request.auth != null; }\n    function acl() { return get(/databases/$(db)/documents/acl/$(request.auth.uid)).data; }\n    function canRead(d) {\n      return signedIn() && exists(/databases/$(db)/documents/acl/$(request.auth.uid)) && (\n        d.owner != '' ? (d.owner == request.auth.uid || acl().ho == true)\n        : d.unit != '' ? (acl().full == true || d.unit in acl().units)\n        : acl().full == true);\n    }\n    match /pub/{k} { allow read: if canRead(resource.data); allow write: if false; }\n    match /pub/{k}/c/{i} { allow read: if canRead(get(/databases/$(db)/documents/pub/$(k)).data); allow write: if false; }\n    match /acl/{e} { allow read: if signedIn() && request.auth.uid == e; allow write: if false; }\n  }\n}\n";
+

@@ -651,7 +651,7 @@ function logNow_(user, action, lines, note) {
 }
 function withLock_(fn) {
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(20000)) throw appError_('BUSY', 'The sheet is busy. Please try again in a moment.');
+  if (!lock.tryLock(28000)) throw appError_('BUSY', 'The sheet is busy. Please try again in a moment.');
   const outer = LOG_Q_ === null;
   if (outer) LOG_Q_ = [];
   try { return fn(); }
