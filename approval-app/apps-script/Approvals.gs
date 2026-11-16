@@ -873,6 +873,7 @@ function reports_(user, req) {
   };
   out.v = ver_([out.notReceived, out.invoicePending]);   // changes only when the report itself changes
   cachePutBig_('reports_' + MODE, out, REPORT_CACHE_SECONDS);
+  try { invRepPosSync_(); } catch (e) { console.error('PO report sync failed: ' + e); }   // PO report follows the same read
   const dec = { lines: decided.reverse(), from: out.from, asOf: out.asOf, unitMap: out.unitMap,
     approvers: activeUsers_().filter(u => u.isApprover).map(u => u.name) };   // everyone who can approve, for the filter
   dec.v = ver_([dec.lines, dec.approvers]);

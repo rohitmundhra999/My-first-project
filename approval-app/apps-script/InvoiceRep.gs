@@ -96,6 +96,16 @@ function invoiceReport_(user, req) {
   const mine = x => only.indexOf(String(x.u || '').trim().toLowerCase()) !== -1;
   return { rows: (out.rows || []).filter(mine), vendors: out.vendors, pos: out.pos ? out.pos.filter(mine) : out.pos };
 }
+/** Keeps the PO report's goods status and PO list in step with Material not received: called every time that
+ *  report is rebuilt, from the same FMS read, so both always count the same POs (no waiting for the 5-minute copy). */
+function invRepPosSync_() {
+  const c = cacheGetBig_(INVREP_CACHE);
+  if (!c || !c.pos) return;
+  const t = {};
+  c.pos.forEach(p => { t[String(p.po).toUpperCase()] = { d: p.d, v: p.v, t: p.t, l: p.l }; });
+  c.pos = poAllBuild_(c.rows || [], t);
+  cachePutBig_(INVREP_CACHE, c, 21600);
+}
 /** An invoice just uploaded in the app: put it on top of the ready copy (with its PO details). */
 function invoiceRepPatch_(po, link, amount, invNo, invDate) {
   const c = cacheGetBig_(INVREP_CACHE);
