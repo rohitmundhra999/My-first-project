@@ -2774,7 +2774,7 @@ function runChecks() {
   add('In Invoice pending report but marked Invoiced in PO report', ipr.filter((k) => pm.has(k) && pm.get(k).s === 'Invoiced' && !(state.irep.rows || []).some((r) => K(r.po) === k)));
   add('Invoice uploaded but PO shows Invoice pending in PO report', [...new Set((state.irep.rows || []).map((r) => K(r.po)))].filter((k) => pm.has(k) && pm.get(k).s !== 'Invoiced'));
   const head = `Material not received ${nr.size} POs · PO report not received ${poNr.size} POs · Invoice pending ${ipr.length} POs`;
-  bar.hidden = false;
+  bar.hidden = !out.length; // only show when there is a mismatch
   bar.className = 'checkbar ' + (out.length ? 'bad' : 'ok');
   bar.innerHTML = out.length ? `<details><summary>⚠ Report check: ${out.length} mismatch${out.length > 1 ? 'es' : ''} found between reports — tap to see</summary><p class="sub">${head}</p><ul>${out.join('')}</ul></details>`
     : `✓ Report check: all reports match · <span class="sub">${head}</span>`;
