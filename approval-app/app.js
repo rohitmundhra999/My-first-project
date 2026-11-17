@@ -12,7 +12,7 @@ const state = {
   df: { view: 'list', approver: '', status: '', cluster: '', unit: '', month: '', q: '' },
   // storekeeper
   goods: null, gf: { unit: '', vendor: '', st: '', q: '' }, hi: { unit: '', vendor: '', form: null }, hr: { unit: '', vendor: '', data: null, rq: {} }, rt: { data: null, q: '', cmp: null, busy: '' }, gsel: new Set(), gform: {}, gsf: { cluster: '', unit: '', vendor: '', st: '', q: '' },
-  po: null, vendors: null, poSel: new Set(), poPrice: {}, poForm: { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: '', shipTo: '', newVendor: null }, poUnit: '', poDone: null,
+  po: null, vendors: null, poSel: new Set(), poPrice: {}, poForm: { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: '', shipTo: '', shipPhone: null, newVendor: null }, poUnit: '', poDone: null,
   store: { unit: '', view: 'raise', data: null, meta: {}, draft: null, rq: {}, inv: null, filter: 'pending', q: '', ven: '', show: 150, done: null, formUnit: '',
            byUnit: {}, raw: {}, base: null, prefetchedAt: 0, prefetching: false },
 };
@@ -2177,6 +2177,8 @@ function renderPO(force) {
   if (!f.billTo) f.billTo = defKey;
   const hOpts = (cur) => hl.map((h) => `<option value="${esc(h[0])}"${cur === h[0] ? ' selected' : ''}>${esc(h[1])}${h[2] ? ' (GST ' + esc(h[2]) + ')' : ''}</option>`).join('') + (hl.some((h) => h[0] === cur) ? '' : `<option value="${esc(cur)}" selected>${esc(cur)}</option>`);
   const shipToOpts = hOpts(f.shipTo), billToOpts = hOpts(f.billTo);
+  const shipH = hl.find((h) => h[0] === f.shipTo);
+  if (f.shipPhone == null) f.shipPhone = shipH ? (shipH[4] || '') : '';   // saved number of the Ship To unit; HO can change it
   const terms = (state.po.terms || []).map((t) => `<option ${t === f.terms ? 'selected' : ''}>${esc(t)}</option>`).join('');
   const priceRow = (l) => {
     const k = poKey(l), pr = state.poPrice[k] || {};
@@ -2202,10 +2204,11 @@ function renderPO(force) {
         : `<label class="field full">Vendor<input data-pf="vendor" list="poVendors" value="${esc(f.vendor)}" placeholder="Type to search ${(state.vendors || []).length} vendors"><datalist id="poVendors">${vendorOpts}</datalist></label>
           <div class="field full"><button type="button" class="linkbtn" id="poNewVendor">+ Vendor not in the list? Add a new vendor</button></div>`}
         <label class="field full">Ship To (delivery unit)<select data-pf="shipTo">${shipToOpts}</select></label>
+        <label class="field full">Unit contact number (printed on the PO)<input data-pf="shipPhone" inputmode="tel" maxlength="40" value="${esc(f.shipPhone || '')}" placeholder="Not saved yet - type the unit's number"><span class="sub">Change it if the storekeeper's number has changed. It is saved for the next POs of this unit.</span></label>
         <label class="field full">Bill To (invoice in this unit's name &amp; GST)<select data-pf="billTo">${billToOpts}</select></label>
-        <label class="field">Delivery days<input data-pf="days" type="number" inputmode="numeric" min="0" max="365" value="${esc(f.days)}"></label>
+        <label class="field">Delivery period (days)<input data-pf="days" type="number" inputmode="numeric" min="0" max="365" value="${esc(f.days)}"></label>
         <label class="field">Payment terms<select data-pf="terms"><option value="">Not now</option>${terms}</select></label>
-        <label class="field full">Comments on the PO (optional)<input data-pf="note" maxlength="300" value="${esc(f.note)}"></label>
+        <label class="field full">Comments or special instructions (printed on the PO)<input data-pf="note" maxlength="300" value="${esc(f.note)}" placeholder="e.g. Freight included, delivery to store, etc."></label>
       </div>
       <label class="field full">Discount (Rs.)<input type="number" inputmode="decimal" min="0" step="0.01" data-pf="discountAmt" value="${f.discountAmt || ''}" placeholder="0"></label>
       <div class="pototal"><span>${sel.length} line${sel.length > 1 ? 's' : ''} · Sub total</span><b id="poSub">${money(total)}</b></div>
@@ -2266,16 +2269,17 @@ function makePO() {
   if (!confirm(`Make PO for ${state.poUnit}: ${lines.length} line${lines.length > 1 ? 's' : ''}, ${vendor || newVendor.name}, total ${money(total)}?`)) return;
   const payload = {
     items: lines.map((l) => ({ row: l.row, orderNo: l.o, name: ((state.poPrice[poKey(l)] || {}).name || '').trim() || l.it, price: Number(state.poPrice[poKey(l)].price), tax: state.poPrice[poKey(l)].tax === '' || state.poPrice[poKey(l)].tax == null ? 0 : Number(state.poPrice[poKey(l)].tax) })),
-    vendor, newVendor, days: Number(f.days), terms: f.terms, note: f.note, discountAmt: Number(f.discountAmt) || 0, billTo: f.billTo || state.poUnit, shipTo: f.shipTo || state.poUnit,
+    vendor, newVendor, days: Number(f.days), terms: f.terms, note: f.note, discountAmt: Number(f.discountAmt) || 0, billTo: f.billTo || state.poUnit, shipTo: f.shipTo || state.poUnit, shipPhone: String(f.shipPhone || '').trim(),
   };
   // at once: the lines leave the list and the form clears, so the next PO can be started; the PO number and
   // PDF link show when the server has made it (a few seconds). Everything is put back if it fails.
+  (state.hotels || []).forEach((h) => { if (h[0] === payload.shipTo) h[4] = payload.shipPhone; });   // the next PO of this unit shows the new number
   const keep = { prices: { ...state.poPrice }, form: { ...f }, sel: new Set(state.poSel) };
   const unit = state.poUnit;
   state.poDone = { poNo: '…', unit, vendor: vendor || newVendor.name, lines: lines.length, total, making: true };
   lines.forEach((l) => { state.poSel.delete(poKey(l)); delete state.poPrice[poKey(l)]; });
   state.po.lines = state.po.lines.filter((l) => !lines.includes(l));
-  state.poForm = { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: '', shipTo: '', newVendor: null };
+  state.poForm = { vendor: '', days: 25, terms: '', note: '', discountAmt: 0, billTo: '', shipTo: '', shipPhone: null, newVendor: null };
   renderPO(true); window.scrollTo(0, 0);
   const sid = beginSave();
   api('makePO', payload)
@@ -2295,6 +2299,7 @@ $('poBody').addEventListener('change', (e) => {
     return renderPO(true);
   }
   if (t.dataset.pok) { t.checked ? state.poSel.add(t.dataset.pok) : state.poSel.delete(t.dataset.pok); return renderPO(true); }
+  if (t.dataset.pf === 'shipTo' && state.poForm.shipTo !== t.value) { state.poForm.shipTo = t.value; state.poForm.shipPhone = null; return renderPO(true); }   // show that unit's saved number
   if (t.dataset.pf === 'terms' || t.dataset.pf === 'billTo' || t.dataset.pf === 'shipTo') state.poForm[t.dataset.pf] = t.value;
 });
 $('poBody').addEventListener('input', (e) => {
@@ -2303,7 +2308,7 @@ $('poBody').addEventListener('input', (e) => {
   if (t.dataset.pp) { (state.poPrice[t.dataset.pp] = state.poPrice[t.dataset.pp] || {}).price = t.value; return updatePOTotals(); }
   if (t.dataset.pt) { (state.poPrice[t.dataset.pt] = state.poPrice[t.dataset.pt] || {}).tax = t.value; return updatePOTotals(); }
   const k = t.dataset.pf;
-  if (k === 'vendor' || k === 'days' || k === 'note' || k === 'discountAmt' || k === 'billTo' || k === 'shipTo') { f[k] = t.value; if (k === 'discountAmt') updatePOTotals(); }
+  if (k === 'vendor' || k === 'days' || k === 'note' || k === 'discountAmt' || k === 'billTo' || k === 'shipTo' || k === 'shipPhone') { f[k] = t.value; if (k === 'discountAmt') updatePOTotals(); }
   else if (k === 'nvName') f.newVendor.name = t.value;
   else if (k === 'nvAddress') f.newVendor.address = t.value;
   else if (k === 'nvPhone') f.newVendor.phone = t.value;
