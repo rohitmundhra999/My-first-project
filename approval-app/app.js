@@ -208,6 +208,7 @@ function startApp(withMe) {
   show('app');
   render();
   setTab(state.tab || defaultTab(), withMe);
+  if (!FS.on && !FS.starting && !FS.tried) { FS.tried = true; fsStart(); }   // live data at once, not after the 3-second check
   if (state.me.preview) banner(''); else setupNotifications();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('firebase-messaging-sw.js', { updateViaCache: 'none' }).catch(() => {});
   if (state.me.user.isHO) setTimeout(() => {   // HO tabs open instantly: their data is fetched quietly in the background
@@ -2904,6 +2905,7 @@ async function fsStart() {
     const app = await fbApp();
     const [{ getAuth, signInWithCustomToken }, F] = await Promise.all([import(FB + 'firebase-auth.js'), import(FB + 'firebase-firestore.js')]);
     const auth = getAuth(app), email = String((jwtPayload(state.idToken) || {}).email || '').toLowerCase();
+    if (auth.authStateReady) await auth.authStateReady();   // the saved Firestore sign-in on this phone: no new pass needed (saves ~3 s)
     if (!auth.currentUser || auth.currentUser.uid !== email) {   // the server checks the Google sign-in and gives a Firestore pass for this email
       const r = await api('fsToken', {});
       await signInWithCustomToken(auth, r.token);
