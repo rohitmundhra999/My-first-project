@@ -2707,7 +2707,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 setInterval(() => { if (document.visibilityState === 'visible' && state.me && !state.busy) refresh(); }, 20000);   // every 20 s while the app is on screen (the server answers "no change" quickly)
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && state.me && !state.busy) refresh(); });
 
-boot();
+setTimeout(boot, 0);   // after the whole file has loaded (boot needs functions defined further down)
 
 // Exposed for tests.
 window.__nlp = { state, api };
