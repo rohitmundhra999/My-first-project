@@ -2155,9 +2155,9 @@ function renderPhones() {
   if (!state.phonesOpen) { box.innerHTML = `<button type="button" class="btn sm" id="phOpen" style="margin:6px 0">📞 Unit contact numbers (edit any time)</button>`; return; }
   box.innerHTML = `<article class="card"><h3 style="display:flex;justify-content:space-between;align-items:center">Unit contact numbers <button type="button" class="btn sm" id="phClose">Close</button></h3>
     <p class="sub">This number is printed on every PO of the unit. Change it when the storekeeper or number changes, then tap Save.</p>
-    ${hl.length ? hl.map((h) => `<div class="poline" style="align-items:center;gap:8px"><span class="lmain"><b>${esc(h[1])}</b></span>
-      <input data-ph="${esc(h[0])}" inputmode="tel" maxlength="40" value="${esc(h[4] || '')}" placeholder="No number yet" style="width:150px;padding:6px;border:1px solid #ccc;border-radius:6px">
-      <button type="button" class="btn sm primary" data-phsave="${esc(h[0])}">Save</button></div>`).join('') : '<p class="empty">Loading units…</p>'}
+    ${hl.length ? hl.map((h) => `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid #eee"><span style="flex:1;min-width:0"><b>${esc(h[1])}</b></span>
+      <input data-ph="${esc(h[0])}" inputmode="tel" maxlength="40" value="${esc(h[4] || '')}" placeholder="No number yet" style="width:140px;flex:none;padding:6px;border:1px solid #ccc;border-radius:6px">
+      <button type="button" class="btn sm primary" data-phsave="${esc(h[0])}" style="width:auto;flex:none">Save</button></div>`).join('') : '<p class="empty">Loading units…</p>'}
   </article>`;
 }
 $('poPhones').addEventListener('click', (e) => {
