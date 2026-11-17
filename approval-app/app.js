@@ -19,7 +19,7 @@ const state = {
 const STATUSES = ['Approved', 'Rejected', 'On Hold', 'Withdrawn'];
 const stLabel = (x) => (x === 'Approved' ? 'Approved but PO not raised' : x);
 const REMARK_MAX_WORDS = 10;
-const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO', 'editItem', 'goodsSave'];
+const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO', 'unitPhoneSave', 'editItem', 'goodsSave'];
 /** Preview that may not change anything (LIVE). In TRIAL the admin can act as the person ("actAs"). */
 const readOnly = () => !!(state.me && state.me.preview && !state.me.actAs);
 
@@ -2147,8 +2147,37 @@ function poUnits() {
   return Object.keys(c).sort().map((u) => [u, c[u]]);
 }
 
+// HO: every unit's contact number (printed on its POs). Editable any time, not only while making a PO.
+function renderPhones() {
+  const box = $('poPhones'); if (!box) return;
+  if (box.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;   // typing
+  const hl = state.hotels || [];
+  if (!state.phonesOpen) { box.innerHTML = `<button type="button" class="btn sm" id="phOpen" style="margin:6px 0">📞 Unit contact numbers (edit any time)</button>`; return; }
+  box.innerHTML = `<article class="card"><h3 style="display:flex;justify-content:space-between;align-items:center">Unit contact numbers <button type="button" class="btn sm" id="phClose">Close</button></h3>
+    <p class="sub">This number is printed on every PO of the unit. Change it when the storekeeper or number changes, then tap Save.</p>
+    ${hl.length ? hl.map((h) => `<div class="poline" style="align-items:center;gap:8px"><span class="lmain"><b>${esc(h[1])}</b></span>
+      <input data-ph="${esc(h[0])}" inputmode="tel" maxlength="40" value="${esc(h[4] || '')}" placeholder="No number yet" style="width:150px;padding:6px;border:1px solid #ccc;border-radius:6px">
+      <button type="button" class="btn sm primary" data-phsave="${esc(h[0])}">Save</button></div>`).join('') : '<p class="empty">Loading units…</p>'}
+  </article>`;
+}
+$('poPhones').addEventListener('click', (e) => {
+  const t = e.target;
+  if (t.id === 'phOpen') { state.phonesOpen = true; if (!state.hotels) refresh(false); return renderPhones(); }
+  if (t.id === 'phClose') { state.phonesOpen = false; return renderPhones(); }
+  const key = t.dataset.phsave; if (!key) return;
+  const inp = [...$('poPhones').querySelectorAll('input[data-ph]')].find((x) => x.dataset.ph === key);
+  const phone = String(inp ? inp.value : '').trim();
+  t.disabled = true; t.textContent = 'Saving…';
+  api('unitPhoneSave', { key, phone })
+    .then((r) => { if (r.hotels) state.hotels = r.hotels; else (state.hotels || []).forEach((h) => { if (h[0] === key) h[4] = phone; });
+      if (state.poForm.shipTo === key) state.poForm.shipPhone = null;   // an open PO form shows the new number
+      toast('Contact number saved.'); t.textContent = 'Saved ✓'; setTimeout(() => { t.disabled = false; t.textContent = 'Save'; }, 1500); renderPO(true); })
+    .catch((err) => { t.disabled = false; t.textContent = 'Save'; handleError(err); });
+});
+
 function renderPO(force) {
   if (!state.me?.user.isHO) return;
+  renderPhones();
   const body = $('poBody');
   if (!force && body.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;   // typing
   if (!state.po) { body.innerHTML = '<p class="empty">Loading… this can take a few seconds.</p>'; return; }
