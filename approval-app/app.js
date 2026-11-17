@@ -2177,7 +2177,6 @@ $('poPhones').addEventListener('click', (e) => {
 
 function renderPO(force) {
   if (!state.me?.user.isHO) return;
-  renderPhones();
   const body = $('poBody');
   if (!force && body.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;   // typing
   if (!state.po) { body.innerHTML = '<p class="empty">Loading… this can take a few seconds.</p>'; return; }
