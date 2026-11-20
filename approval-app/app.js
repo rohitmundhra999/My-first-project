@@ -205,6 +205,7 @@ function setupChrome() {
   setupStoreUnits();
   $('approverPick').innerHTML = '<option value="">Choose approver…</option>' + state.me.approvers.map((n) => `<option>${esc(n)}</option>`).join('');
   $('oboPick').innerHTML = $('approverPick').innerHTML;
+  $('approverPick').hidden = $('btnAssign').hidden = !ASSIGN_ON;
   setupViewAs();
 }
 function startApp(withMe) {
@@ -1320,6 +1321,7 @@ const stockHtml = (l) => {
   return `<div class="reqstock">${req}${st}</div>`;
 };
 
+const ASSIGN_ON = false;   // HO assigns approvers: off for now (only "On behalf of"); set true when approvers use the app
 function assignGroupHtml(g, mode) {
   const keys = g.lines.map(key).join(',');
   const dis = readOnly() ? 'disabled' : '';
@@ -1328,7 +1330,7 @@ function assignGroupHtml(g, mode) {
     <div class="ghead assignhead">
       ${dis ? '' : `<input type="checkbox" data-group="${esc(keys)}" ${g.lines.every((l) => state.sel.has(key(l))) ? 'checked' : ''} aria-label="Select all lines of this requisition">`}
       <span class="gtitle"><b>${esc(g.unit)}</b> <span class="sub">${g.when ? esc(g.when) + ' · ' : ''}${g.lines.length} line${g.lines.length > 1 ? 's' : ''}</span></span>
-      ${g.lines.length > 1 ? `<select class="gpick" data-gpick="${esc(keys)}" ${dis} aria-label="Approver for all lines of ${esc(g.unit)}">${approverOptions('').replace('Choose approver…', 'Same approver for all…')}</select>` : ''}
+      ${ASSIGN_ON && g.lines.length > 1 ? `<select class="gpick" data-gpick="${esc(keys)}" ${dis} aria-label="Approver for all lines of ${esc(g.unit)}">${approverOptions('').replace('Choose approver…', 'Same approver for all…')}</select>` : ''}
     </div>
     ${g.lines.map((l) => {
       const k = key(l), meta = [l.when, l.category, l.orderNo].filter(Boolean).map(esc).join(' · ');
@@ -1339,8 +1341,8 @@ function assignGroupHtml(g, mode) {
           <div class="lmain"><span class="item">${esc(l.item)}</span><span class="sub">${meta}${pic}</span></div>
           ${dis || !EDIT_ITEM_ON ? '' : `<button class="btn sm ghost iedit" data-edit="${esc(k)}" title="Edit item name" aria-label="Edit item name">✎</button>`}</div>
         ${stockHtml(l)}
-        <label class="pickrow"><span class="sub">Approver</span>
-          <select data-pick="${esc(k)}" ${dis} aria-label="Approver for ${esc(l.item)}">${approverOptions(chosen)}</select></label>
+        ${ASSIGN_ON ? `<label class="pickrow"><span class="sub">Approver</span>
+          <select data-pick="${esc(k)}" ${dis} aria-label="Approver for ${esc(l.item)}">${approverOptions(chosen)}</select></label>` : ''}
         ${dis ? '' : `<div class="pickrow"><span class="sub">On behalf of</span>
           <select data-obo="${esc(k)}" aria-label="Approve ${esc(l.item)} on behalf of">${approverOptions(state.obo[k] ?? l.approver ?? '')}</select>
           <button class="btn sm primary" data-obodo="Approved" data-key="${esc(k)}">Approve</button>
@@ -1348,7 +1350,7 @@ function assignGroupHtml(g, mode) {
           <button class="btn sm danger" data-obodo="Rejected" data-key="${esc(k)}">Reject</button></div>`}
       </div>`;
     }).join('')}
-    ${readOnly() ? '' : `<div class="gfoot"><span class="sub">${ready ? ready + ' line' + (ready > 1 ? 's' : '') + ' ready' : mode === 'reassign' ? 'Change the approver to send again' : 'Choose an approver for each line'}</span>
+    ${readOnly() || !ASSIGN_ON ? '' : `<div class="gfoot"><span class="sub">${ready ? ready + ' line' + (ready > 1 ? 's' : '') + ' ready' : mode === 'reassign' ? 'Change the approver to send again' : 'Choose an approver for each line'}</span>
       <button class="btn sm primary" data-gsend="${esc(keys)}" ${ready ? '' : 'disabled'}>Send${ready ? ' (' + ready + ')' : ''}</button></div>`}
   </article>`;
 }
