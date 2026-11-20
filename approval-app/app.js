@@ -19,7 +19,7 @@ const state = {
 const STATUSES = ['Approved', 'Rejected', 'On Hold', 'Withdrawn'];
 const stLabel = (x) => (x === 'Approved' ? 'Approved but PO not raised' : x);
 const REMARK_MAX_WORDS = 10;
-const WRITE_ACTIONS = ['assign', 'decide', 'hoDecide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO', 'unitPhoneSave', 'editItem', 'goodsSave'];
+const WRITE_ACTIONS = ['assign', 'decide', 'hoDecide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO', 'unitPhoneSave', 'editItem', 'goodsSave', 'poCancel', 'poUncancel'];
 /** Preview that may not change anything (LIVE). In TRIAL the admin can act as the person ("actAs"). */
 const readOnly = () => !!(state.me && state.me.preview && !state.me.actAs);
 
@@ -1784,6 +1784,7 @@ const toInvoice = () => poGroups((l) => l.s === 'Approved' && l.po && l.rcv !== 
 
 function lineStatus(l) {
   if (l.inv === 'done') return ['Invoice uploaded', 'done'];
+  if (l.s === 'PO Cancelled') return ['PO cancelled', 'rejected'];
   if (l.rcv !== '' && l.rcv != null) return [`Received ${l.rcv} ${l.uom}` + (l.inv === 'pending' ? ' · invoice pending' : ''), 'received'];
   if (l.s === 'Approved' && l.po) return ['PO raised · to receive', 'po'];
   if (l.s === 'Approved') return ['Approved · PO pending', 'approved'];
@@ -2717,6 +2718,10 @@ document.addEventListener('click', (e) => {
   if (fd) return driveFile(fd.dataset.fdl, fd.dataset.fname, false);
   const fs = e.target.closest('[data-fshare]');
   if (fs) return driveFile(fs.dataset.fshare, fs.dataset.fname, true);
+  const cxb = e.target.closest('[data-pocx]');
+  if (cxb) return cancelPO(cxb.dataset.pocx);
+  const unb = e.target.closest('[data-pounx]');
+  if (unb) return uncancelPO(unb.dataset.pounx);
   if (goodsClick(e)) return;
   const ds = e.target.closest('[data-dstatus]');
   if (ds) { state.df.status = state.df.status === ds.dataset.dstatus ? '' : ds.dataset.dstatus; state.decShow = 200; return renderDecisions(); }
@@ -2780,7 +2785,7 @@ window.__nlp = { state, api };
 // ---------- HO: PO report (every PO since 1 April with goods and invoice status; table on desktop, cards on phone) ----------
 const PF = { vendor: '', vtext: '', unit: '', st: '', month: '', q: '', show: 200 };
 const posList = () => ((state.irep && state.irep.pos) || []).filter((p) => String(p.v).toLowerCase().replace(/[^a-z]/g, '').indexOf('centralstore') === -1);   // Central Store POs are left out
-const GOODS = { all: 'Received', part: 'Part pending', none: 'Not received' };
+const GOODS = { all: 'Received', part: 'Part pending', none: 'Not received', cx: 'PO cancelled' };
 function poRepRows() {
   const words = PF.q.trim().toLowerCase().split(/\s+/).filter(Boolean), vt = PF.vtext.trim().toLowerCase();
   return posList().filter((p) => (PF.vendor ? p.v === PF.vendor : !vt || p.v.toLowerCase().includes(vt)) &&
@@ -2800,9 +2805,9 @@ function renderPoRep() {
   $('pStat').value = PF.st; $('pStat').classList.toggle('on-filter', !!PF.st);
   if ($('pSearch').value !== PF.q) $('pSearch').value = PF.q;
   const rows = poRepRows(), sum = (a) => a.reduce((x, p) => x + (p.t || 0), 0);
-  const inv = rows.filter((p) => p.s === 'Invoiced'), pend = rows.filter((p) => p.s !== 'Invoiced');
+  const inv = rows.filter((p) => p.s === 'Invoiced'), pend = rows.filter((p) => p.s === 'Invoice pending'), cxl = rows.filter((p) => p.g === 'cx');
   $('pTiles').innerHTML = [['POs', rows.length, inr(sum(rows))], ['Invoiced', inv.length, inr(sum(inv))], ['Invoice pending', pend.length, inr(sum(pend))],
-    ['Not received', rows.filter((p) => p.g !== 'all').length, 'same as Material not received']]
+    ['Not received', rows.filter((p) => p.g !== 'all' && p.g !== 'cx').length, 'same as Material not received']].concat(cxl.length ? [['Cancelled', cxl.length, inr(sum(cxl))]] : [])
     .map(([k, n, s], i) => `<div class="tile${i === 1 ? ' good' : i === 2 ? ' warn' : ''}"><span class="sub">${k}</span><b>${n}</b><span class="sub">${s}</span></div>`).join('');
   $('pTotal').textContent = `${rows.length} PO${rows.length === 1 ? '' : 's'} · ${inr(sum(rows))}`;
   const show = rows.slice(0, PF.show);
@@ -2811,9 +2816,9 @@ function renderPoRep() {
     <tbody>${show.map((p) => `<tr>
       <td data-l="PO No"><b>${esc(p.po)}</b></td><td data-l="Date">${p.d ? fmtDate(p.d) : '-'}</td><td data-l="Unit">${esc(p.u)}</td>
       <td data-l="Vendor" class="vcell">${esc(p.v || '-')}</td><td data-l="Items" class="num">${p.n}</td><td data-l="Amount" class="num"><b>${inr(p.t)}</b></td>
-      <td data-l="Goods"><span class="badge ${p.g === 'all' ? 'ok' : p.g === 'part' ? 'mid' : 'no'}">${GOODS[p.g]}</span></td>
-      <td data-l="Invoice"><span class="badge ${p.s === 'Invoiced' ? 'ok' : 'mid'}">${esc(p.s)}</span>${p.ino ? `<div class="sub">${esc(p.ino)}${p.ia ? ' · ' + inr(p.ia) : ''}</div>` : ''}</td>
-      <td class="act">${p.l ? `<a class="btn sm" href="${esc(p.l)}" target="_blank" rel="noopener">View PO</a><button type="button" class="btn sm ghost" data-fshare="${esc(p.l)}" data-fname="PO ${esc(p.po)}">Share</button>` : ''}</td>
+      <td data-l="Goods"><span class="badge ${p.g === 'all' ? 'ok' : p.g === 'part' ? 'mid' : 'no'}">${GOODS[p.g]}</span>${p.cx ? `<div class="sub">${fmtDate(p.cx.d)} · ${esc(p.cx.r)}${p.cx.by ? ' · ' + esc(p.cx.by) : ''}</div>` : ''}</td>
+      <td data-l="Invoice"><span class="badge ${p.s === 'Invoiced' ? 'ok' : p.s === 'Cancelled' ? 'no' : 'mid'}">${esc(p.s)}</span>${p.ino ? `<div class="sub">${esc(p.ino)}${p.ia ? ' · ' + inr(p.ia) : ''}</div>` : ''}</td>
+      <td class="act">${p.l ? `<a class="btn sm" href="${esc(p.l)}" target="_blank" rel="noopener">View PO</a><button type="button" class="btn sm ghost" data-fshare="${esc(p.l)}" data-fname="PO ${esc(p.po)}">Share</button>` : ''}${cxBtns(p)}</td>
     </tr>`).join('')}</tbody></table></div>` + (rows.length > show.length ? `<p class="center"><button type="button" class="btn sm" id="pMore">Show more (${rows.length - show.length} left)</button></p>` : '')
     : '<p class="empty">No PO matches.</p>';
   if ($('pMore')) $('pMore').onclick = () => { PF.show += 200; renderPoRep(); };
@@ -2837,20 +2842,59 @@ $('pSug').onclick = (e) => { const b = e.target.closest('[data-pvpick]'); if (!b
 $('pSearch').oninput = (e) => { PF.q = e.target.value; PF.show = 200; clearTimeout(PF.t); PF.t = setTimeout(renderPoRep, 250); };
 $('pClear').onclick = () => { Object.assign(PF, { vendor: '', vtext: '', unit: '', st: '', month: '', q: '', show: 200 }); renderPoRep(); };
 
+// ---------- PO cancellation (HO + admin): a whole PO, only while nothing is received and no invoice is uploaded ----------
+// The sheet is not changed: the cancellation is kept in the app's own locked tab, and every list and report leaves the PO out.
+const isAdminNow = () => !!state.me && !!state.me.admin && !state.viewAs;
+function cxBtns(p) {
+  if (p.g === 'cx') {
+    const c = p.cx || {}, nm = `PO ${p.po} CANCELLED`;
+    return (c.l ? `<a class="btn sm" href="${esc(c.l)}" target="_blank" rel="noopener">View cancelled PO</a><button type="button" class="btn sm ghost" data-fdl="${esc(c.l)}" data-fname="${esc(nm)}">Download</button><button type="button" class="btn sm ghost" data-fshare="${esc(c.l)}" data-fname="${esc(nm)}">Share cancelled PO</button>`
+      : '<span class="sub">Cancelled PO copy is being made – tap ↻ in a minute</span>')
+      + (isAdminNow() ? `<button type="button" class="btn sm ghost" data-pounx="${esc(p.po)}">Undo cancel</button>` : '');
+  }
+  return canEditVendors() && p.g === 'none' && p.s === 'Invoice pending' && !p.ic ? `<button type="button" class="btn sm danger" data-pocx="${esc(p.po)}">Cancel PO</button>` : '';
+}
+async function cancelPO(po) {
+  if (!noPreview()) return;
+  const typed = prompt(`Cancel PO ${po}?\n\nWrite the reason (up to 10 words). The vendor can be sent a copy marked CANCELLED.`, '');
+  if (typed === null) return;
+  const reason = typed.replace(/\s+/g, ' ').trim();
+  if (!reason) return toast('Write the reason for cancelling.', true);
+  if (reason.split(' ').length > 10) return toast('Keep the reason to 10 words.', true);
+  if (!confirm(`Cancel PO ${po} for good?\nReason: ${reason}`)) return;
+  await run('Cancelling PO…', async () => {
+    const r = await api('poCancel', { po, reason });
+    toast(r.link ? `PO ${po} cancelled. Share the cancelled PO with the vendor.` : `PO ${po} cancelled. The cancelled PO copy will be ready in a minute.`);
+    await loadInvoices(true);
+    refresh();
+  });
+}
+async function uncancelPO(po) {
+  if (!noPreview()) return;
+  if (!confirm(`Undo the cancellation of PO ${po}? It will come back to all lists and reports.`)) return;
+  await run('Undoing…', async () => {
+    await api('poUncancel', { po });
+    toast(`PO ${po} is active again.`);
+    await loadInvoices(true);
+    refresh();
+  });
+}
+
 // ---------- Report checker: every time data comes in, the reports are compared with each other (HO + admin) ----------
 function runChecks() {
   const bar = $('checkBar');
   if (!bar || !canEditVendors() || !state.reports || !state.irep || !state.irep.pos) { if (bar) bar.hidden = true; return; }
   const K = (x) => String(x).trim().toUpperCase(), pos = posList(), pm = new Map(pos.map((p) => [K(p.po), p]));
   const nr = new Set(state.reports.notReceived.map((p) => K(p.po))), ipr = state.reports.invoicePending.map((p) => K(p.po));
-  const poNr = new Set(pos.filter((p) => p.g !== 'all').map((p) => K(p.po)));
+  const poNr = new Set(pos.filter((p) => p.g !== 'all' && p.g !== 'cx').map((p) => K(p.po)));
   const out = [];
   const add = (what, list) => { if (list.length) out.push(`<li><b>${esc(what)}</b> (${list.length}): ${list.slice(0, 12).map(esc).join(', ')}${list.length > 12 ? ' …' : ''}</li>`); };
   add('In Material not received but not "not received" in PO report', [...nr].filter((k) => !poNr.has(k)));
   add('"Not received" in PO report but not in Material not received', [...poNr].filter((k) => !nr.has(k)));
   add('In Invoice pending report but missing from PO report', ipr.filter((k) => !pm.has(k)));
   add('In Invoice pending report but marked Invoiced in PO report', ipr.filter((k) => pm.has(k) && pm.get(k).s === 'Invoiced' && !(state.irep.rows || []).some((r) => K(r.po) === k)));
-  add('Invoice uploaded but PO shows Invoice pending in PO report', [...new Set((state.irep.rows || []).map((r) => K(r.po)))].filter((k) => pm.has(k) && pm.get(k).s !== 'Invoiced'));
+  add('Invoice uploaded but PO shows Invoice pending in PO report', [...new Set((state.irep.rows || []).map((r) => K(r.po)))].filter((k) => pm.has(k) && pm.get(k).s === 'Invoice pending'));
+  add('Cancelled PO still in Material not received / Invoice pending', pos.filter((p) => p.g === 'cx').map((p) => K(p.po)).filter((k) => nr.has(k) || ipr.includes(k)));
   const head = `Material not received ${nr.size} POs · PO report not received ${poNr.size} POs · Invoice pending ${ipr.length} POs`;
   bar.hidden = !out.length; // only show when there is a mismatch
   bar.className = 'checkbar ' + (out.length ? 'bad' : 'ok');
