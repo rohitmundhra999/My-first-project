@@ -272,7 +272,9 @@ function hoDecide_(user, req) {
     });
     SpreadsheetApp.flush();
   });
-  return decide_(Object.assign({}, approver, { onBehalfBy: user.email }), req);
+  const res = decide_(Object.assign({}, approver, { onBehalfBy: user.email }), req);
+  try { openLines_(true); } catch (e) { console.warn('Open list re-read failed: ' + e); }   // HO's list always matches the sheet after this
+  return res;
 }
 
 /** Approver: lines assigned to me that are undecided or On Hold. */
