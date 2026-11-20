@@ -3,7 +3,7 @@
 
 function hoReceiveList_(user, req) {
   if (!user.isHO) throw appError_('FORBIDDEN', 'Only HO can see this.');
-  const names = storeMetaData_().units;
+  const names = allUnits_();   // every unit (same list as the drop-downs), so this matches the Material not received report
   let byUnit = null;
   if (req && req.fresh) byUnit = storeLines_();
   const lines = [], pol = {};
