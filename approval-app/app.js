@@ -199,6 +199,9 @@ function setupChrome() {
   $('tabRates').hidden = !u.isHO;
   $('tabVendorsHub').hidden = !canVendors();
   $('tabStore').hidden = !hasStore();
+  $('tabStore').firstChild.textContent = hoRaiseOnly() ? 'New request ' : 'Store ';
+  document.querySelector('#viewStore .seg').hidden = hoRaiseOnly();
+  if (hoRaiseOnly()) sv.view = 'raise';
   setupStoreUnits();
   $('approverPick').innerHTML = '<option value="">Choose approver…</option>' + state.me.approvers.map((n) => `<option>${esc(n)}</option>`).join('');
   setupViewAs();
@@ -223,6 +226,8 @@ const roleLabel = (u) => {
   return [base, sk].filter(Boolean).join(' · ') || 'Reports only';
 };
 const hasStore = () => !!(state.me && state.me.storeUnits && state.me.storeUnits.length);
+// HO (not a storekeeper): the Store tab is only "New request", for any unit
+const hoRaiseOnly = () => !!(state.me && state.me.user.isHO && !state.me.user.isStore && !state.me.storeAll);
 
 // ---------- admin preview ("view as") ----------
 function setupViewAs() {
@@ -1711,7 +1716,7 @@ async function loadStore(fresh, gen) {
  * so that switching unit never has to wait. Runs when the Store tab is used, at most every 5 minutes. */
 async function prefetchStores() {
   const units = state.me?.storeUnits || [];
-  if (units.length < 2 || sv.prefetching || Date.now() - sv.prefetchedAt < 300000) return;
+  if (hoRaiseOnly() || units.length < 2 || sv.prefetching || Date.now() - sv.prefetchedAt < 300000) return;
   sv.prefetching = true;
   const gen = state.gen;
   try {
@@ -1775,7 +1780,7 @@ function renderStore(force) {
   const loaded = !!sv.data;
   $('cReceive').textContent = loaded ? toReceive().length || '' : '';
   $('cInvoice').textContent = loaded ? toInvoice().length || '' : '';
-  $('tabStore').querySelector('.count').textContent = loaded ? (toReceive().length + toInvoice().length) || '' : '';
+  $('tabStore').querySelector('.count').textContent = loaded && !hoRaiseOnly() ? (toReceive().length + toInvoice().length) || '' : '';
   $('storeAsOf').textContent = loaded && sv.view !== 'reports' ? `${sv.unit} · as of ${sv.data.asOf}` : '';
   const body = $('storeBody');
   body.hidden = sv.view === 'reports';
