@@ -1081,6 +1081,7 @@ const normU_ = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 /** Units this person may work on. */
 function storeUnits_(user) {
   if (!user.previewBy && isAdmin_(user)) return storeMetaData_().units;
+  if (user.isHO) return storeMetaData_().units;   // HO can raise a new request for any unit
   if (!user.isStore) return [];
   const known = storeMetaData_().units;
   return user.units.map(u => known.find(k => normU_(k) === normU_(u)) || u);
