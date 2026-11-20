@@ -1,6 +1,6 @@
 
 // ======================= HO: Invoices report (INVOICES tab + the PO each invoice is for) =======================
-/** Every uploaded invoice (latest first) with its PO (P.Os tab) and the vendor's details. HO and admin only. */
+/** Every uploaded invoice since the sheet started (latest first) with its PO (P.Os tab) and the vendor's details. HO and admin only. */
 function invoiceReportBuild_() {
   const user = { isHO: true };   // internal: lets vendorList_ give the vendors' details
   const b = book_(), fd = v => (v instanceof Date ? Utilities.formatDate(v, CFG.TZ, 'yyyy-MM-dd') : String(v || '').trim());
@@ -8,7 +8,7 @@ function invoiceReportBuild_() {
   // PO number -> details (P.Os: A order no, B PO no, C link, D date, E vendor, F days, G total, H unit; one row per line)
   const po = {}, ps = b.getSheetByName(STORE_CFG.POS);
   if (ps && ps.getLastRow() >= 2) {
-    const last = ps.getLastRow(), first = Math.max(2, last - 8000 + 1);
+    const last = ps.getLastRow(), first = 2;   // whole P.Os tab (Invoices report shows every invoice)
     ps.getRange(first, 1, last - first + 1, 8).getValues().forEach(r => {
       const k = String(r[1]).trim().toUpperCase();
       if (!k) return;
@@ -22,11 +22,11 @@ function invoiceReportBuild_() {
   const when = v => { if (v instanceof Date) return v; const m = String(v || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? new Date(+m[3], +m[2] - 1, +m[1]) : null; };
   const rows = [], is = b.getSheetByName(STORE_CFG.INVOICES);
   if (is) {
-    const last = lastFilled_(is, 1), first = Math.max(2, last - 4000 + 1);
+    const last = lastFilled_(is, 1), first = 2;   // whole INVOICES tab, from the day the sheet started
     if (last >= 2) is.getRange(first, 1, last - first + 1, 6).getValues().forEach(r => {
       const k = String(r[0]).trim().toUpperCase();
       if (!k) return;
-      if (!pu[k]) return;   // same rule as Material not received / Invoice pending: PO of FMS lines from REPORT_FROM (1 April 2026)
+      // no date rule here: the Invoices report lists every invoice ever uploaded (other reports keep the 1 April 2026 rule)
       const p = po[k] || {};
       rows.push({ po: String(r[0]).trim(), il: url(r[1]), up: fd(r[2]), amt: Number(String(r[3]).replace(/[^0-9.]/g, '')) || 0,
         inv: String(r[4]).trim(), idt: fd(r[5]), v: p.v || '', u: pu[k] || p.u || '', pd: p.d || '', pt: p.t || 0, pl: p.l || '', pn: p.n || 0 });
@@ -123,8 +123,7 @@ function invoiceRepPatch_(po, link, amount, invNo, invDate) {
     }
   }
   const pu = poUnits_();
-  if (!pu[k]) return;   // a PO from before REPORT_FROM: not in this report
-  if (!f.u || /^#/.test(f.u)) f.u = pu[k];
+  if ((!f.u || /^#/.test(f.u)) && pu[k]) f.u = pu[k];   // every invoice is listed (no date rule)
   c.rows.unshift(Object.assign({ po: po, il: link, up: Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), amt: amount, inv: invNo, idt: invDate }, f));
   if (f.v && !(c.vendors || (c.vendors = {}))[f.v]) {
     const v = vendorList_({ isHO: true }).list.find(x => x.name.toLowerCase() === f.v.toLowerCase());
