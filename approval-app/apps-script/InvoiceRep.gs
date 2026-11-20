@@ -36,6 +36,8 @@ function invoiceReportBuild_() {
   const seen = {};
   rows.forEach(r => { seen[String(r.po).toUpperCase() + '|' + r.il] = 1; });
   rows.unshift.apply(rows, oldInvoiceRows_(seen));   // last year's invoices go below this sheet's (latest first)
+  const ua = poUnitsAll_();   // unit of every PO ever made (this FMS + old sheets' FMS), for invoices of older POs
+  rows.forEach(r => { if (!r.u || /^#/.test(r.u)) r.u = ua[String(r.po).trim().toUpperCase()] || ''; });
   rows.reverse();   // latest upload first
   // the vendors' details (VENDORS + VENDOR EMAILS) for the vendors in this report
   const vd = {};
@@ -187,8 +189,7 @@ function oldInvoiceRows_(seen) {
       if (fs && fs.getLastRow() >= 2) fs.getRange(2, 3, fs.getLastRow() - 1, 17).getValues().forEach(r => {
         const k = String(r[16]).trim().toUpperCase();
         if (!k || pu[k]) return;
-        const u = norm(r[0]), mapped = UNIT_MAP.find(x => x[2].some(w => u.indexOf(w) !== -1));
-        pu[k] = mapped ? mapped[1] : String(r[0]).trim();
+        pu[k] = String(r[0]).trim();   // same unit names as this year's FMS
       });
       const is = b.getSheetByName(STORE_CFG.INVOICES);
       const last = is ? lastFilled_(is, 1) : 0;
@@ -202,5 +203,20 @@ function oldInvoiceRows_(seen) {
       });
     } catch (e) { console.error('Old invoices (' + id + '): ' + e); }
   });
+  return out;
+}
+
+/** PO -> unit for every PO in this sheet's FMS (C unit, T PO) and the old sheets' FMS (C unit, S PO), no date rule. */
+function poUnitsAll_() {
+  const out = {};
+  const add = (sh, poIdx) => {
+    if (!sh || sh.getLastRow() < 2) return;
+    sh.getRange(2, 3, sh.getLastRow() - 1, poIdx + 1).getValues().forEach(r => {
+      const k = String(r[poIdx]).trim().toUpperCase(), u = String(r[0]).trim();
+      if (k && u && !out[k]) out[k] = u;
+    });
+  };
+  add(fms_(), 17);
+  OLD_INV_SHEETS.forEach(id => { try { add(SpreadsheetApp.openById(id).getSheetByName('FMS'), 16); } catch (e) { console.error('Old FMS units (' + id + '): ' + e); } });
   return out;
 }
