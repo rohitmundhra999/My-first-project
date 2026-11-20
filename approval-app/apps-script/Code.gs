@@ -3302,12 +3302,19 @@ async function cxStampRun() {
   const sh = book_().getSheetByName(CX_CFG.TAB);
   if (!sh || sh.getLastRow() < 2) return;
   const rows = sh.getRange(2, 1, sh.getLastRow() - 1, CX_CFG.HEADER.length).getValues();
+  const made = {};
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     if (!String(r[8]).trim() && String(r[9]).trim().toLowerCase() !== 'undone' && String(r[10]).trim())
-      try { await cxStampOneA_(i + 2); } catch (e) { console.error('Stamp ' + r[1] + ': ' + e); }
+      try { const l = await cxStampOneA_(i + 2); if (l) made[String(r[1]).trim().toUpperCase()] = l; } catch (e) { console.error('Stamp ' + r[1] + ': ' + e); }
   }
-  try { cachePutBig_(INVREP_CACHE, invoiceReportBuild_(), 21600); fsPublish_(['irep']); } catch (e) {}
+  // fast: put the new links straight into the ready PO report copy (warmCache still rebuilds it every 5 minutes)
+  try {
+    const rep = cacheGetBig_(INVREP_CACHE);
+    if (rep && rep.pos) { rep.pos.forEach(p => { const l = made[String(p.po).trim().toUpperCase()]; if (l && p.cx) p.cx.l = l; }); cachePutBig_(INVREP_CACHE, rep, 21600); }
+    else cachePutBig_(INVREP_CACHE, invoiceReportBuild_(), 21600);
+    fsPublish_(['irep']);
+  } catch (e) { console.error('Report update: ' + e); }
 }
 
 /** Editor test: stamps a copy of one PO PDF (no cancellation is recorded) and logs the link of the test copy. */
