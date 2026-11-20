@@ -502,3 +502,5 @@ body.docked .scrollbtns { bottom: calc(96px + env(safe-area-inset-bottom)); }
   .tabs button.on { background: var(--brand); border-color: var(--brand); color: #fff; }
   #app .tabs button.on .count:not(:empty) { background: #fff; color: var(--brand); }
 }
+/* Vendors tab (desktop): action buttons wrap inside their column so the table never spills past its box */
+@media (min-width: 761px) { #viewVendorHub .dtable td.act { white-space: normal; width: 150px; min-width: 150px; text-align: right; } #viewVendorHub .dtable td.act > * { display: inline-flex; margin: 0 0 4px 4px; } }
