@@ -88,7 +88,7 @@ function fsTick() { try { fsPublish_(); } catch (e) { console.error('fsTick: ' +
 
 /** After a save in the app: publish the lists that save can change. */
 function fsAfterWrite_(action) {
-  const map = { assign: ['ho', 'mine', 'reports', 'dec'], decide: ['ho', 'mine', 'reports', 'dec', 'po'], storeRaise: ['ho', 'store', 'reports'],
+  const map = { assign: ['ho', 'mine', 'reports', 'dec'], decide: ['ho', 'mine', 'reports', 'dec', 'po'], hoDecide: ['ho', 'mine', 'reports', 'dec', 'po'], storeRaise: ['ho', 'store', 'reports'],
     storeReceive: ['store', 'reports', 'irep'], storeInvoice: ['store', 'reports', 'irep'], makePO: ['po', 'store', 'reports', 'irep', 'vendors', 'vlist'],
     vendorSave: ['vendors', 'vlist', 'irep'], editItem: ['ho', 'mine', 'po', 'store'], goodsSave: ['reports'] };
   if (!map[action]) return;
