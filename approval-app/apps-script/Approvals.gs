@@ -64,7 +64,7 @@ function doPost(e) {
   try {
     const req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     const realUser = auth_(req.idToken);
-    const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, register: register_,
+    const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, hoDecide: hoDecide_, register: register_,
       reports: (u, r) => scopeReports_(u, reports_(u, r)), decisions: (u, r) => scopeReports_(u, decisions_(u, r)), testPush: testPush_,
       storeMeta: storeMeta_, storeList: storeList_, storeRaise: storeRaise_, storeReceive: storeReceive_, storeInvoice: storeInvoice_,
       sync: sync_, makePO: makePO_, readInvoice: readInvoice_, hoReceiveList: hoReceiveList_, rateList: rateList_, rateCompare: rateCompare_, vendorList: vendorList_, vendorSave: vendorSave_, invoiceReport: invoiceReport_, statementCheck: statementCheck_, fsToken: fsTokenAction_ };
@@ -187,7 +187,7 @@ function pack_(list) {
 // another user sees it. Preview is READ-ONLY: nothing can be assigned, decided or registered while
 // previewing, so the sheet and the APP LOG always show the real person who acted.
 
-const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO', 'vendorSave'];
+const WRITE_ACTIONS = ['assign', 'decide', 'hoDecide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO', 'vendorSave'];
 
 function isAdmin_(u) {
   if (u.isAdmin) return true;
@@ -253,6 +253,26 @@ function assign_(user, req) {
     notified = notify_(approver.email, title, body);
   }
   return { assigned: done.length, skipped: skipped, approver: approver.name, notified: notified };
+}
+
+/** HO (temporary): approve / hold / reject lines on behalf of an approver. Each line is first assigned to that
+ * approver, then decided exactly as if the approver had done it; the log shows the HO user who did it. */
+function hoDecide_(user, req) {
+  requireHO_(user);
+  const approver = activeUsers_().find(u => u.isApprover && same_(u.name, req.approver));
+  if (!approver) throw appError_('BAD_REQUEST', 'Pick an approver from the list.');
+  const items = cleanItems_(req.items);
+  withLock_(() => {
+    const sh = fms_();
+    items.forEach(it => {
+      const row = sh.getRange(it.row, 1, 1, COL.APPR_QTY).getValues()[0];
+      const cur = String(row[COL.APPROVAL - 1]).trim();
+      if (String(row[COL.ORDER - 1]).trim() !== it.orderNo || (cur && cur !== 'On Hold')) return;   // decide_ reports these as skipped
+      if (!same_(row[COL.APPROVER - 1], approver.name)) sh.getRange(it.row, COL.APPROVER).setValue(approver.name);
+    });
+    SpreadsheetApp.flush();
+  });
+  return decide_(Object.assign({}, approver, { onBehalfBy: user.email }), req);
 }
 
 /** Approver: lines assigned to me that are undecided or On Hold. */
@@ -647,6 +667,7 @@ function log_(user, action, lines, note) {
 }
 function logNow_(user, action, lines, note) {
   if (user.previewBy) note = (note ? note + ' | ' : '') + 'done by ' + user.previewBy + ' acting as this user (trial)';
+  if (user.onBehalfBy) note = (note ? note + ' | ' : '') + 'done by HO ' + user.onBehalfBy + ' on behalf of this approver';
   tab_(CFG.LOG, ['Time', 'Email', 'Name', 'Action', 'Lines', 'Note']).appendRow([new Date(), user.email, user.name, action, lines, note]);
 }
 function withLock_(fn) {
