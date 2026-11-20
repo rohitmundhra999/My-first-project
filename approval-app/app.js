@@ -398,7 +398,16 @@ function applySync(r, unit) {
 const key = (l) => l.row + '|' + l.orderNo;
 
 // ---------- rendering ----------
+// HO tab counts (POs): Status of goods, Material not received, Upload invoice
+function hoCounts() {
+  if (!state.me?.user.isHO) return;
+  const R = state.reports, cnt = (id, n) => { $(id).querySelector('.count').textContent = n || ''; };
+  cnt('tabGoods', state.goods ? state.goods.list.length : R ? R.notReceived.filter((p) => !isCentral(p.vendor)).length : 0);
+  cnt('tabHoNr', state.hr.data ? new Set(state.hr.data.lines.map((l) => l.u + '|' + l.po.toUpperCase())).size : R ? R.notReceived.length : 0);
+  cnt('tabHoInv', R ? R.invoicePending.length : 0);
+}
 function render() {
+  hoCounts();
   if (state.ho) {
     $('tabAssign').querySelector('.count').textContent = state.ho.unassigned.length || '';
     const units = [...new Set([...state.ho.unassigned, ...state.ho.waiting].map((l) => l.unit))].sort((a, b) => a.localeCompare(b));
@@ -931,7 +940,7 @@ function renderGoods(force) {
   f.vendor = fillSelect('gVendor', 'All vendors', vendors.map((v) => [v, v]), f.vendor);
   f.st = fillSelect('gStatus', 'All statuses', [NOT_UPDATED, ...G.statuses].map((x) => [x, x]), f.st);
   if ($('gSearch').value !== f.q) $('gSearch').value = f.q;
-  const rows = goodsFiltered();
+  const rows = goodsFiltered(); hoCounts();
   $('gAll').checked = rows.length > 0 && rows.every((p) => state.gsel.has(p.po));
   $('gCount').textContent = state.gsel.size ? state.gsel.size + ' selected' : '';
   $('goodsAsOf').textContent = `${rows.length} PO${rows.length === 1 ? '' : 's'} · POs made from ${fmtDate(REP_FROM_ISO)} · updated ${G.asOf}`;
@@ -1093,7 +1102,7 @@ function renderHoNr() {
   H.unit = fillSelect('hrUnit', 'All units', [...new Set(all.map((l) => l.u))].sort((a, b) => a.localeCompare(b)).map((u) => [u, u]), H.unit);
   const vend = [...new Set(all.filter((l) => !H.unit || l.u === H.unit).map((l) => l.ven || 'No vendor'))].sort((a, b) => a.localeCompare(b));
   H.vendor = fillSelect('hrVendor', 'All vendors', vend.map((v) => [v, v]), H.vendor);
-  const groups = hoNrGroups();
+  const groups = hoNrGroups(); hoCounts();
   $('hrAsOf').textContent = `${groups.length} PO${groups.length === 1 ? '' : 's'} not received · updated ${H.data.asOf}`;
   body.innerHTML = groups.length ? `<p class="sub">Enter the quantity that actually arrived. Clear the box for items that have not come yet.</p>` + groups.map((g) => {
     const days = daysSince(g.d);
