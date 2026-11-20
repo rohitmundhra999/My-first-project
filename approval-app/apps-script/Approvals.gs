@@ -1100,11 +1100,21 @@ const STORE_CFG = {
 const normU_ = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
 /** Units this person may work on. */
+/** Every unit: units with requests in the sheet + every unit in the P.O tab's unit list (where GST and address are kept),
+ * so a unit added there shows in the app at once. GOODS / ADVERTISEMENT are billing entries, not units. */
+function allUnits_() {
+  const seen = {}, out = [];
+  const add = u => { u = String(u || '').trim(); const k = normU_(u); if (k && !seen[k]) { seen[k] = true; out.push(u); } };
+  storeMetaData_().units.forEach(add);
+  try { hotelList_().forEach(h => { if (!/^(goods|advertisement)$/.test(normU_(h[0]))) add(h[0]); }); } catch (e) { console.warn('Unit list from P.O tab: ' + e); }
+  return out.sort();
+}
+
 function storeUnits_(user) {
-  if (!user.previewBy && isAdmin_(user)) return storeMetaData_().units;
-  if (user.isHO) return storeMetaData_().units;   // HO can raise a new request for any unit
+  if (!user.previewBy && isAdmin_(user)) return allUnits_();
+  if (user.isHO) return allUnits_();   // HO can raise a new request for any unit
   if (!user.isStore) return [];
-  const known = storeMetaData_().units;
+  const known = allUnits_();
   return user.units.map(u => known.find(k => normU_(k) === normU_(u)) || u);
 }
 
