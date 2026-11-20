@@ -403,7 +403,7 @@ function hoCounts() {
   if (!state.me?.user.isHO) return;
   const R = state.reports, cnt = (id, n) => { $(id).querySelector('.count').textContent = n || ''; };
   cnt('tabGoods', state.goods ? state.goods.list.length : R ? R.notReceived.filter((p) => !isCentral(p.vendor)).length : 0);
-  cnt('tabHoNr', state.hr.data ? new Set(state.hr.data.lines.map((l) => l.u + '|' + l.po.toUpperCase())).size : R ? R.notReceived.length : 0);
+  cnt('tabHoNr', R ? R.notReceived.length : state.hr.data ? new Set(state.hr.data.lines.map((l) => l.u + '|' + l.po.toUpperCase())).size : 0);   // same live data as the report
   cnt('tabHoInv', R ? R.invoicePending.length : 0);
 }
 function render() {
