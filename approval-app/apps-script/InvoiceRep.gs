@@ -162,20 +162,23 @@ function poUnits_() {
 }
 
 // ---------- Old sheets (read only): their invoices are listed in the Invoices report, nothing else ----------
+// The old sheets hardly change, so they are read once and kept for 6 hours (the 5-minute refresh stays fast).
 const OLD_INV_SHEETS = ['16TCz5HIEGFH1UFDNx4mn63faobrGmUj9lbxkNRTexAg'];   // NONLOCAL PURCHASES Jan-Dec 2025
-function oldInvoiceRows_(seen) {
-  const out = [];
+const OLDINV_CACHE = 'OLDINV';
+function oldSheetsData_() {
+  const c = cacheGetBig_(OLDINV_CACHE);
+  if (c && c.rows) return c;
+  const d = { rows: [], units: {} };
   const url = v => (/^https?:\/\//.test(String(v)) ? String(v).trim() : '');
   const iso = v => {
     if (v instanceof Date) return Utilities.formatDate(v, CFG.TZ, 'yyyy-MM-dd');
     const m = String(v || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
     return m ? m[3] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[1]).slice(-2) : String(v || '').trim();
   };
-  const norm = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
   OLD_INV_SHEETS.forEach(id => {
     try {
       const b = SpreadsheetApp.openById(id);
-      // PO number -> details from P.Os (A order no, B PO no, C link, D date, E vendor, G total)
+      // PO number -> details from P.Os (B PO no, C link, D date, E vendor, G total)
       const po = {}, ps = b.getSheetByName(STORE_CFG.POS);
       if (ps && ps.getLastRow() >= 2) ps.getRange(2, 1, ps.getLastRow() - 1, 7).getValues().forEach(r => {
         const k = String(r[1]).trim().toUpperCase();
@@ -184,39 +187,44 @@ function oldInvoiceRows_(seen) {
         p.n++; if (!p.l) p.l = url(r[2]); if (!p.d) p.d = iso(r[3]); if (!p.v) p.v = String(r[4]).trim();
         if (!p.t) p.t = Number(String(r[6]).replace(/[^0-9.]/g, '')) || 0;
       });
-      // PO number -> unit from FMS (C unit, S PO number in this old sheet)
-      const pu = {}, fs = b.getSheetByName('FMS');
-      if (fs && fs.getLastRow() >= 2) fs.getRange(2, 3, fs.getLastRow() - 1, 17).getValues().forEach(r => {
-        const k = String(r[16]).trim().toUpperCase();
-        if (!k || pu[k]) return;
-        pu[k] = String(r[0]).trim();   // same unit names as this year's FMS
-      });
+      // PO number -> unit from this old sheet's FMS (C unit, S PO number)
+      const fs = b.getSheetByName('FMS'), fn = fs ? fs.getLastRow() - 1 : 0;
+      if (fn > 0) {
+        const u = fs.getRange(2, 3, fn, 1).getValues(), pn = fs.getRange(2, 19, fn, 1).getValues();
+        pn.forEach((x, i) => { const k = String(x[0]).trim().toUpperCase(), un = String(u[i][0]).trim(); if (k && un && !d.units[k]) d.units[k] = un; });
+      }
       const is = b.getSheetByName(STORE_CFG.INVOICES);
       const last = is ? lastFilled_(is, 1) : 0;
       if (last >= 2) is.getRange(2, 1, last - 1, 6).getValues().forEach(r => {
-        const k = String(r[0]).trim().toUpperCase(), il = url(r[1]);
-        if (!k || seen[k + '|' + il]) return;   // already listed from this year's sheet
-        seen[k + '|' + il] = 1;
+        const k = String(r[0]).trim().toUpperCase();
+        if (!k) return;
         const p = po[k] || {};
-        out.push({ po: String(r[0]).trim(), il: il, up: iso(r[2]), amt: Number(String(r[3]).replace(/[^0-9.]/g, '')) || 0,
-          inv: String(r[4]).trim(), idt: iso(r[5]), v: p.v || '', u: pu[k] || '', pd: p.d || '', pt: p.t || 0, pl: p.l || '', pn: p.n || 0 });
+        d.rows.push({ po: String(r[0]).trim(), il: url(r[1]), up: iso(r[2]), amt: Number(String(r[3]).replace(/[^0-9.]/g, '')) || 0,
+          inv: String(r[4]).trim(), idt: iso(r[5]), v: p.v || '', u: d.units[k] || '', pd: p.d || '', pt: p.t || 0, pl: p.l || '', pn: p.n || 0 });
       });
     } catch (e) { console.error('Old invoices (' + id + '): ' + e); }
   });
-  return out;
+  cachePutBig_(OLDINV_CACHE, d, 21600);
+  return d;
+}
+/** The old sheets' invoices that are not already listed from this year's sheet. */
+function oldInvoiceRows_(seen) {
+  return oldSheetsData_().rows.filter(r => {
+    const k = String(r.po).toUpperCase() + '|' + r.il;
+    if (seen[k]) return false;
+    seen[k] = 1;
+    return true;
+  });
 }
 
-/** PO -> unit for every PO in this sheet's FMS (C unit, T PO) and the old sheets' FMS (C unit, S PO), no date rule. */
+/** PO -> unit for every PO in this sheet's FMS (C unit, T PO) and the old sheets' FMS, no date rule. */
 function poUnitsAll_() {
-  const out = {};
-  const add = (sh, poIdx) => {
-    if (!sh || sh.getLastRow() < 2) return;
-    sh.getRange(2, 3, sh.getLastRow() - 1, poIdx + 1).getValues().forEach(r => {
-      const k = String(r[poIdx]).trim().toUpperCase(), u = String(r[0]).trim();
-      if (k && u && !out[k]) out[k] = u;
-    });
-  };
-  add(fms_(), 17);
-  OLD_INV_SHEETS.forEach(id => { try { add(SpreadsheetApp.openById(id).getSheetByName('FMS'), 16); } catch (e) { console.error('Old FMS units (' + id + '): ' + e); } });
+  const out = {}, sh = fms_(), n = sh.getLastRow() - 1;
+  if (n > 0) {
+    const u = sh.getRange(2, COL.UNIT, n, 1).getValues(), p = sh.getRange(2, SCOL.PO, n, 1).getValues();
+    p.forEach((x, i) => { const k = String(x[0]).trim().toUpperCase(), un = String(u[i][0]).trim(); if (k && un && !out[k]) out[k] = un; });
+  }
+  const old = oldSheetsData_().units;
+  Object.keys(old).forEach(k => { if (!out[k]) out[k] = old[k]; });
   return out;
 }
