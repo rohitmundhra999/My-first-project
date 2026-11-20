@@ -56,7 +56,10 @@ function goodsBuild_() {
     if (item && p.itemNames.length < 10) p.itemNames.push(item);
   });
   const links = poLinks_();
-  const list = order.map(k => Object.assign(pos[k], { link: links[k] || '' }));
+  const nr = {};
+  ((reports_({}, {}).reports || {}).notReceived || []).forEach(p => (nr[String(p.po).toUpperCase()] = true));   // same POs as the Material not received report
+  const list = order.filter(k => nr[k] && String(pos[k].vendor).toLowerCase().replace(/[^a-z]/g, '').indexOf('centralstore') === -1)
+    .map(k => Object.assign(pos[k], { link: links[k] || '' }));
   const data = { list: list, unitMap: UNIT_MAP.map(x => [x[0], x[1]]), statuses: GOODS_CFG.STATUSES,
     asOf: Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm') };
   cachePutBig_(GOODS_CFG.CACHE, data, GOODS_CFG.SECONDS);
