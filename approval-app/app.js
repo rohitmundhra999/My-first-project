@@ -19,7 +19,7 @@ const state = {
 const STATUSES = ['Approved', 'Rejected', 'On Hold', 'Withdrawn'];
 const stLabel = (x) => (x === 'Approved' ? 'Approved but PO not raised' : x);
 const REMARK_MAX_WORDS = 10;
-const WRITE_ACTIONS = ['assign', 'decide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO', 'unitPhoneSave', 'editItem', 'goodsSave'];
+const WRITE_ACTIONS = ['assign', 'decide', 'hoDecide', 'register', 'storeRaise', 'storeReceive', 'storeInvoice', 'makePO', 'unitPhoneSave', 'editItem', 'goodsSave'];
 /** Preview that may not change anything (LIVE). In TRIAL the admin can act as the person ("actAs"). */
 const readOnly = () => !!(state.me && state.me.preview && !state.me.actAs);
 
@@ -204,6 +204,7 @@ function setupChrome() {
   if (hoRaiseOnly()) sv.view = 'raise';
   setupStoreUnits();
   $('approverPick').innerHTML = '<option value="">Choose approver…</option>' + state.me.approvers.map((n) => `<option>${esc(n)}</option>`).join('');
+  $('oboPick').innerHTML = $('approverPick').innerHTML;
   setupViewAs();
 }
 function startApp(withMe) {
@@ -1340,6 +1341,11 @@ function assignGroupHtml(g, mode) {
         ${stockHtml(l)}
         <label class="pickrow"><span class="sub">Approver</span>
           <select data-pick="${esc(k)}" ${dis} aria-label="Approver for ${esc(l.item)}">${approverOptions(chosen)}</select></label>
+        ${dis ? '' : `<div class="pickrow"><span class="sub">On behalf of</span>
+          <select data-obo="${esc(k)}" aria-label="Approve ${esc(l.item)} on behalf of">${approverOptions(state.obo[k] ?? l.approver ?? '')}</select>
+          <button class="btn sm primary" data-obodo="Approved" data-key="${esc(k)}">Approve</button>
+          <button class="btn sm" data-obodo="On Hold" data-key="${esc(k)}">Hold</button>
+          <button class="btn sm danger" data-obodo="Rejected" data-key="${esc(k)}">Reject</button></div>`}
       </div>`;
     }).join('')}
     ${readOnly() ? '' : `<div class="gfoot"><span class="sub">${ready ? ready + ' line' + (ready > 1 ? 's' : '') + ' ready' : mode === 'reassign' ? 'Change the approver to send again' : 'Choose an approver for each line'}</span>
@@ -1556,6 +1562,24 @@ async function decide(decision, lines) {
   }, async () => {
     const r = await api('decide', { decision, items, remark }).finally(() => gone.forEach((k) => deciding.delete(k)));
     toast(`${r.decided} line${r.decided === 1 ? '' : 's'} marked ${r.decision}.` + skippedText(r.skipped), r.skipped.length > 0);
+  });
+}
+
+// HO (temporary, until all approvers use the app): approve / hold / reject on behalf of an approver.
+state.obo = {};
+async function hoDecide(decision, lines, approver) {
+  if (!lines.length || state.busy) return;
+  if (!approver) return toast('Choose the approver (On behalf of) first.', true);
+  let remark = '';
+  if (decision === 'Rejected') { remark = await askRemark(lines); if (!remark) return; }
+  const gone = new Set(lines.map(key));
+  optimistic(() => {
+    gone.forEach((k) => { state.sel.delete(k); delete state.pick[k]; delete state.obo[k]; });
+    const ho = state.ho; if (!ho) return;
+    ho.unassigned = ho.unassigned.filter((l) => !gone.has(key(l))); ho.waiting = ho.waiting.filter((l) => !gone.has(key(l)));
+  }, async () => {
+    const r = await api('hoDecide', { approver, decision, remark, items: lines.map((l) => ({ row: l.row, orderNo: l.orderNo })) });
+    toast(`${r.decided} line${r.decided === 1 ? '' : 's'} marked ${r.decision} on behalf of ${approver}.` + skippedText(r.skipped), r.skipped.length > 0);
   });
 }
 
@@ -2658,6 +2682,7 @@ $('pUnit').onchange = (e) => {   // a new unit: lines of other units are unticke
   render();
 };
 $('pAll').onchange = (e) => { (state.mine?.pending || []).filter((l) => !state.pUnit || l.unit === state.pUnit).forEach((l) => (e.target.checked ? state.sel.add(key(l)) : state.sel.delete(key(l)))); render(); };
+document.querySelectorAll('[data-obobulk]').forEach((b) => (b.onclick = () => hoDecide(b.dataset.obobulk, selectedLines(), $('oboPick').value)));
 document.querySelectorAll('[data-bulk]').forEach((b) => (b.onclick = () => decide(b.dataset.bulk, selectedLines())));
 
 document.addEventListener('change', (e) => {
@@ -2668,6 +2693,7 @@ document.addEventListener('change', (e) => {
 document.addEventListener('change', (e) => {
   const t = e.target;
   if (t.matches('select[data-pick]')) { state.pick[t.dataset.pick] = t.value; render(); }
+  else if (t.matches('select[data-obo]')) state.obo[t.dataset.obo] = t.value;
   else if (t.matches('select[data-gpick]')) { if (t.value) t.dataset.gpick.split(',').forEach((k) => (state.pick[k] = t.value)); render(); }
 });
 document.addEventListener('input', (e) => { if (e.target.matches('[data-qty]')) state.qty[e.target.dataset.qty] = e.target.value; });
@@ -2686,6 +2712,8 @@ document.addEventListener('click', (e) => {
   const dc = e.target.closest('[data-dcell-by]');
   if (dc) { Object.assign(state.df, { approver: dc.dataset.dcellBy === '(none)' ? '' : dc.dataset.dcellBy, status: dc.dataset.dcellSt, view: 'list' }); state.decShow = 200; renderDecisions(); window.scrollTo(0, 0); return; }
   if (e.target.closest('#decMore')) { state.decShow += 300; return renderDecisions(); }
+  const ob = e.target.closest('[data-obodo]');
+  if (ob) { const l = [...(state.ho?.unassigned || []), ...(state.ho?.waiting || [])].find((x) => key(x) === ob.dataset.key); return l && hoDecide(ob.dataset.obodo, [l], state.obo[ob.dataset.key] ?? l.approver ?? ''); }
   const gs = e.target.closest('[data-gsend]');
   if (gs) return sendGroup(gs.dataset.gsend.split(','));
   const ed = e.target.closest('[data-edit]');
