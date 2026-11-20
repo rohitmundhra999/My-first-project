@@ -32,13 +32,17 @@ function invoiceReportBuild_() {
         inv: String(r[4]).trim(), idt: fd(r[5]), v: p.v || '', u: pu[k] || p.u || '', pd: p.d || '', pt: p.t || 0, pl: p.l || '', pn: p.n || 0 });
     });
   }
+  const liveRows = rows.slice();   // PO report counts only this sheet's invoices (unchanged)
+  const seen = {};
+  rows.forEach(r => { seen[String(r.po).toUpperCase() + '|' + r.il] = 1; });
+  rows.unshift.apply(rows, oldInvoiceRows_(seen));   // last year's invoices go below this sheet's (latest first)
   rows.reverse();   // latest upload first
   // the vendors' details (VENDORS + VENDOR EMAILS) for the vendors in this report
   const vd = {};
   vendorList_(user).list.forEach(v => { vd[v.name.toLowerCase()] = [v.address, v.phone, v.email]; });
   const vendors = {};
   rows.forEach(r => { const k = r.v.toLowerCase(); if (r.v && vd[k] && !vendors[r.v]) vendors[r.v] = vd[k]; });
-  const pos = poAllBuild_(rows, po);
+  const pos = poAllBuild_(liveRows, po);
   pos.forEach(p => { const k = p.v.toLowerCase(); if (p.v && vd[k] && !vendors[p.v]) vendors[p.v] = vd[k]; });
   return { rows: rows, vendors: vendors, pos: pos };
 }
@@ -151,6 +155,52 @@ function poUnits_() {
     if (year * 10000 + mon * 100 + day < fromKey) return;
     const k = String(x[0]).trim().toUpperCase();
     if (k && !out[k]) out[k] = String(u[i][0]).trim();
+  });
+  return out;
+}
+
+// ---------- Old sheets (read only): their invoices are listed in the Invoices report, nothing else ----------
+const OLD_INV_SHEETS = ['16TCz5HIEGFH1UFDNx4mn63faobrGmUj9lbxkNRTexAg'];   // NONLOCAL PURCHASES Jan-Dec 2025
+function oldInvoiceRows_(seen) {
+  const out = [];
+  const url = v => (/^https?:\/\//.test(String(v)) ? String(v).trim() : '');
+  const iso = v => {
+    if (v instanceof Date) return Utilities.formatDate(v, CFG.TZ, 'yyyy-MM-dd');
+    const m = String(v || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    return m ? m[3] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[1]).slice(-2) : String(v || '').trim();
+  };
+  const norm = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+  OLD_INV_SHEETS.forEach(id => {
+    try {
+      const b = SpreadsheetApp.openById(id);
+      // PO number -> details from P.Os (A order no, B PO no, C link, D date, E vendor, G total)
+      const po = {}, ps = b.getSheetByName(STORE_CFG.POS);
+      if (ps && ps.getLastRow() >= 2) ps.getRange(2, 1, ps.getLastRow() - 1, 7).getValues().forEach(r => {
+        const k = String(r[1]).trim().toUpperCase();
+        if (!k) return;
+        const p = po[k] || (po[k] = { l: '', d: '', v: '', t: 0, n: 0 });
+        p.n++; if (!p.l) p.l = url(r[2]); if (!p.d) p.d = iso(r[3]); if (!p.v) p.v = String(r[4]).trim();
+        if (!p.t) p.t = Number(String(r[6]).replace(/[^0-9.]/g, '')) || 0;
+      });
+      // PO number -> unit from FMS (C unit, S PO number in this old sheet)
+      const pu = {}, fs = b.getSheetByName('FMS');
+      if (fs && fs.getLastRow() >= 2) fs.getRange(2, 3, fs.getLastRow() - 1, 17).getValues().forEach(r => {
+        const k = String(r[16]).trim().toUpperCase();
+        if (!k || pu[k]) return;
+        const u = norm(r[0]), mapped = UNIT_MAP.find(x => x[2].some(w => u.indexOf(w) !== -1));
+        pu[k] = mapped ? mapped[1] : String(r[0]).trim();
+      });
+      const is = b.getSheetByName(STORE_CFG.INVOICES);
+      const last = is ? lastFilled_(is, 1) : 0;
+      if (last >= 2) is.getRange(2, 1, last - 1, 6).getValues().forEach(r => {
+        const k = String(r[0]).trim().toUpperCase(), il = url(r[1]);
+        if (!k || seen[k + '|' + il]) return;   // already listed from this year's sheet
+        seen[k + '|' + il] = 1;
+        const p = po[k] || {};
+        out.push({ po: String(r[0]).trim(), il: il, up: iso(r[2]), amt: Number(String(r[3]).replace(/[^0-9.]/g, '')) || 0,
+          inv: String(r[4]).trim(), idt: iso(r[5]), v: p.v || '', u: pu[k] || '', pd: p.d || '', pt: p.t || 0, pl: p.l || '', pn: p.n || 0 });
+      });
+    } catch (e) { console.error('Old invoices (' + id + '): ' + e); }
   });
   return out;
 }
