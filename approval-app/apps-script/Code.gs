@@ -274,7 +274,11 @@ function hoDecide_(user, req) {
     SpreadsheetApp.flush();
   });
   const res = decide_(Object.assign({}, approver, { onBehalfBy: user.email }), req);
-  try { openLines_(true); } catch (e) { console.warn('Open list re-read failed: ' + e); }   // HO's list always matches the sheet after this
+  // quick: On Hold lines now show this approver (decided lines already left the list); full re-read in the background
+  // (was a full sheet re-read here, 10-20 s on every HO decision)
+  const skip = {}; (res.skipped || []).forEach(s => (skip[s.orderNo] = true));
+  try { patchOpenLines_(items.filter(it => !skip[it.orderNo]).map(it => it.row), l => { l.approver = approver.name; return l; }); } catch (e) { console.warn('Open list patch failed: ' + e); }
+  scheduleRefresh_();
   return res;
 }
 

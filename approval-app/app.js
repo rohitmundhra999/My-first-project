@@ -82,7 +82,7 @@ async function api(action, data = {}) {
 // A save can never block refreshing for more than 2 minutes, even if Google never answers.
 const pending = new Map();
 const beginSave = () => { const id = newId(); pending.set(id, Date.now()); return id; };
-const endSave = (id) => pending.delete(id);
+const endSave = (id) => { pending.delete(id); if (!saving()) setTimeout(fsFlush, 0); };   // Firestore updates held during the save
 const saving = () => { const now = Date.now(); for (const [id, t] of pending) if (now - t > 125000) pending.delete(id); return pending.size > 0; };
 
 // ---------- sign-in (Google Identity Services) ----------
@@ -2982,7 +2982,7 @@ async function fbApp() {
   FB_APP = getApps().length ? getApp() : initializeApp(CFG.FIREBASE);
   return FB_APP;
 }
-const FS = { on: false, got: new Set(), ver: {}, subs: {}, email: '' };
+const FS = { on: false, got: new Set(), ver: {}, subs: {}, email: '', pend: {} };
 const fsId = (s) => String(s).replace(/[^A-Za-z0-9]/g, '_').slice(0, 120);
 const fsMineKey = () => 'mine_' + fsId(FS.email);
 const fsLive = () => FS.on && !state.viewAs;
@@ -3032,11 +3032,21 @@ async function fsLoad(k, head) {
     if ((k === 'irep' || k === 'vlist') && !fullAccess()) return;   // storekeeper (or admin previewing one): own units only, from the server
     if (k === 'irep') { if (!IF.loading) { state.irep = obj; if (state.tab === 'vendors') renderVendorHub(); runChecks(); } return; }
     if (k === 'vlist') { state.vlist = obj.list; if (vOn('info')) renderVendors(); return; }
-    if (saving() && k !== 'reports' && k !== 'dec') return;   // a save is on its way: its lines must not flicker back
-    if (k.indexOf('store_') === 0) applySync({ store: obj }, obj.unit);
-    else if (k.indexOf('mine_') === 0) applySync({ mine: obj });
-    else applySync({ [k]: obj });
-    render(); saveLocal();
+    if (saving() && k !== 'reports' && k !== 'dec') { FS.pend[k] = obj; return; }   // a save is on its way: kept, and shown the moment it ends (was lost before, so lists stayed old)
+    fsApply(k, obj);
   } catch (e) { console.warn('Firestore read ' + k + ':', e && e.message); }
+}
+function fsApply(k, obj) {
+  if (state.viewAs) return;
+  if (k.indexOf('store_') === 0) applySync({ store: obj }, obj.unit);
+  else if (k.indexOf('mine_') === 0) applySync({ mine: obj });
+  else applySync({ [k]: obj });
+  render(); saveLocal();
+}
+/** Called when the last save ends: shows the Firestore updates that came in meanwhile. */
+function fsFlush() {
+  if (saving()) return;
+  const p = FS.pend; FS.pend = {};
+  Object.keys(p).forEach((k) => { try { fsApply(k, p[k]); } catch (e) { console.warn('Firestore apply ' + k + ':', e && e.message); } });
 }
 setInterval(() => { if (state.me && state.idToken && !FS.on && !FS.starting && !FS.tried) { FS.tried = true; fsStart(); } else if (FS.on) fsWatch(); }, 3000);
