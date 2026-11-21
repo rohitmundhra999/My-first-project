@@ -104,7 +104,7 @@ function doPost(e) {
 function me_(user, req, realUser) {
   const admin = isAdmin_(realUser);
   return {
-    user: { name: user.name, email: user.email, isHO: user.isHO, isApprover: user.isApprover, isStore: user.isStore, units: user.units },
+    user: { name: user.name, email: user.email, isHO: user.isHO, isApprover: user.isApprover, isStore: user.isStore, isViewer: !!user.isViewer, units: user.units },
     storeUnits: storeUnits_(user),
     storeAll: !user.previewBy && isAdmin_(user),   // trial: the admin can work for every unit
     approvers: user.isHO ? activeUsers_().filter(u => u.isApprover).map(u => u.name) : [],
@@ -112,7 +112,7 @@ function me_(user, req, realUser) {
     mode: MODE,
     // Admin only: everyone in APP USERS, so the admin can preview the app as them.
     admin: admin ? { name: realUser.name, email: realUser.email } : null,
-    users: admin ? activeUsers_().map(u => ({ name: u.name, email: u.email, isHO: u.isHO, isApprover: u.isApprover, isStore: u.isStore, units: u.units })) : [],
+    users: admin ? activeUsers_().map(u => ({ name: u.name, email: u.email, isHO: u.isHO, isApprover: u.isApprover, isStore: u.isStore, isViewer: !!u.isViewer, units: u.units })) : [],
     preview: user.previewBy ? true : false,
     actAs: user.previewBy ? true : false,   // admin (Rohit) can act as this person, in TRIAL and LIVE
   };
@@ -505,7 +505,7 @@ function activeUsers_(fresh) {
     .map(r => ({ name: String(r[0]).trim(), email: String(r[1]).trim().toLowerCase(), role: String(r[2]).toUpperCase(), active: String(r[3]).trim().toUpperCase(),
                  units: String(r[4] === undefined ? '' : r[4]).split(/[,;\n]/).map(x => x.trim()).filter(Boolean) }))
     .filter(u => u.name && u.email && u.active !== 'NO')
-    .map(u => ({ name: u.name, email: u.email, isHO: /\bHO\b/.test(u.role), isApprover: /APPROVER/.test(u.role), isAdmin: /ADMIN/.test(u.role),
+    .map(u => ({ name: u.name, email: u.email, isHO: /\bHO\b/.test(u.role), isApprover: /APPROVER/.test(u.role), isAdmin: /ADMIN/.test(u.role), isViewer: /VIEWER/.test(u.role),
                  isStore: /STORE/.test(u.role) && u.units.length > 0, units: /STORE/.test(u.role) ? u.units : [] }));
   try { CacheService.getScriptCache().put(USERS_KEY, JSON.stringify(USERS_CACHE_), 600); } catch (e) { /* too big: read each time */ }
   return USERS_CACHE_;
@@ -2452,7 +2452,7 @@ const VEND_CFG = { TAB: 'VENDOR EMAILS', HEAD: ['Vendor', 'Email', 'Updated', 'U
 function canVendors_(u) { if (!u) throw appError_('FORBIDDEN', 'Please sign in.'); }
 function canEditVendors_(u) { if (!u.isHO && !isAdmin_(u)) throw appError_('FORBIDDEN', 'Only HO can change vendor details.'); }
 // A storekeeper (not HO / approver / admin) sees invoices and POs of their own unit(s) only.
-function vendorUnitsOnly_(u) { return (u.isHO || u.isApprover || isAdmin_(u)) ? null : (u.units || []).map(x => String(x).trim().toLowerCase()); }
+function vendorUnitsOnly_(u) { return (u.isHO || u.isApprover || u.isViewer || isAdmin_(u)) ? null : (u.units || []).map(x => String(x).trim().toLowerCase()); }
 
 function vendorEmailTab_() {
   const b = book_();
@@ -2963,7 +2963,7 @@ function fsParts_(only) {
     users.forEach(u => u.units.forEach(x => (units[x] = true)));
     Object.keys(units).forEach(x => safe('store_' + fsId_(x), () => { const r = storeList_(FS_SYS, { unit: x }); if (r.lines) r.lines = pack_(r.lines); return r; }));
   }
-  if (want('acl')) users.forEach(u => (parts['acl:' + u.email] = { full: !!(u.isHO || u.isApprover || u.isAdmin), ho: !!(u.isHO || u.isAdmin), units: u.units.map(fsId_) }));
+  if (want('acl')) users.forEach(u => (parts['acl:' + u.email] = { full: !!(u.isHO || u.isApprover || u.isAdmin || u.isViewer), ho: !!(u.isHO || u.isAdmin), units: u.units.map(fsId_) }));
   return parts;
 }
 
