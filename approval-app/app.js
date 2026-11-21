@@ -225,7 +225,7 @@ function startApp(withMe) {
 const roleLabel = (u) => {
   const base = u.isHO && u.isApprover ? 'HO in-charge & approver' : u.isHO ? 'HO in-charge' : u.isApprover ? 'Approver' : '';
   const sk = u.isStore ? 'Storekeeper · ' + (u.units || []).join(', ') : '';
-  return [base, sk].filter(Boolean).join(' · ') || 'Reports only';
+  return [base, sk].filter(Boolean).join(' · ') || (u.isViewer ? 'View only' : 'Reports only');
 };
 const hasStore = () => !!(state.me && state.me.storeUnits && state.me.storeUnits.length);
 // HO (not a storekeeper): the Store tab is only "New request", for any unit
@@ -2423,7 +2423,7 @@ document.querySelectorAll('[data-rtype]').forEach((b) => (b.onclick = () => {
 // ---------- HO: Vendors report (details from VENDORS; address, phone and email can be edited) ----------
 const canVendors = () => !!state.me;   // Vendors tab: every user
 const canEditVendors = () => !!state.me && (state.me.user.isHO || (!!state.me.admin && !state.viewAs));   // edit: HO + admin only
-const fullAccess = () => !!state.me && (state.me.user.isHO || state.me.user.isApprover || (!!state.me.admin && !state.viewAs));
+const fullAccess = () => !!state.me && (state.me.user.isHO || state.me.user.isApprover || state.me.user.isViewer || (!!state.me.admin && !state.viewAs));
 const vOn = (t) => state.tab === 'vendors' && (state.vtab || 'info') === t;
 function renderVendorHub() {
   const t = state.vtab || 'info';
@@ -3006,7 +3006,7 @@ async function fsStart() {
 function fsWatch() {
   if (!FS.on || !state.me) return;
   const u = state.me.user, keys = new Set();
-  if (u.isHO || u.isApprover || state.me.admin) ['reports', 'dec'].forEach((k) => keys.add(k));
+  if (u.isHO || u.isApprover || u.isViewer || state.me.admin) ['reports', 'dec'].forEach((k) => keys.add(k));
   if (u.isHO) ['ho', 'po', 'vendors'].forEach((k) => keys.add(k));
   if (fullAccess()) ['irep', 'vlist'].forEach((k) => keys.add(k));
   if (u.isApprover) keys.add(fsMineKey());
