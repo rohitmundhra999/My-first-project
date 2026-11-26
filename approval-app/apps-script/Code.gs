@@ -2265,7 +2265,9 @@ function reqRead_(user, req) {
   }
   parts.push({ text: 'This is a purchase requirement list or a vendor quotation for an Indian hotel (often vegetables, fruits, grocery). ' +
     'It may be handwritten, in Hindi, Hinglish or English. List every item line. ' +
-    'item = the item name in clear professional English (translate Hindi, e.g. "आलू" -> "Potato", "धनिया पत्ता" -> "Coriander Leaves"; fix spelling; keep size, grade or brand words). ' +
+    'item = the common Hindi name written in English letters (Hinglish, never Devanagari), then the English name in brackets, because many vendors cannot read English names ' +
+    '(e.g. "आलू" or "Potato" -> "Aloo (Potato)", "धनिया पत्ता" -> "Dhaniya Patta (Coriander Leaves)", "Green Chilli" -> "Hari Mirch (Green Chilli)"). ' +
+    'If the item has no common Hindi name (e.g. Broccoli, Mozzarella Cheese, a brand name), write only the English name. Fix spelling; keep size, grade or brand words. ' +
     'qty = the quantity as a number (0 if not written). ' +
     'uom = the unit, taken from this list when it fits: ' + meta.uoms.join(', ') + ' (kilo/kg/केजी = KG, gram = GM, nag/pieces = PCS, litre = LTR, गड्डी = bunch); otherwise as written. ' +
     'rate = the rate per unit in rupees, as a plain number, ONLY if it is written in the document; otherwise 0. Never guess a rate. ' +
