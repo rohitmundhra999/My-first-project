@@ -1741,13 +1741,14 @@ function makePO_(user, req) {
       hotel = Object.assign({}, hotel, { phone: ph });
     }
     const billToHotel = hotelInfo_(req.billTo || unit);
-    const link = poPdf_({ poNo: poNo, date: now, unit: unit, hotel: hotel, billToHotel: billToHotel, vendor: vendor, vendorEmail: vendorEmailOf_(vendor[0]) || vendor[4] || '', days: days, lines: lines, subtotal: subtotal, discountAmt: discountAmt, total: grand, note: note, terms: terms, by: user.name });
-
-    if (vendor[3] === true) {   // new vendor: add it to VENDORS like the vendor form does
+    if (vendor[3] === true) {   // new vendor: add it to VENDORS first, so the P.O tab vendor cell (J15, list from VENDORS) accepts it
       const vsh = book_().getSheetByName(PO_CFG.VENDORS);
       vsh.getRange(lastFilled_(vsh, 2) + 1, 1, 1, 4).setValues([[now, vendor[0], vendor[1], vendor[2]]]);
       if (vendor[4]) { const es = vendorEmailTab_(); es.getRange(es.getLastRow() + 1, 1, 1, 4).setValues([[vendor[0], vendor[4], now, user.name]]); }   // VENDOR EMAILS
     }
+    SpreadsheetApp.flush();
+    const link = poPdf_({ poNo: poNo, date: now, unit: unit, hotel: hotel, billToHotel: billToHotel, vendor: vendor, vendorEmail: vendorEmailOf_(vendor[0]) || vendor[4] || '', days: days, lines: lines, subtotal: subtotal, discountAmt: discountAmt, total: grand, note: note, terms: terms, by: user.name });
+
     const at = posLast + 1;
     pos.getRange(at, 1, lines.length, 8).setValues(lines.map(l => [l.orderNo, poNo, link, now, vendor[0], days, grand, unit]));
     try { rateSavePO_(poNo, now, vendor[0], lines); } catch (e) { console.warn('ITEM RATES: ' + e); }   // Check rates history
@@ -1877,9 +1878,15 @@ function poPdf_(p) {
     const n = p.lines.length;
     const col = (c, f) => sh.getRange(c + '24:' + c + (23 + n)).setValues(p.lines.slice(0, n).map(l => [f(l)]));
     if (n) {
-      col('J', l => l.orderNo); col('L', l => l.item); col('P', l => l.qty); col('Q', l => l.uom);
-      col('R', l => l.noRate ? '' : l.price); col('S', l => l.noRate ? '' : l.tax); col('T', l => l.noRate ? '' : l.total);   // no rate: left blank
+      const qtyTxt = v => { const x = Number(v); return isFinite(x) && String(v).trim() !== '' ? "'" + String(Math.round(x * 1000) / 1000) : String(v || ''); };   // 2 not 2.0, 1.5 stays 1.5
+      col('J', l => l.orderNo); col('L', l => l.item); col('P', l => qtyTxt(l.qty)); col('Q', l => l.uom);
+      col('R', l => l.noRate ? '' : l.price); col('S', l => l.noRate ? '' : qtyTxt(l.tax)); col('T', l => l.noRate ? '' : l.total);   // no rate: left blank
     }
+    // Item table: one neat font, text in the middle of each row so Qty / Unit are never cut by the lines (temporary copy only, template untouched)
+    const last = 54 + extra;
+    sh.getRange('J24:T' + last).setFontFamily('Oswald').setFontSize(9).setVerticalAlignment('middle');
+    sh.getRange('P24:T' + last).setHorizontalAlignment('center');
+    sh.getRange('R24:R' + last).setNumberFormat('#,##0.00'); sh.getRange('T24:T' + last).setNumberFormat('#,##0.00');
     const subtotal = p.subtotal != null ? p.subtotal : p.total;
     const allNoRate = p.lines.every(l => l.noRate);
     put(F('T', 55), allNoRate ? '' : subtotal);
