@@ -1674,13 +1674,13 @@ function makePO_(user, req) {
   requireHO_(user);
   const items = cleanItems_(req.items).map((it, i) => {
     const src = req.items[i] || {};
-    const price = Number(src.price), tax = src.tax === '' || src.tax == null ? 0 : Number(src.tax);
+    const noRate = src.price === '' || src.price == null;   // rate not known (vegetables etc.): PO is made without it
+    const price = noRate ? 0 : Number(src.price), tax = src.tax === '' || src.tax == null ? 0 : Number(src.tax);
     if (!(price >= 0) || price > 1e8) throw appError_('BAD_REQUEST', 'Enter the price for ' + it.orderNo + '.');
     if (!(tax >= 0) || tax > 100) throw appError_('BAD_REQUEST', 'Tax % for ' + it.orderNo + ' must be 0 to 100.');
-    return Object.assign(it, { price: price, tax: tax, name: String(src.name || '').replace(/\s+/g, ' ').trim().slice(0, 200) });
+    return Object.assign(it, { price: price, tax: tax, noRate: noRate, name: String(src.name || '').replace(/\s+/g, ' ').trim().slice(0, 200) });
   });
   if (items.length > PO_CFG.MAX_LINES) throw appError_('BAD_REQUEST', 'A PO can have at most ' + PO_CFG.MAX_LINES + ' lines.');
-  if (!items.some(it => it.price > 0)) throw appError_('BAD_REQUEST', 'Enter the prices.');
   const days = Math.floor(Number(req.days));
   if (!(days >= 0) || days > 365) throw appError_('BAD_REQUEST', 'Enter the delivery days (0 to 365).');
   const terms = String(req.terms || '').trim();
@@ -1716,7 +1716,7 @@ function makePO_(user, req) {
       const qty = aq === '' || aq === null ? Number(r[COL.QTY - 1]) || 0 : Number(aq);
       const total = Math.round(qty * it.price * (1 + it.tax / 100) * 10) / 10;   // as the sheet: ROUND(qty*price*(1+tax%),1)
       return { row: it.row, orderNo: it.orderNo, unit: String(r[COL.UNIT - 1]).trim(), cat: String(r[COL.CAT - 1]).trim(),
-               item: it.name || String(r[COL.ITEM - 1]).trim(), qty: qty, uom: String(r[COL.UOM - 1]).trim(), price: it.price, tax: it.tax, total: total };
+               item: it.name || String(r[COL.ITEM - 1]).trim(), qty: qty, uom: String(r[COL.UOM - 1]).trim(), price: it.price, tax: it.tax, total: total, noRate: it.noRate };
     });
     const unit = lines[0].unit;
     if (lines.some(l => normU_(l.unit) !== normU_(unit))) throw appError_('BAD_REQUEST', 'All lines of a PO must be for the same hotel.');
@@ -1878,12 +1878,13 @@ function poPdf_(p) {
     const col = (c, f) => sh.getRange(c + '24:' + c + (23 + n)).setValues(p.lines.slice(0, n).map(l => [f(l)]));
     if (n) {
       col('J', l => l.orderNo); col('L', l => l.item); col('P', l => l.qty); col('Q', l => l.uom);
-      col('R', l => l.price); col('S', l => l.tax); col('T', l => l.total);
+      col('R', l => l.noRate ? '' : l.price); col('S', l => l.noRate ? '' : l.tax); col('T', l => l.noRate ? '' : l.total);   // no rate: left blank
     }
     const subtotal = p.subtotal != null ? p.subtotal : p.total;
-    put(F('T', 55), subtotal);
+    const allNoRate = p.lines.every(l => l.noRate);
+    put(F('T', 55), allNoRate ? '' : subtotal);
     put(F('R', 57), 'DISCOUNT'); put(F('T', 57), p.discountAmt > 0 ? -p.discountAmt : '');
-    put(F('T', 59), p.total);
+    put(F('T', 59), allNoRate ? '' : p.total);
     put(F('J', 56), p.note || '');   // exactly what HO wrote while making the PO (blank if nothing)
     put(F('J', 58), 'Delivery Period'); put(F('L', 58), p.days + (Number(p.days) === 1 ? ' day' : ' days'));
     if (p.terms) put(F('L', 59), p.terms);   // the box beside 'Payment with PO' (K59 is inside the label)
@@ -2377,6 +2378,8 @@ function rateTab_() {
 
 /** Called from makePO_ after the PO is saved. lines: [{unit, item, qty, uom, price, tax}] */
 function rateSavePO_(poNo, date, vendor, lines) {
+  lines = lines.filter(l => !l.noRate && l.price > 0);   // lines made without a rate are not rate history
+  if (!lines.length) return;
   const sh = rateTab_();
   sh.getRange(lastFilled_(sh, 2) + 1, 1, lines.length, 10)
     .setValues(lines.map(l => [date, poNo, l.unit, vendor, l.item, l.qty, l.uom, l.price, l.tax, 'App']));
