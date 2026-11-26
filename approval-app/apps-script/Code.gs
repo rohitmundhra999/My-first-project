@@ -67,7 +67,7 @@ function doPost(e) {
     const handlers = { me: me_, hoList: hoList_, assign: assign_, myList: myList_, decide: decide_, hoDecide: hoDecide_, register: register_,
       reports: (u, r) => scopeReports_(u, reports_(u, r)), decisions: (u, r) => scopeReports_(u, decisions_(u, r)), testPush: testPush_,
       storeMeta: storeMeta_, storeList: storeList_, storeRaise: storeRaise_, storeReceive: storeReceive_, storeInvoice: storeInvoice_,
-      invoiceRead: invoiceRead_, sync: sync_, makePO: makePO_, editItem: editItem_, goodsList: goodsList_, goodsSave: goodsSave_, fileData: fileData_, poCancel: poCancel_, poUncancel: poUncancel_, readInvoice: readInvoice_, hoReceiveList: hoReceiveList_, rateList: rateList_, rateCompare: rateCompare_, vendorList: vendorList_, vendorSave: vendorSave_, unitPhoneSave: unitPhoneSave_, invoiceReport: invoiceReport_, statementCheck: statementCheck_, fsToken: fsTokenAction_ };
+      invoiceRead: invoiceRead_, sync: sync_, makePO: makePO_, editItem: editItem_, goodsList: goodsList_, goodsSave: goodsSave_, fileData: fileData_, poCancel: poCancel_, poUncancel: poUncancel_, readInvoice: readInvoice_, reqRead: reqRead_, hoReceiveList: hoReceiveList_, rateList: rateList_, rateCompare: rateCompare_, vendorList: vendorList_, vendorSave: vendorSave_, unitPhoneSave: unitPhoneSave_, invoiceReport: invoiceReport_, statementCheck: statementCheck_, fsToken: fsTokenAction_ };
     const fn = handlers[req.action];
     if (!fn) throw appError_('BAD_REQUEST', 'Unknown action.');
     const user = previewUser_(realUser, req);
@@ -1355,8 +1355,10 @@ function storeRaise_(user, req) {
     const stock = String(l.stock === undefined || l.stock === null ? '' : l.stock).trim();
     if (stock === '' || stock.length > 20) throw appError_('BAD_REQUEST', n + 'enter the stock in hand (0 if none).');
     if (l.photo) checkFile_(l.photo, ['image/jpeg', 'image/png', 'image/webp'], STORE_CFG.MAX_PHOTO, n + 'photo');
-    return { item: item, cat: cat, uom: uom, qty: qty, stock: isFinite(Number(stock)) ? Number(stock) : stock, photo: l.photo || null };
+    const rate = Number(l.rate) > 0 && Number(l.rate) < 1e8 ? Math.round(Number(l.rate) * 100) / 100 : 0;   // HO: rate from an uploaded document
+    return { item: item, cat: cat, uom: uom, qty: qty, stock: isFinite(Number(stock)) ? Number(stock) : stock, photo: l.photo || null, rate: rate };
   });
+  if (req.doc) checkFile_(req.doc, ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'], STORE_CFG.MAX_FILE, 'Document');
 
   // Photos first (slow), outside the lock.
   const stamp = Utilities.formatDate(new Date(), CFG.TZ, 'yyyyMMdd-HHmmss');
@@ -1397,6 +1399,9 @@ function storeRaise_(user, req) {
   if (fixes.length) { try { fixRaisedRows_(unit, fixes); } catch (e) { console.warn('Raised rows not completed: ' + e); } }
   // FMS picks the new FORMDATA rows up by itself: find them there to learn their FMS row and real order number (after the lock)
   try { patchAfterRaise_(unit, clean, made); } catch (e) { console.warn('Quick update failed: ' + e); }
+  if (clean.some(l => l.rate > 0)) {   // rates from the uploaded document -> REQUEST RATES tab (Make PO fills the price from it)
+    try { reqRateSave_(unit, clean, made, req.doc ? saveUpload_(req.doc, 'Request documents', unit + ' ' + stamp + ' list') : ''); } catch (e) { console.warn('Request rates not saved: ' + e); }
+  }
   log_(user, 'REQUEST', made.map(m => m.orderNo).join(', '), unit + ': ' + made.map(m => m.item + ' x' + m.qty + ' ' + m.uom).join('; '));
   scheduleRefresh_();   // full re-read + "new requirement" alert to HO, in the background
   return { raised: made.length, unit: unit, lines: made };
@@ -1607,6 +1612,8 @@ function poPendingBuild_() {
   const fromKey = REPORT_FROM.y * 10000 + REPORT_FROM.m * 100 + REPORT_FROM.d;
   const pad = v => (v < 10 ? '0' : '') + v;
   const lines = [];
+  let rr = {};
+  try { rr = reqRateIndex_(); } catch (e) { console.warn('Request rates not read: ' + e); }
   let year = CFG.START_YEAR, prevMonth = 1;
   snap.rows.forEach((r, i) => {
     const m = String(snap.stamps[i][0]).match(/^(\d{1,2})-(\d{1,2})(?:\((\d{1,2}):(\d{2})\))?/);
@@ -1625,6 +1632,7 @@ function poPendingBuild_() {
       q: aq === '' || aq === null ? (Number(r[COL.QTY - 1]) || 0) : Number(aq), uom: String(r[COL.UOM - 1]).trim(),
       ap: String(r[COL.APPROVED_BY - 1]).trim() || String(r[COL.APPROVER - 1]).trim(),
       pt: String(r[14]).trim(),   // O: payment terms, if already chosen in the sheet
+      qr: rr[orderNo] || rr['#' + normU_(r[COL.UNIT - 1]) + '|' + rateKey_(r[COL.ITEM - 1])] || undefined,   // rate from the request document
     });
   });
   lines.reverse();   // newest first
@@ -2218,6 +2226,86 @@ function readInvoice_(user, req) {
   return { invoiceNo: no, date: date, amount: amount };
 }
 
+
+// ======================= HO: New request from a document (AI) =======================
+// HO uploads a requirement list / vendor quotation (photo, PDF, or Excel sent as text; Hindi or English).
+// AI lists the items with qty, unit and rate (blank when not written). HO checks and edits the list in the app,
+// then it is sent as a normal New request (storeRaise). Nothing is written here.
+function reqRead_(user, req) {
+  if (!user.isHO) throw appError_('FORBIDDEN', 'Only HO can do this.');
+  const meta = storeMetaData_();
+  const parts = [];
+  if (req.text) parts.push({ text: 'Document (from an Excel file):\n' + String(req.text).slice(0, 60000) });
+  else {
+    checkFile_(req.file, ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'], STORE_CFG.MAX_FILE, 'Document');
+    parts.push({ inline_data: { mime_type: req.file.type, data: req.file.data } });
+  }
+  parts.push({ text: 'This is a purchase requirement list or a vendor quotation for an Indian hotel (often vegetables, fruits, grocery). ' +
+    'It may be handwritten, in Hindi, Hinglish or English. List every item line. ' +
+    'item = the item name in clear professional English (translate Hindi, e.g. "आलू" -> "Potato", "धनिया पत्ता" -> "Coriander Leaves"; fix spelling; keep size, grade or brand words). ' +
+    'qty = the quantity as a number (0 if not written). ' +
+    'uom = the unit, taken from this list when it fits: ' + meta.uoms.join(', ') + ' (kilo/kg/केजी = KG, gram = GM, nag/pieces = PCS, litre = LTR, गड्डी = bunch); otherwise as written. ' +
+    'rate = the rate per unit in rupees, as a plain number, ONLY if it is written in the document; otherwise 0. Never guess a rate. ' +
+    'category = the best fitting one from this list: ' + meta.categories.join(', ') + '. ' +
+    'Skip totals, headings, dates, names, signatures and GST lines.' });
+  const out = geminiJson_(parts, { type: 'OBJECT', properties: { items: { type: 'ARRAY', items: { type: 'OBJECT',
+    properties: { item: { type: 'STRING' }, qty: { type: 'NUMBER' }, uom: { type: 'STRING' }, rate: { type: 'NUMBER' }, category: { type: 'STRING' } },
+    required: ['item', 'qty', 'uom', 'rate', 'category'] } } }, required: ['items'] }, AI_CFG.MODELS);
+  const fit = (v, list) => { const w = String(v || '').trim().toLowerCase(); return list.find(x => String(x).toLowerCase() === w) || ''; };
+  const all = (out.items || []).map(x => ({
+    item: String(x.item || '').replace(/\s+/g, ' ').trim().slice(0, 100),
+    qty: Number(x.qty) > 0 ? Math.round(Number(x.qty) * 1000) / 1000 : '',
+    uom: fit(x.uom, meta.uoms) || String(x.uom || '').trim().slice(0, 15),
+    rate: Number(x.rate) > 0 && Number(x.rate) < 1e8 ? Math.round(Number(x.rate) * 100) / 100 : '',
+    cat: fit(x.category, meta.categories)
+  })).filter(x => x.item);
+  return { items: all.slice(0, STORE_CFG.MAX_LINES), total: all.length };
+}
+
+// REQUEST RATES tab (locked, only the owner edits): rates taken from a document uploaded with a New request.
+//   A Date, B Order No, C Unit, D Item, E Qty, F UOM, G Rate, H Document. Make PO fills the price from here.
+const REQRATE_CFG = { TAB: 'REQUEST RATES', HEAD: ['Date', 'Order No', 'Unit', 'Item', 'Qty', 'UOM', 'Rate', 'Document'], CACHE: 'reqrate_' + MODE };
+
+function reqRateTab_() {
+  const b = book_();
+  let sh = b.getSheetByName(REQRATE_CFG.TAB);
+  if (!sh) {
+    sh = b.insertSheet(REQRATE_CFG.TAB);
+    sh.getRange(1, 1, 1, REQRATE_CFG.HEAD.length).setValues([REQRATE_CFG.HEAD]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+    const p = sh.protect().setDescription('Only the owner can edit (app writes here)');
+    p.getEditors().forEach(e => { if (e.getEmail() !== Session.getEffectiveUser().getEmail()) p.removeEditor(e); });
+    if (p.canDomainEdit()) p.setDomainEdit(false);
+  }
+  return sh;
+}
+
+function reqRateSave_(unit, clean, made, docLink) {
+  const now = new Date(), rows = [];
+  clean.forEach((l, i) => { if (l.rate > 0 && made[i]) rows.push([now, made[i].orderNo, unit, l.item, l.qty, l.uom, l.rate, docLink || '']); });
+  if (!rows.length) return;
+  const sh = reqRateTab_();
+  sh.getRange(lastFilled_(sh, 2) + 1, 1, rows.length, 8).setValues(rows);
+  CacheService.getScriptCache().remove(REQRATE_CFG.CACHE);
+}
+
+/** order no -> rate, and '#unit|item' -> rate (in case HO later edits the item name, which changes the order no) */
+function reqRateIndex_() {
+  const hit = cacheGetBig_(REQRATE_CFG.CACHE);
+  if (hit) return hit;
+  const sh = book_().getSheetByName(REQRATE_CFG.TAB), idx = {};
+  if (sh) {
+    const last = lastFilled_(sh, 2);
+    if (last >= 2) sh.getRange(2, 2, last - 1, 6).getValues().forEach(r => {
+      const rate = Number(r[5]);
+      if (!(rate > 0)) return;
+      if (String(r[0]).trim()) idx[String(r[0]).trim()] = rate;
+      idx['#' + normU_(r[1]) + '|' + rateKey_(r[2])] = rate;
+    });
+  }
+  cachePutBig_(REQRATE_CFG.CACHE, idx, 21600);
+  return idx;
+}
 
 // ======================= HO: material not received (all units) =======================
 // ho.purchase sees every unit's PO lines still to be received and can mark them received (same as the store).
