@@ -1599,6 +1599,7 @@ function setupStore() {
 //   - optional: payment terms written in FMS O for those lines
 const PO_CFG = {
   CACHE: 'po_pending_' + MODE,
+  RECENT: 'po_recent_' + MODE,   // lines approved in the last 15 min, so Make PO never misses them while its copy is being rebuilt
   POS: 'P.Os', VENDORS: 'VENDORS', TEMPLATE: 'P.O',
   HOTELS: 'AH4:AL80',            // in the P.O tab: key, hotel name, address, phone, GST
   MAX_LINES: 100,                // the sheet's PO has room for 31 lines; the PDF adds rows for more
@@ -1609,6 +1610,7 @@ const PO_CFG = {
 
 /** Approved lines with no PO, grouped by nothing (the app groups by hotel). Kept in the cache; v = content version. */
 function poPendingBuild_() {
+  const from = Date.now();   // approvals after this moment may not be in this read (poPending_ adds them from RECENT)
   const snap = fmsSnap_();
   const fromKey = REPORT_FROM.y * 10000 + REPORT_FROM.m * 100 + REPORT_FROM.d;
   const pad = v => (v < 10 ? '0' : '') + v;
@@ -1637,7 +1639,7 @@ function poPendingBuild_() {
     });
   });
   lines.reverse();   // newest first
-  const out = { lines: lines, asOf: Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm'), terms: PO_CFG.TERMS };
+  const out = { lines: lines, asOf: Utilities.formatDate(new Date(), CFG.TZ, 'dd MMM yyyy, HH:mm'), terms: PO_CFG.TERMS, from: from };
   out.v = ver_(lines);
   cachePutBig_(PO_CFG.CACHE, out, OPEN_CACHE_SECONDS);
   return out;
@@ -1646,6 +1648,12 @@ function poPendingBuild_() {
 function poPending_(v) {
   let data = cacheGetBig_(PO_CFG.CACHE);
   if (!data) data = poPendingBuild_();
+  const rec = (cacheGetBig_(PO_CFG.RECENT) || []).filter(x => x.t >= (data.from || 0));
+  if (rec.length) {   // approved while this copy was being read: add them
+    const have = {}; data.lines.forEach(l => (have[l.row] = true));
+    const add = rec.filter(x => !have[x.l.row]).map(x => x.l);
+    if (add.length) { data = Object.assign({}, data, { lines: add.concat(data.lines) }); data.v = ver_(data.lines); }
+  }
   if (v && v === data.v) return { same: true, asOf: data.asOf };
   return Object.assign({}, data, { lines: pack_(data.lines) });
 }
@@ -1753,6 +1761,8 @@ function makePO_(user, req) {
   try {
     const set = {}; rows.forEach(r => (set[r] = true));
     patchCache_(PO_CFG.CACHE, d => { d.lines = d.lines.filter(l => !set[l.row]); d.v = ver_(d.lines); return d; });
+    const rec = cacheGetBig_(PO_CFG.RECENT);
+    if (rec && rec.some(x => set[x.l.row])) cachePutBig_(PO_CFG.RECENT, rec.filter(x => !set[x.l.row]), 900);   // PO made: not "recently approved" any more
     patchCache_(DEC_CACHE, d => { d.lines = d.lines.filter(l => !set[l.row]); d.v = ver_([d.lines, d.approvers]); return d; });
     patchStore_(result.unit, (ls, d) => { ls.forEach(l => { if (set[l.row]) { l.po = result.poNo; l.amt = result.total; l.ven = result.vendor; } }); (d.pol = d.pol || {})[result.poNo] = result.link; });
   } catch (e) { console.warn('Quick update failed: ' + e); }
@@ -1978,6 +1988,10 @@ function patchAfterDecide_(done, decision, user, remark) {
       return { row: d.row, o: d.orderNo, d: p[0], at: p[1], u: String(r[COL.UNIT - 1]).trim(), cat: String(r[COL.CAT - 1]).trim(),
                it: String(r[COL.ITEM - 1]).trim(), q: d.qty === null ? Number(r[COL.QTY - 1]) || 0 : d.qty, uom: String(r[COL.UOM - 1]).trim(), ap: user.name, pt: '' };
     });
+    const now = Date.now(), byRow = {};
+    add.forEach(l => (byRow[l.row] = true));
+    const rec = (cacheGetBig_(PO_CFG.RECENT) || []).filter(x => x.t > now - 900000 && !byRow[x.l.row]).concat(add.map(l => ({ t: now, l: l })));
+    cachePutBig_(PO_CFG.RECENT, rec, 900);
     patchCache_(PO_CFG.CACHE, data => {
       const have = {}; data.lines.forEach(l => (have[l.row] = true));
       data.lines = add.filter(l => !have[l.row]).concat(data.lines);
