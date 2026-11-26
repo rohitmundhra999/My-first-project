@@ -2356,7 +2356,7 @@ function makePO() {
   if (!lines.length) return toast('Tick at least one line.', true);
   for (const l of lines) {
     const pr = state.poPrice[poKey(l)] || {};
-    if (pr.price === undefined || pr.price === '' || !(Number(pr.price) >= 0)) return toast(`Enter the price for ${l.it}.`, true);
+    if (pr.price !== undefined && pr.price !== '' && !(Number(pr.price) >= 0)) return toast(`Price for ${l.it} must be 0 or more (or leave it blank).`, true);   // blank = rate not known
     if (pr.tax !== undefined && pr.tax !== '' && !(Number(pr.tax) >= 0 && Number(pr.tax) <= 100)) return toast(`Tax % for ${l.it} must be 0 to 100.`, true);
   }
   let vendor = '', newVendor = null;
@@ -2374,9 +2374,10 @@ function makePO() {
   }
   if (!(Number(f.days) >= 0)) return toast('Enter the delivery days.', true);
   const total = lines.reduce((a, l) => a + lineTotal(l, state.poPrice[poKey(l)]), 0);
-  if (!confirm(`Make PO for ${state.poUnit}: ${lines.length} line${lines.length > 1 ? 's' : ''}, ${vendor || newVendor.name}, total ${money(total)}?`)) return;
+  const noRate = lines.filter((l) => { const pr = state.poPrice[poKey(l)] || {}; return pr.price === undefined || pr.price === ''; }).length;
+  if (!confirm(`Make PO for ${state.poUnit}: ${lines.length} line${lines.length > 1 ? 's' : ''}, ${vendor || newVendor.name}, ${noRate === lines.length ? 'without rates' : 'total ' + money(total) + (noRate ? ` (${noRate} line${noRate > 1 ? 's' : ''} without rate)` : '')}?`)) return;
   const payload = {
-    items: lines.map((l) => ({ row: l.row, orderNo: l.o, name: ((state.poPrice[poKey(l)] || {}).name || '').trim() || l.it, price: Number(state.poPrice[poKey(l)].price), tax: state.poPrice[poKey(l)].tax === '' || state.poPrice[poKey(l)].tax == null ? 0 : Number(state.poPrice[poKey(l)].tax) })),
+    items: lines.map((l) => ({ row: l.row, orderNo: l.o, name: ((state.poPrice[poKey(l)] || {}).name || '').trim() || l.it, price: (state.poPrice[poKey(l)] || {}).price === undefined || state.poPrice[poKey(l)].price === '' ? '' : Number(state.poPrice[poKey(l)].price), tax: ((state.poPrice[poKey(l)] || {}).tax ?? '') === '' ? 0 : Number(state.poPrice[poKey(l)].tax) })),
     vendor, newVendor, days: Number(f.days), terms: f.terms, note: f.note, discountAmt: Number(f.discountAmt) || 0, billTo: f.billTo || state.poUnit, shipTo: f.shipTo || state.poUnit, shipPhone: String(f.shipPhone || '').trim(),
   };
   // at once: the lines leave the list and the form clears, so the next PO can be started; the PO number and
