@@ -256,7 +256,7 @@ async function changeViewAs(email) {
   viewCache[state.viewAs || ''] = { ...Object.fromEntries(VIEW_KEYS.map((k) => [k, state[k]])), store: { unit: st.unit, byUnit: st.byUnit, raw: st.raw, base: st.base, meta: st.meta, prefetchedAt: st.prefetchedAt } };
   state.viewAs = email || null;
   state.poDone = null; state.poSel.clear(); state.poPrice = {}; state.sel.clear(); state.qty = {}; state.pick = {};
-  Object.assign(st, { data: null, draft: null, rq: {}, inv: null, done: null, formUnit: '' });
+  Object.assign(st, { data: null, draft: null, rq: {}, inv: null, done: null, formUnit: '', aiDoc: null, aiMsg: '' });
   const c = viewCache[state.viewAs || ''];
   if (c && c.me) {   // seen before: show at once, then a quiet check
     VIEW_KEYS.forEach((k) => (state[k] = c[k]));
@@ -1693,7 +1693,7 @@ function addTestButton() {
 // Everything here is for ONE unit at a time. The server checks the unit again on every read and write,
 // so a storekeeper can never see or change another unit's lines, whatever this page sends.
 const UNIT_KEY = 'nlp.storeUnit';
-const blankLine = () => ({ cat: '', item: '', qty: '', uom: '', stock: '', photo: null });
+const blankLine = () => ({ cat: '', item: '', qty: '', uom: '', stock: '', photo: null, rate: '' });
 const sv = state.store;
 
 function setupStoreUnits() {
@@ -1730,7 +1730,7 @@ function putStore(unit, p) {
 // Switching unit shows that unit AT ONCE from the copy kept here; a quiet check then brings it up to date.
 function changeStoreUnit(u) {
   sv.unit = u; store.set(UNIT_KEY, u);
-  Object.assign(sv, { data: sv.byUnit[u] || null, draft: null, rq: {}, inv: null, done: null, formUnit: '', show: 150 });
+  Object.assign(sv, { data: sv.byUnit[u] || null, draft: null, rq: {}, inv: null, done: null, formUnit: '', show: 150, aiDoc: null, aiMsg: '' });
   renderStore(true);
   const gen = state.gen;
   loadStore(false, gen).then(() => { if (gen === state.gen && u === sv.unit) renderStore(); }).catch(handleError);
@@ -1849,7 +1849,15 @@ function raiseHtml() {
     HO will choose the approver.${sv.done.sending ? ' You can carry on.' : ` Order no: ${sv.done.lines.map((l) => `<code>${esc(l.orderNo)}</code>`).join(', ')}`}</div>` : '';
   const cats = (sel) => '<option value="">Choose…</option>' + meta.categories.map((c) => `<option ${c === sel ? 'selected' : ''}>${esc(c)}</option>`).join('');
   const uoms = (sel) => '<option value="">Unit…</option>' + meta.uoms.map((u) => `<option ${u === sel ? 'selected' : ''}>${esc(u)}</option>`).join('');
-  return `${done}<form id="raiseForm" autocomplete="off">
+  const ho = !!state.me.user.isHO;
+  const uom2 = (sel) => uoms(sel) + (sel && !meta.uoms.includes(sel) ? `<option selected>${esc(sel)}</option>` : '');
+  const docBox = ho ? `<div class="card aidoc">
+      <div class="top"><h3>✨ Fill from a document</h3></div>
+      <p class="sub">Upload a vendor list or quotation (photo, PDF or Excel; Hindi or English). AI fills the items below. Check and edit every line, then send.</p>
+      <input type="file" id="reqDoc" accept="image/*,application/pdf,.xlsx,.xls,.csv" aria-label="Upload list or quotation" ${sv.aiBusy ? 'disabled' : ''}>
+      ${sv.aiMsg ? `<p class="aihint">${esc(sv.aiMsg)}</p>` : ''}
+    </div>` : '';
+  return `${done}${docBox}<form id="raiseForm" autocomplete="off">
     <datalist id="pastItems">${meta.items.map((x) => `<option value="${esc(x[0])}">`).join('')}</datalist>
     ${sv.draft.map((l, i) => `<div class="card">
       <div class="top"><h3>Item ${i + 1}</h3>${sv.draft.length > 1 ? `<button type="button" class="btn sm ghost storeact" data-rmline="${i}">Remove</button>` : ''}</div>
@@ -1857,7 +1865,8 @@ function raiseHtml() {
         <label class="field full">Item name<input data-f="item" data-i="${i}" list="pastItems" maxlength="100" required value="${esc(l.item)}" placeholder="Type or pick a past item"></label>
         <label class="field full">Category<select data-f="cat" data-i="${i}" required>${cats(l.cat)}</select></label>
         <label class="field">Quantity needed<input data-f="qty" data-i="${i}" type="number" inputmode="decimal" min="0" step="any" required value="${esc(l.qty)}"></label>
-        <label class="field">Unit<select data-f="uom" data-i="${i}" required>${uoms(l.uom)}</select></label>
+        <label class="field">Unit<select data-f="uom" data-i="${i}" required>${uom2(l.uom)}</select></label>
+        ${ho ? `<label class="field">Rate ₹ (optional)<input data-f="rate" data-i="${i}" type="number" inputmode="decimal" min="0" step="any" value="${esc(l.rate ?? '')}" placeholder="${sv.aiDoc ? 'Not in document' : ''}"></label>` : ''}
         <label class="field">Stock in hand<input data-f="stock" data-i="${i}" type="number" inputmode="decimal" min="0" step="any" required value="${esc(l.stock)}" placeholder="0 if none"></label>
         <div class="field">Photo (optional)<div class="photorow">
           ${l.photo ? `<img class="thumb" src="${l.photo.preview}" alt="Photo of item ${i + 1}"><button type="button" class="btn sm ghost" data-rmphoto="${i}">Remove</button>`
@@ -2002,6 +2011,31 @@ async function fileForUpload(file) {
 // ---- actions ----
 const noPreview = () => { if (readOnly()) { toast('This is a preview, so nothing can be submitted.', true); return false; } return true; };
 
+// HO: AI reads a vendor list / quotation (Hindi or English) and fills the New request lines; HO checks and edits them.
+async function aiReadReqDoc(file) {
+  if (!sv.unit) return toast('Choose the unit first.', true);
+  sv.aiBusy = true; sv.aiMsg = '✨ Reading the document with AI… this can take up to a minute.'; sv.formUnit = ''; renderStore(true);
+  try {
+    let payload, keep = null;
+    if (/\.(xlsx|xls|csv)$/i.test(file.name) || /sheet|excel|csv/.test(file.type)) {
+      await loadLibs('xlsx');
+      const wb = window.XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      payload = { text: wb.SheetNames.slice(0, 5).map((n) => window.XLSX.utils.sheet_to_csv(wb.Sheets[n], { blankrows: false })).join('\n\n').slice(0, 60000) };
+      keep = { name: file.name };
+    } else { const f = await fileForUpload(file); payload = { file: { type: f.type, data: f.data } }; keep = { type: f.type, data: f.data, name: file.name }; }
+    const r = await api('reqRead', payload);
+    if (!r.items.length) { sv.aiMsg = '✨ AI found no items in this document. Please type them.'; return; }
+    const got = r.items.map((x) => Object.assign(blankLine(), { item: x.item, qty: x.qty, uom: x.uom, cat: x.cat, rate: x.rate, stock: '0' }));
+    const kept = (sv.draft || []).filter((l) => l.item.trim() || l.qty || l.photo);   // lines already typed stay
+    sv.draft = kept.concat(got).slice(0, 30);
+    sv.aiDoc = keep;
+    const noRate = got.filter((l) => !(Number(l.rate) > 0)).length, noCat = got.filter((l) => !l.cat).length;
+    sv.aiMsg = `✨ AI filled ${got.length} item${got.length > 1 ? 's' : ''} from ${file.name}.` + (r.total > got.length ? ` The document has ${r.total} items; only ${got.length} fit in one request, send the rest as a second request.` : '') +
+      (noRate ? ` ${noRate} without a rate.` : '') + (noCat ? ` Choose the category for ${noCat}.` : '') + ' Stock in hand is set to 0. Please check every line before sending.';
+  } catch (e) { sv.aiMsg = '✨ ' + ((e && e.message) || 'AI could not read this document.').replace(/^✨ /, ''); }
+  finally { sv.aiBusy = false; sv.formUnit = ''; renderStore(true); }
+}
+
 function submitRequest() {
   if (!noPreview()) return;
   const meta = sv.base;
@@ -2014,14 +2048,16 @@ function submitRequest() {
     if (l.stock === '' || Number(l.stock) < 0) return toast(n + 'enter the stock in hand (0 if none).', true);
   }
   const unit = sv.unit, draft = sv.draft;
-  const lines = draft.map((l) => ({ item: l.item.trim(), category: l.cat, qty: Number(l.qty), uom: l.uom, stock: l.stock, photo: l.photo ? { type: l.photo.type, data: l.photo.data } : null }));
+  const lines = draft.map((l) => ({ item: l.item.trim(), category: l.cat, qty: Number(l.qty), uom: l.uom, stock: l.stock, photo: l.photo ? { type: l.photo.type, data: l.photo.data } : null, rate: Number(l.rate) > 0 ? Number(l.rate) : 0 }));
+  const doc = sv.aiDoc && sv.aiDoc.data && lines.some((l) => l.rate > 0) ? { type: sv.aiDoc.type, data: sv.aiDoc.data } : null, aiDoc = sv.aiDoc, aiMsg = sv.aiMsg;
+  sv.aiDoc = null; sv.aiMsg = '';
   // at once: clear the form and say it is on its way; the order numbers fill in when the server answers
   sv.done = { unit, lines: draft.map(() => ({ orderNo: '…' })), sending: true }; sv.draft = [blankLine()]; sv.formUnit = '';
   renderStore(true); window.scrollTo(0, 0);
   const sid = beginSave();
-  api('storeRaise', { unit, lines })
+  api('storeRaise', doc ? { unit, lines, doc } : { unit, lines })
     .then((r) => { sv.done = r; toast(`Request sent: ${r.raised} item${r.raised > 1 ? 's' : ''}.`); return loadStore(false, state.gen); })
-    .catch((e) => { sv.done = null; sv.draft = draft; sv.formUnit = ''; handleError(e); })
+    .catch((e) => { sv.done = null; sv.draft = draft; sv.aiDoc = aiDoc; sv.aiMsg = aiMsg; sv.formUnit = ''; handleError(e); })
     .finally(() => { endSave(sid); if (sv.view === 'raise' && sv.unit === unit) { sv.formUnit = ''; renderStore(true); } else renderStore(); });
 }
 
@@ -2154,6 +2190,7 @@ $('storeBody').addEventListener('change', async (e) => {
   const t = e.target;
   if (t.dataset.f) sv.draft[+t.dataset.i][t.dataset.f] = t.value;
   if (t.name === 'file' && t.form && t.form.id === 'invForm' && t.files[0]) return aiReadInvoice(t.form, t.files[0]);
+  if (t.id === 'reqDoc' && t.files[0]) return aiReadReqDoc(t.files[0]);
   if (t.dataset.photo !== undefined && t.files[0]) {
     try { sv.draft[+t.dataset.photo].photo = await shrinkImage(t.files[0], 1280, 0.75); } catch (err) { return toast(err.message, true); }
     sv.formUnit = ''; renderStore(true);
@@ -2235,6 +2272,7 @@ function renderPO(force) {
   const lines = (state.po.lines || []).filter((l) => l.u === state.poUnit);
   if (!lines.length) { body.innerHTML = done + '<p class="empty">No approved lines waiting for a PO.</p>'; return; }
   [...state.poSel].forEach((k) => { if (!lines.some((l) => poKey(l) === k)) state.poSel.delete(k); });
+  lines.forEach((l) => { const k = poKey(l), pr = state.poPrice[k]; if (l.qr > 0 && (!pr || pr.price === undefined)) state.poPrice[k] = Object.assign(pr || {}, { price: l.qr }); });   // rate from the request document
   const sel = lines.filter((l) => state.poSel.has(poKey(l)));
   const total = sel.reduce((a, l) => a + lineTotal(l, state.poPrice[poKey(l)]), 0);
   const f = state.poForm, ro = readOnly();

@@ -504,3 +504,5 @@ body.docked .scrollbtns { bottom: calc(96px + env(safe-area-inset-bottom)); }
 }
 /* Vendors tab (desktop): action buttons wrap inside their column so the table never spills past its box */
 @media (min-width: 761px) { #viewVendorHub .dtable td.act { white-space: normal; width: 150px; min-width: 150px; text-align: right; } #viewVendorHub .dtable td.act > * { display: inline-flex; margin: 0 0 4px 4px; } }
+.card.aidoc { border: 1px dashed var(--accent, #800000); }
+.card.aidoc input[type=file] { margin: 6px 0; max-width: 100%; }
