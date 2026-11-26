@@ -1151,7 +1151,7 @@ const STORE_CFG = {
   INVOICES: 'INVOICES',          // A P.O NUMBER, B UPLOAD INVOICE (link), C Timestamp, D AMOUNT, E INVOICE NUMBER, F INVOICE DATE
   POS: 'P.Os',                   // B PO NUMBER, C LINK
   FOLDER: 'Summit Purchase App uploads',
-  MAX_LINES: 30,                 // lines in one request
+  MAX_LINES: 100,                // lines in one request
   MAX_PHOTO: 3 * 1024 * 1024,    // bytes after decoding (the app shrinks photos to well under this)
   MAX_FILE: 8 * 1024 * 1024,     // invoice file
   CACHE: 'store_lines_' + MODE,
@@ -1373,8 +1373,9 @@ function storeRaise_(user, req) {
     const want = String(v).trim().toLowerCase(), c = it.asListItem().getChoices().map(x => x.getValue()).find(x => String(x).trim().toLowerCase() === want);
     return c === undefined ? null : c;
   };
-  withLock_(() => {
-    clean.forEach(l => {
+  // sent 10 at a time, letting go of the lock in between, so a long request does not keep other saves waiting
+  for (let b = 0; b < clean.length; b += 10) withLock_(() => {
+    clean.slice(b, b + 10).forEach(l => {
       const uom = pick(qs[STORE_FORM.UOM], l.uom), suom = pick(qs[STORE_FORM.STOCK_UOM], l.uom);
       const r = form.createResponse();
       try {
@@ -1600,7 +1601,7 @@ const PO_CFG = {
   CACHE: 'po_pending_' + MODE,
   POS: 'P.Os', VENDORS: 'VENDORS', TEMPLATE: 'P.O',
   HOTELS: 'AH4:AL80',            // in the P.O tab: key, hotel name, address, phone, GST
-  MAX_LINES: 31,                 // the sheet's PO has room for 31 lines
+  MAX_LINES: 100,                // the sheet's PO has room for 31 lines; the PDF adds rows for more
   TERMS: ['Advance (20%)', 'Advance (50%)', 'Advance (100%)', 'Normal Credit', 'Within 15 days'],
   COMPANY: 'SUMMIT HOTELS & RESORTS PVT. LTD.',
   COMPANY_ADDR: 'G0402, G Block, City Centre Office Block, Matigara, Siliguri - 734010',
@@ -1842,7 +1843,14 @@ function poPdf_(p) {
   try {
     sh = tpl.copyTo(ss).setName('PO_TMP_' + Date.now() + '_' + Math.floor(Math.random() * 1e4));
     const put = (a1, v) => sh.getRange(a1).setValue(v);
-    sh.getRange('J24:T54').clearContent();
+    const extra = Math.max(0, p.lines.length - 31);   // the template has 31 item rows; for more, rows are added in this temporary copy only
+    if (extra) {
+      sh.insertRowsAfter(53, extra);
+      sh.getRange(53, 1, 1, sh.getMaxColumns()).copyTo(sh.getRange(54, 1, extra, sh.getMaxColumns()), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+      sh.setRowHeights(54, extra, sh.getRowHeight(53));
+    }
+    const F = (c, r) => c + (r + extra);   // footer cells move down by the added rows
+    sh.getRange('J24:T' + (54 + extra)).clearContent();
     put('J13', '');
     put('S8', "'" + Utilities.formatDate(p.date, CFG.TZ, 'dd-MMM-yy').toUpperCase());
     put('S9', p.poNo);
@@ -1856,22 +1864,22 @@ function poPdf_(p) {
     // PHONE box: plain white with black text (the template's box is dark)
     sh.getRange('Q19:U19').setBackground('#ffffff').setFontColor('#000000');
     put('Q19', p.hotel.phone ? "'" + p.hotel.phone : '');
-    const n = Math.min(p.lines.length, 31);
+    const n = p.lines.length;
     const col = (c, f) => sh.getRange(c + '24:' + c + (23 + n)).setValues(p.lines.slice(0, n).map(l => [f(l)]));
     if (n) {
       col('J', l => l.orderNo); col('L', l => l.item); col('P', l => l.qty); col('Q', l => l.uom);
       col('R', l => l.price); col('S', l => l.tax); col('T', l => l.total);
     }
     const subtotal = p.subtotal != null ? p.subtotal : p.total;
-    put('T55', subtotal);
-    put('R57', 'DISCOUNT'); put('T57', p.discountAmt > 0 ? -p.discountAmt : '');
-    put('T59', p.total);
-    put('J56', p.note || '');   // exactly what HO wrote while making the PO (blank if nothing)
-    put('J58', 'Delivery Period'); put('L58', p.days + (Number(p.days) === 1 ? ' day' : ' days'));
-    if (p.terms) put('L59', p.terms);   // the box beside 'Payment with PO' (K59 is inside the label)
+    put(F('T', 55), subtotal);
+    put(F('R', 57), 'DISCOUNT'); put(F('T', 57), p.discountAmt > 0 ? -p.discountAmt : '');
+    put(F('T', 59), p.total);
+    put(F('J', 56), p.note || '');   // exactly what HO wrote while making the PO (blank if nothing)
+    put(F('J', 58), 'Delivery Period'); put(F('L', 58), p.days + (Number(p.days) === 1 ? ' day' : ' days'));
+    if (p.terms) put(F('L', 59), p.terms);   // the box beside 'Payment with PO' (K59 is inside the label)
     SpreadsheetApp.flush();
     const url = 'https://docs.google.com/spreadsheets/d/' + ss.getId() + '/export?format=pdf&gid=' + sh.getSheetId() +
-      '&r1=4&c1=9&r2=60&c2=21&size=A4&portrait=true&fitw=true&gridlines=false&printtitle=false&sheetnames=false' +
+      '&r1=4&c1=9&r2=' + (60 + extra) + '&c2=21&size=A4&portrait=true&fitw=true&gridlines=false&printtitle=false&sheetnames=false' +
       '&pagenum=UNDEFINED&fzr=false&horizontal_alignment=CENTER&top_margin=0.4&bottom_margin=0.4&left_margin=0.3&right_margin=0.3';
     const res = UrlFetchApp.fetch(url, { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true });
     if (res.getResponseCode() !== 200) throw new Error('PDF export failed (' + res.getResponseCode() + ')');
