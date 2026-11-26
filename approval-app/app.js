@@ -51,7 +51,7 @@ async function api(action, data = {}) {
   const write = WRITE_ACTIONS.includes(action) && action !== 'register';
   const body = JSON.stringify({ action, idToken: state.idToken, ...(state.viewAs && action !== 'register' ? { viewAs: state.viewAs } : {}),
     ...(write ? { requestId: newId() } : {}), ...data });
-  const limit = action === 'statementCheck' ? 330000 : write || action === 'rateCompare' ? 120000 : 45000;   // AI reading many statements takes minutes
+  const limit = action === 'statementCheck' || action === 'storeRaise' ? 330000 : write || action === 'rateCompare' ? 120000 : 45000;   // AI reading many statements takes minutes
   let lastErr = null;
   const tries = action === 'statementCheck' ? 1 : write ? 7 : 2, waits = [1500, 3000, 5000, 8000, 12000, 20000];   // a save keeps trying ~50 s (same requestId: never done twice)
   for (let attempt = 0; attempt < tries; attempt++) {   // never re-send a statement check (it would use the AI limit twice)
@@ -1875,7 +1875,7 @@ function raiseHtml() {
       </div>
     </div>`).join('')}
     <div class="formfoot storeact">
-      <button type="button" class="btn" id="addLine" ${sv.draft.length >= 30 ? 'disabled' : ''}>+ Add another item</button>
+      <button type="button" class="btn" id="addLine" ${sv.draft.length >= 100 ? 'disabled' : ''}>+ Add another item</button>
       <button type="submit" class="btn primary">Send request (${sv.draft.length} item${sv.draft.length > 1 ? 's' : ''})</button>
     </div>
   </form>`;
@@ -2027,7 +2027,7 @@ async function aiReadReqDoc(file) {
     if (!r.items.length) { sv.aiMsg = '✨ AI found no items in this document. Please type them.'; return; }
     const got = r.items.map((x) => Object.assign(blankLine(), { item: x.item, qty: x.qty, uom: x.uom, cat: x.cat, rate: x.rate, stock: '0' }));
     const kept = (sv.draft || []).filter((l) => l.item.trim() || l.qty || l.photo);   // lines already typed stay
-    sv.draft = kept.concat(got).slice(0, 30);
+    sv.draft = kept.concat(got).slice(0, 100);
     sv.aiDoc = keep;
     const noRate = got.filter((l) => !(Number(l.rate) > 0)).length, noCat = got.filter((l) => !l.cat).length;
     sv.aiMsg = `✨ AI filled ${got.length} item${got.length > 1 ? 's' : ''} from ${file.name}.` + (r.total > got.length ? ` The document has ${r.total} items; only ${got.length} fit in one request, send the rest as a second request.` : '') +
