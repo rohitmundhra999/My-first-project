@@ -3122,7 +3122,7 @@ function fsPublish_(only) {
   const heads = reqs.filter(r => !/\/c\/\d+$/.test(r.url)), chunks = reqs.filter(r => /\/c\/\d+$/.test(r.url));
   let bad = 0;
   [chunks, heads].forEach(list => { if (list.length) UrlFetchApp.fetchAll(list).forEach(r => { if (r.getResponseCode() !== 200) { bad++; console.error('FS write ' + r.getResponseCode() + ': ' + r.getContentText().slice(0, 300)); } }); });
-  if (!bad) cache.putAll(marks, 21600);
+  if (!bad) cache.putAll(marks, 1800);   // re-sent at least every 30 min, so a copy that went stale in Firestore heals by itself
   return reqs.length - bad;
 }
 
